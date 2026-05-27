@@ -1,0 +1,72 @@
+# Dependencies
+node_modules/
+apps/node_modules/
+apps/server/node_modules/
+
+# Frontend/server build outputs
+dist/
+dist-*/
+build/
+coverage/
+apps/dist/
+apps/dist-*/
+apps/server/dist/
+apps/server/build/
+
+# Source fixtures used by the frontend must stay trackable even if a global
+# Git ignore file contains broad "data/" rules.
+!apps/src/data/
+!apps/src/data/**
+
+# Legacy/static web assets intentionally kept out of this repository
+apps/web/
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Runtime databases and generated local data
+apps/server/data/
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+
+# Python caches, virtualenvs, and generated reports
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+apps/server/planning-python/theat_analyze/generated_reports/
+
+# Vite/Cesium/cache artifacts
+.vite/
+.vite-temp/
+.cache/
+.parcel-cache/
+apps/node_modules/.vite/
+apps/node_modules/.vite-temp/
+
+# Logs and process files
+*.log
+logs/
+*.pid
+*.seed
+*.pid.lock
+
+# OS/editor local files
+.DS_Store
+Thumbs.db
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.example.json
+
+# Codex/plugin local caches, while keeping project skill files eligible for sync
+.codex/cache/
+.codex/tmp/

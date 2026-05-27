@@ -1,0 +1,20 @@
+{
+  "name": "@mission/server",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "node --watch src/index.js",
+    "start": "node src/index.js",
+    "build": "node -e \"console.log('server build not required')\"",
+    "test": "node --test src/planning-runtime.support.test.js src/index.contract.test.js src/import-preview.test.js"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "express": "^5.1.0",
+    "mammoth": "^1.12.0",
+    "pdf-parse": "^2.4.5",
+    "word-extractor": "^1.0.4",
+    "xlsx": "^0.18.5"
+  }
+}
