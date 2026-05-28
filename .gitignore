@@ -17,9 +17,18 @@ apps/server/build/
 # Git ignore file contains broad "data/" rules.
 !apps/src/data/
 !apps/src/data/**
+!apps/web/src/data/
+!apps/web/src/data/**
 
-# Legacy/static web assets intentionally kept out of this repository
-apps/web/
+# Frontend workspace local outputs and large local map assets
+apps/web/node_modules/
+apps/web/dist/
+apps/web/dist-*/
+apps/web/terrain/
+apps/web/dem/
+apps/web/tiles/
+apps/web/public/
+apps/web/pubulic/
 
 # Local environment and secrets
 .env

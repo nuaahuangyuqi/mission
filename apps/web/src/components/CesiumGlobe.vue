@@ -1553,6 +1553,9 @@ async function createOfflineTerrainProvider() {
   return Cesium.CesiumTerrainProvider.fromUrl(offlineTerrainConfig.url, {
     requestVertexNormals: true,
     requestWaterMask: false,
+    // Local terrain uses repaired top-level availability; parsing embedded
+    // metadata without metadataAvailability breaks Cesium root tile loading.
+    requestMetadata: false,
   });
 }
 
@@ -1581,14 +1584,17 @@ async function refreshTerrain() {
   let resolvedMode = props.terrainMode;
   const onlineTerrainUrl = getEffectiveOnlineTerrainUrl(props.mapServiceConfig);
   const hasIonTerrain = hasCesiumIonToken(props.mapServiceConfig);
+  const hasOnlineTerrain = hasIonTerrain || Boolean(onlineTerrainUrl);
   let provider = new Cesium.EllipsoidTerrainProvider();
   let message = '当前地形：平面椭球';
 
   try {
     if (resolvedMode === 'offline') {
       if (!offlineTerrainConfig.available) {
-        resolvedMode = 'flat';
-        message = '未检测到离线 DEM，请检查 /terrain 或 /dem。';
+        resolvedMode = hasOnlineTerrain ? 'online' : 'flat';
+        message = hasOnlineTerrain
+          ? '未检测到离线 DEM，正在尝试在线 DEM。'
+          : '未检测到离线 DEM，请检查 /terrain 或 /dem。';
       } else {
         provider = await createOfflineTerrainProvider();
         message = `当前地形：离线 DEM / ${offlineTerrainConfig.url}`;

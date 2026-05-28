@@ -8,6 +8,7 @@ import { evaluateAction, getActionTemplate } from './action.js';
 import { evaluateCapability, getCapabilityTemplate } from './capability.js';
 import { evaluateConsumption, getConsumptionTemplate } from './consumption.js';
 import { evaluatePlanning, getPlanningTemplate, validatePlanning } from './planning.js';
+import { buildTerrainLayerJson } from './local-terrain-layer.js';
 import {
   buildKnowledgeGraph,
   createDatabase,
@@ -32,7 +33,11 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const webDist = path.resolve(__dirname, '../../web/dist/client');
-const webPublic = path.resolve(__dirname, '../../web/public');
+const webAssets = path.resolve(__dirname, '../../web');
+const webPublicDirs = [
+  path.resolve(__dirname, '../../web/public'),
+  path.resolve(__dirname, '../../web/pubulic'),
+];
 const webIndex = path.join(webDist, 'index.html');
 
 const app = express();
@@ -43,6 +48,61 @@ const SESSION_COOKIE_NAME = 'mission_session';
 const SESSION_COOKIE_PATH = '/';
 const SESSION_COOKIE_SAME_SITE = 'Lax';
 const EXPIRED_COOKIE_DATE = 'Thu, 01 Jan 1970 00:00:00 GMT';
+
+function setLocalAssetHeaders(res, filePath) {
+  const extension = path.extname(filePath).toLowerCase();
+  if (extension === '.terrain') {
+    res.setHeader('Content-Type', 'application/vnd.quantized-mesh');
+  }
+  res.setHeader('Cache-Control', 'no-cache');
+}
+
+function mountLocalAssetDir(routePath, relativeDir) {
+  const candidateDirs = [
+    path.join(webAssets, relativeDir),
+    ...webPublicDirs.map((dir) => path.join(dir, relativeDir)),
+  ];
+  const mountedDirs = new Set();
+  for (const candidateDir of candidateDirs) {
+    if (!fs.existsSync(candidateDir) || mountedDirs.has(candidateDir)) {
+      continue;
+    }
+    mountedDirs.add(candidateDir);
+    if (routePath === '/terrain' || routePath === '/dem') {
+      app.use(routePath, (req, res, next) => {
+        const requestPath = decodeURIComponent(new URL(req.url || '/', 'http://localhost').pathname);
+        if (requestPath !== '/layer.json') {
+          next();
+          return;
+        }
+
+        try {
+          const payload = buildTerrainLayerJson(candidateDir);
+          if (!payload?.json || (payload.repaired && payload.stats.tiles <= 0)) {
+            next();
+            return;
+          }
+
+          res.setHeader('Cache-Control', 'no-cache');
+          res.setHeader('Content-Type', 'application/json; charset=utf-8');
+          res.setHeader('X-Mission-Terrain-Layer', payload.repaired ? 'repaired' : 'original');
+          if (payload.repaired) {
+            res.setHeader('X-Mission-Terrain-Ranges', String(payload.stats.ranges));
+          }
+          if (req.method === 'HEAD') {
+            res.end();
+            return;
+          }
+          res.end(JSON.stringify(payload.json));
+        } catch (error) {
+          console.warn(`[mission-server] Failed to repair terrain layer metadata for ${candidateDir}:`, error);
+          next();
+        }
+      });
+    }
+    app.use(routePath, express.static(candidateDir, { setHeaders: setLocalAssetHeaders }));
+  }
+}
 
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '25mb' }));
@@ -2566,8 +2626,13 @@ app.use('/api', (_req, res) => {
 });
 
 if (fs.existsSync(webIndex)) {
-  if (fs.existsSync(webPublic)) {
-    app.use(express.static(webPublic));
+  mountLocalAssetDir('/terrain', 'terrain');
+  mountLocalAssetDir('/dem', 'dem');
+  mountLocalAssetDir('/tiles', 'tiles');
+  for (const webPublic of webPublicDirs) {
+    if (fs.existsSync(webPublic)) {
+      app.use(express.static(webPublic));
+    }
   }
   app.use(express.static(webDist));
   app.use((_req, res) => {

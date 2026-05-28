@@ -7,7 +7,7 @@
     "dev": "node --watch src/index.js",
     "start": "node src/index.js",
     "build": "node -e \"console.log('server build not required')\"",
-    "test": "node --test src/planning-runtime.support.test.js src/index.contract.test.js src/import-preview.test.js"
+    "test": "node --test src/planning-runtime.support.test.js src/index.contract.test.js src/import-preview.test.js src/local-terrain-layer.test.js"
   },
   "dependencies": {
     "cors": "^2.8.5",

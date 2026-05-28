@@ -10,6 +10,7 @@ const {
   selectedTaskInstance,
   taskStepBindings,
   setAlgorithmBinding,
+  setAlgorithmBuiltinMethod,
   updateAlgorithmRuntimeOptions,
   setPlanningStage,
   formatVariantType,
@@ -66,6 +67,10 @@ function runtimeCoreFields(binding) {
 function runtimeLlmFields(binding) {
   return (binding?.variant?.parameterSchema || []).filter((field) => isLlmRuntimeField(field));
 }
+
+function builtinMethodOptions(binding) {
+  return binding.algorithm?.builtinMethods || [];
+}
 </script>
 
 <template>
@@ -110,6 +115,7 @@ function runtimeLlmFields(binding) {
             <div><span>当前实现</span><strong>{{ binding.variant?.name || '--' }}</strong></div>
             <div><span>实现类型</span><strong>{{ binding.variant ? formatVariantType(binding.variant.type) : '--' }}</strong></div>
             <div><span>实现状态</span><strong>{{ binding.variant ? formatStatusLabel(binding.variant.status) : '--' }}</strong></div>
+            <div><span>当前方法</span><strong>{{ binding.builtinMethod?.label || '--' }}</strong></div>
             <div><span>已选数据源</span><strong>{{ binding.inputConfig?.selectedSourceIds?.length || 0 }}</strong></div>
             <div><span>上传文件</span><strong>{{ binding.inputConfig?.uploadedFiles?.length || 0 }}</strong></div>
           </div>
@@ -125,6 +131,22 @@ function runtimeLlmFields(binding) {
                   :disabled="variant.status !== 'active'"
                 >
                   {{ variant.name }} / {{ formatVariantType(variant.type) }}{{ variant.status === 'active' ? '' : '（预留）' }}
+                </option>
+              </select>
+            </label>
+
+            <label v-if="builtinMethodOptions(binding).length" class="full-span">
+              选择内置方法
+              <select
+                :value="binding.inputConfig?.builtinMethodKey"
+                @change="setAlgorithmBuiltinMethod(binding.algorithm.id, $event.target.value)"
+              >
+                <option
+                  v-for="method in builtinMethodOptions(binding)"
+                  :key="method.key"
+                  :value="method.key"
+                >
+                  {{ method.label }}
                 </option>
               </select>
             </label>

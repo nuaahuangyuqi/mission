@@ -1,6 +1,203 @@
 ﻿# Agent Memory
 
-Updated: 2026-05-27
+Updated: 2026-05-28
+
+Offline terrain black-screen follow-up fix completed on 2026-05-28:
+
+- Files:
+  - `apps/web/src/components/CesiumGlobe.vue`
+  - `README.md`
+  - `开发指南.md`
+  - `agent.md`
+- Notes:
+  - after the terrain `layer.json` repair, local offline terrain could turn the globe black because converted root tiles include embedded metadata extensions
+  - Cesium defaults `requestMetadata` to true; once `metadataAvailability` is removed from `layer.json`, parsing embedded metadata attempts to update `layer.availabilityTilesLoaded`, which is undefined in the top-level availability path
+  - `createOfflineTerrainProvider()` now sets `requestMetadata: false`, so local terrain uses the repaired top-level `available` ranges and does not parse embedded metadata availability
+  - online terrain behavior is unchanged
+- Verification:
+  - direct Cesium Node smoke against Vite-served `/terrain` confirmed root tiles `0/0/0` and `0/1/0` failed with `requestMetadata: true` and loaded successfully with `requestMetadata: false`
+  - direct Cesium `sampleTerrainMostDetailed` smoke with `requestMetadata: false` returned finite heights for `120,30` and `100.37,31.46`
+  - `node --check apps/server/src/local-terrain-layer.js`
+  - `node --check apps/server/src/index.js`
+  - `node --check apps/web/vite.config.js`
+  - `npm test --workspace @mission/server`
+    - observed result: 13 tests passed
+  - `npm run build --workspace @mission/web`
+    - observed result: build succeeded; Vite still emits the existing large chunk warning
+- Remaining risk:
+  - visual browser screenshot verification was not available; verification used direct Cesium terrain requests and sampling plus build/tests
+
+Offline Cesium terrain metadata repair completed on 2026-05-28:
+
+- Files:
+  - `apps/server/src/local-terrain-layer.js`
+  - `apps/server/src/local-terrain-layer.test.js`
+  - `apps/server/src/index.js`
+  - `apps/server/package.json`
+  - `apps/web/vite.config.js`
+  - `README.md`
+  - `开发指南.md`
+  - `agent.md`
+- Notes:
+  - fixed the offline terrain relief issue by serving a repaired `layer.json` for local `/terrain/layer.json` and `/dem/layer.json` in both Vite dev mode and Express production mode
+  - the repair scans the real local `.terrain` files, filters out out-of-range edge tiles, generates Cesium-compatible `available` ranges, and removes `metadataAvailability`
+  - removing `metadataAvailability` is required because Cesium ignores the top-level `available` array when that field is present and otherwise expects per-tile availability metadata
+  - the current local `apps/web/pubulic/terrain` package is repaired to 44 availability ranges, with levels 0-10 recognized as full coverage and higher levels kept as local partial coverage
+  - responses include `X-Mission-Terrain-Layer: repaired` and `X-Mission-Terrain-Ranges` headers to make the active repair visible during HTTP checks
+- Verification:
+  - direct `buildTerrainLayerJson('./apps/web/pubulic/terrain')` smoke confirmed `metadataAvailability` is removed, `z0` is `0..1 / 0`, `z9` is full `0..1023 / 0..511`, and `z10` is full `0..2047 / 0..1023`
+  - `node --check apps/server/src/local-terrain-layer.js`
+  - `node --check apps/server/src/index.js`
+  - `node --check apps/web/vite.config.js`
+  - `node --test apps/server/src/local-terrain-layer.test.js`
+  - `npm test --workspace @mission/server`
+    - observed result: 13 tests passed
+  - `npm run build --workspace @mission/web`
+    - observed result: build succeeded; Vite still emits the existing large chunk warning
+  - Vite dev static smoke on `http://127.0.0.1:5190/terrain/layer.json`
+    - observed result: `200 OK`, `X-Mission-Terrain-Layer: repaired`, no `metadataAvailability`, corrected availability ranges
+  - Express production static smoke on `http://127.0.0.1:3199/terrain/layer.json`
+    - observed result: `200 OK`, `X-Mission-Terrain-Layer: repaired`, no `metadataAvailability`, corrected availability ranges
+- Remaining risk:
+  - no browser screenshot verification was run because no in-app Browser tool was exposed; validation used HTTP-level terrain metadata checks, build, and tests
+  - the first request for a large local terrain package may spend a short time scanning files before the in-memory cache is warm
+
+Intelligent airlanding algorithm integration completed on 2026-05-28:
+
+- Files:
+  - `apps/server/src/planning-runtime.js`
+  - `apps/server/src/planning-airlanding-python.js`
+  - `apps/server/planning-python/airlanding_zone/__init__.py`
+  - `apps/server/planning-python/airlanding_zone/main.py`
+  - `apps/server/planning-python/airlanding_zone/config.py`
+  - `apps/server/planning-python/airlanding_zone/dem_provider.py`
+  - `apps/server/planning-python/airlanding_zone/candidate_generator.py`
+  - `apps/server/planning-python/airlanding_zone/optimizer.py`
+  - `apps/server/planning-python/airlanding_zone/threat_field.py`
+  - `apps/server/planning-python/airlanding_zone/landcover_provider.py`
+  - `apps/web/src/views/planning/PlanningAlgorithmsStep.vue`
+  - `apps/web/src/views/planning/PlanningTaskFlowStep.vue`
+  - `README.md`
+  - `开发指南.md`
+  - `agent.md`
+- Notes:
+  - `机降地域优化选择` now has a new built-in method named `智能机降算法`
+  - the original `加权评分选址`、`Pareto 多目标排序` and `约束筛选优化` implementations remain on the original Node path and are not changed
+  - selecting `智能机降算法` calls `apps/server/planning-python/airlanding_zone/main.py` through `apps/server/src/planning-airlanding-python.js`
+  - the Python algorithm now defaults to the system Cesium terrain directory instead of requiring GeoTIFF upload; it checks `PLANNING_TERRAIN_ROOT`, then `apps/web/terrain`, `apps/web/pubulic/terrain`, and `apps/web/public/terrain`
+  - `dem_provider.py` now includes a `LocalCesiumTerrain` provider that reads quantized-mesh `.terrain` tiles and samples height from the configured terrain level
+  - Python output is normalized into the existing frontend result contract: `rankedCandidates`, `preferredCandidate`, `selectedCandidates`, `methodComparison`, `visualization.entities`, and terrain/source metadata
+  - `PlanningTaskFlowStep.vue` now exposes built-in method selection directly in the workflow orchestration page, so the airlanding step can be switched to `智能机降算法` there
+  - `PlanningAlgorithmsStep.vue` now exposes intelligent airlanding parameters for landing count, area, distance constraint, and optional terrain root override
+- Verification:
+  - `python3 -m py_compile apps/server/planning-python/airlanding_zone/*.py`
+  - `node --check apps/server/src/planning-airlanding-python.js`
+  - `node --check apps/server/src/planning-runtime.js`
+  - direct terrain provider smoke sampled heights from `apps/web/pubulic/terrain`
+  - direct Python `airlanding_zone/main.py` smoke with one target and one landing requirement produced `candidate_count: 10`, `zones: 1`, `warnings: 0`
+- Remaining risk:
+  - full frontend build and server test suite still need to be rerun after this integration
+  - Python terrain sampling uses nearest quantized-mesh vertices, which is sufficient for current planning display but is not a calibrated survey-grade DEM pipeline
+
+Frontend workspace relocation startup fix completed on 2026-05-28:
+
+- Files:
+  - `package.json`
+  - `start-mac.sh`
+  - `start-backend.bat`
+  - `scripts/start-production.mjs`
+  - `apps/server/src/index.js`
+  - `apps/web/vite.config.js`
+  - `apps/web/vite.config.auth-check.js`
+  - `apps/web/src/config/branding.js`
+  - `.gitignore`
+  - `README.md`
+  - `开发指南.md`
+  - `agent.md`
+  - removed obsolete `apps/package-lock.json`
+- Notes:
+  - the frontend package now lives at `apps/web/package.json`, so root scripts use workspace `@mission/web` instead of `npm --prefix apps`
+  - `start-mac.sh` now checks `apps/web/package.json` and installs frontend dependencies from `apps/web` when needed, fixing the `ENOENT ... apps/package.json` failure
+  - production startup now builds and reuses `apps/web/dist/client/index.html`
+  - the Express server now serves the SPA from `apps/web/dist/client` and still mounts local `/terrain`, `/dem`, and `/tiles` resources from `apps/web`
+  - Vite local asset middleware now resolves local map resources from the `apps/web` package root and also tolerates the existing misspelled `apps/web/pubulic` directory
+  - `apps/web/src/config/branding.js` now resolves the repository-root `logo.png` correctly after the extra `web/` path segment
+  - `.gitignore` no longer ignores all of `apps/web`; it ignores only frontend dependencies/builds and large local map resource directories so moved frontend source can be tracked
+- Verification:
+  - `node --check apps/server/src/index.js`
+  - `node --check scripts/start-production.mjs`
+  - `node --check apps/web/vite.config.js`
+  - `node --check apps/web/vite.config.auth-check.js`
+  - `node --check apps/web/src/config/branding.js`
+  - `npm run build --workspace @mission/web`
+    - observed result: build succeeded and emitted `dist/client/assets/logo-BUTaoDRU.png`; Vite still emits the existing large chunk warning
+  - `npm test --workspace @mission/server`
+    - observed result: 12 tests passed
+  - `npm run build`
+    - observed result: web build succeeded and server build printed `server build not required`
+  - `./start-mac.sh check`
+    - observed result: Node.js and npm checks passed
+  - `./start-mac.sh dev`
+    - observed result: the previous `ENOENT ... apps/package.json` failure is gone; script now reaches port validation and stops because ports `5173` and `3100` are already occupied by an existing running stack
+  - current listener smoke:
+    - `curl -I http://localhost:5173/` returned `200 OK`
+    - `curl -s http://localhost:3100/api/health` returned `{ "ok": true, ... }`
+    - `curl -I http://localhost:5173/terrain/layer.json` and `curl -I http://localhost:3100/terrain/layer.json` both returned `200 OK`
+  - `git check-ignore -v ...` confirmed `apps/web/node_modules`, `apps/web/dist`, `apps/web/pubulic`, `apps/web/tiles`, runtime DB, and local env remain ignored while `apps/web/src/main.js` and `apps/web/package.json` are no longer ignored
+
+Offline-first terrain/static map fallback update completed on 2026-05-28:
+
+- Files:
+  - `apps/vite.config.js`
+  - `apps/server/src/index.js`
+  - `apps/src/components/CesiumGlobe.vue`
+  - `apps/src/components/SituationWorkbench.vue`
+  - `apps/src/components/ResourceWorkbench.vue`
+  - `apps/src/components/MapServiceConfigPanel.vue`
+  - `scripts/download-sample-tiles.mjs`
+  - `scripts/generate-sample-tiles.ps1`
+  - `README.md`
+  - `开发指南.md`
+  - `agent.md`
+- Notes:
+  - the canonical local offline resource directories are now `apps/web/terrain`, `apps/web/dem`, and `apps/web/tiles`, served at `/terrain`, `/dem`, and `/tiles`
+  - Vite dev mode now has a local asset middleware for these routes, with legacy compatibility for `apps/web/public/terrain`, `apps/web/public/dem`, and `apps/web/public/tiles`
+  - the production Express server now mounts the same local asset routes before the SPA fallback; after the frontend workspace relocation, the active Vite output directory is `apps/web/dist/client`
+  - `离线 DEM` mode now tries `apps/web/terrain` first; if local terrain is missing and an online DEM or Cesium ion token is configured, it falls back to online terrain before finally using the flat ellipsoid
+  - saving the `在线 API 配置` no longer forces the current workbench into online basemap / online DEM; basemap stays `自动`, terrain stays `离线 DEM`, and runtime selection remains offline-first
+  - sample tile scripts now write to `apps/web/tiles` instead of the historical `apps/web/public/tiles`
+- Verification:
+  - `node --check apps/vite.config.js`
+  - `node --check apps/server/src/index.js`
+  - `npm test --workspace @mission/server`
+    - observed result: 12 tests passed
+  - `npm run build --prefix apps`
+    - observed result: build succeeded and emitted `dist/client/assets/logo-BUTaoDRU.png`; Vite still emits the existing large chunk warning
+  - production static smoke: started `PORT=3199 node apps/server/src/index.js`, requested `http://localhost:3199/terrain/layer.json`, observed `200 OK` and `application/json; charset=utf-8`
+  - dev static smoke: started `npm run dev --prefix apps -- --host 127.0.0.1 --port 5188`, requested `http://127.0.0.1:5188/terrain/layer.json`, observed `200 OK` and `application/json; charset=utf-8`
+- Remaining risk:
+  - no visual browser run was completed because no callable in-app Browser tool was exposed in this session; behavior was verified through build, tests, and direct HTTP smoke checks
+
+Logo path fix and developer guide documentation completed on 2026-05-27:
+
+- Files:
+  - `apps/src/config/branding.js`
+  - `AGENTS.md`
+  - `README.md`
+  - `开发指南.md`
+  - `agent.md`
+- Notes:
+  - fixed the global logo reference by changing `brandingConfig.logoUrl` from `../../../../logo.png` to `../../../logo.png`, which correctly resolves from `apps/src/config/branding.js` to the repository-root `logo.png`
+  - added root-level `开发指南.md` as the developer-facing file map, covering root files, frontend entry points, components, workflow modules, views, backend services, Python threat-analysis files, ignored runtime directories, common modification entry points, and verification commands
+  - updated `AGENTS.md` so every new agent must read `AGENTS.md -> agent.md -> README.md -> 开发指南.md`
+  - updated `README.md` with a document-entry section and the new agent/developer-guide synchronization requirement
+- Verification:
+  - `node --check apps/src/config/branding.js`
+  - `npm run build --prefix apps`
+    - observed result: build succeeded and emitted `dist/client/assets/logo-BUTaoDRU.png`; the previous `logo.png doesn't exist at build time` warning no longer appears
+    - remaining Vite warning: existing large chunk warning only
+- Remaining risk:
+  - no browser screenshot verification was run in this session; validation relies on Vite resolving and bundling the logo asset successfully
 
 Git repository ignore policy setup completed on 2026-05-27:
 
@@ -126,6 +323,7 @@ Cross-platform startup compatibility fixes completed on 2026-05-27:
   - `README.md`
   - `agent.md`
 - Notes:
+  - superseded on 2026-05-28 by the `apps/web` frontend workspace relocation; keep this entry only as historical context
   - fixed the root startup scripts so frontend commands now match the actual repo layout
   - root `npm run dev` and `npm run dev:web` no longer rely on a nonexistent root workspace resolution for `@mission/web`; they now start the frontend via `npm --prefix apps`
   - root `npm run build` now builds the frontend via `npm --prefix apps` before running the server workspace build
@@ -169,7 +367,8 @@ Purpose: keep a handoff-ready memory for future agents working on the data-servi
   1. `AGENTS.md`
   2. `agent.md`
   3. `README.md`
-- After any code change, the agent must update both `agent.md` and `README.md` before finishing the task.
+  4. `开发指南.md`
+- After any code change, the agent must update `agent.md` and `README.md` before finishing the task; update `开发指南.md` too when file responsibilities, entry points, structure, or developer workflows change.
 
 ## Current Status
 
@@ -277,14 +476,14 @@ Online map-service configuration and offline/online dual-mode map fallback compl
   - `agent.md`
 - Notes:
   - both `专题态势子模块` and `信息资源子模块` now expose a shared `在线 API 配置` panel
-  - simplest path is now direct `Cesium ion Token` input; after saving, the frontend prefers `Cesium World Imagery` and `Cesium World Terrain`
+  - simplest path is now direct `Cesium ion Token` input; after saving, the frontend keeps offline-first selection and only uses Cesium online services when local resources are unavailable or online mode is explicitly selected
   - online map configuration is browser-local and persisted in `localStorage` under `mission-map-service-config`
   - saved config now supports `ionToken` in addition to custom imagery URL, optional annotation URL, online terrain URL, optional token, subdomains, and maximum level
   - if `ionToken` is absent, the previous custom URL / TianDiTu fallback path still works as an advanced option
   - basemap mode options are now `自动 / 离线 / 在线 API`; terrain mode options are now `平面 / 离线 DEM / 在线 DEM`
-  - saving online config auto-switches the current workbench to online basemap / online DEM when corresponding values are present, including `ionToken`
+  - saving online config keeps the current workbench offline-first: basemap stays `自动`, terrain stays `离线 DEM`, and runtime fallback chooses online services only when local resources are unavailable
   - Cesium basemap auto mode now prefers offline tiles, then configured online imagery (including Cesium ion world imagery), then the grid fallback
-  - online terrain now prefers Cesium World Terrain when `ionToken` exists; otherwise it resolves from the saved terrain URL, then falls back to offline DEM, and finally to ellipsoid terrain
+  - terrain mode now defaults through offline DEM first, then configured online DEM / Cesium World Terrain when available, and finally ellipsoid terrain
 - Verification:
   - `npm run build` in `apps/`
     - completed successfully after installing the missing local optional Rollup native package `@rollup/rollup-darwin-arm64`
@@ -354,18 +553,18 @@ Workspace slimming cleanup completed on 2026-05-17:
   - `algorithms/tactical-visualizer2.0/ai_engine/generated_reports`
   - `algorithms/tactical-visualizer2.0/ai_engine/stage_inputs`
   - local log files and most Python `__pycache__` directories
-  - `apps/web/public/terrain/terrain1.zip`, which was an already-expanded source archive not used by the Cesium terrain loader
-  - `apps/web/public/terrain/.tmp`, a temporary expanded terrain staging directory
+  - `apps/web/terrain/terrain1.zip`, which was an already-expanded source archive not used by the Cesium terrain loader
+  - `apps/web/terrain/.tmp`, a temporary expanded terrain staging directory
 - Notes:
-  - `.gitignore` now covers Python caches, external Tactical-Visualizer local dependencies/builds/uploads/reports/demo DB, and terrain staging archives under `apps/web/public/terrain`
+  - `.gitignore` now covers Python caches, external Tactical-Visualizer local dependencies/builds/uploads/reports/demo DB, and terrain staging archives under `apps/web/terrain`
   - retained `apps/server/data/mission-demo.sqlite*` because it is the current local demo/runtime database
-  - retained the converted Cesium terrain runtime asset under `apps/web/public/terrain` (`layer.json`, `meta.json`, level directories `0` through `14`, and `README.txt`), because the frontend reads those files for offline DEM
-  - final measured large retained payload is `apps/web/public/terrain` at about `8719.85 MB`; this is no longer duplicate archive/temp data
+  - retained the converted Cesium terrain runtime asset under the local offline terrain directory (`layer.json`, `meta.json`, level directories `0` through `14`, and `README.txt`), because the frontend reads those files for offline DEM
+  - current canonical offline terrain path is `apps/web/terrain`; legacy `apps/web/public/terrain` is only a compatibility fallback
 - Verification:
   - final cleanup snapshot confirmed removed paths for `node_modules`, `apps/web/dist`, external Tactical-Visualizer `node_modules`, `dist`, `venv`, uploads, generated reports, stage inputs, and demo DB
   - `rg` found no references to `terrain1.zip` / `terrain1` outside the terrain asset directory before deleting the archive
   - final retained directory snapshot:
-    - `apps/web/public/terrain`: `8719.85 MB`, `3557957` files
+    - offline terrain directory: about `8719.85 MB`, `3557957` files at the time of the cleanup snapshot
     - `apps/server/data`: `60.75 MB`, `3` files
     - `algorithms/tactical-visualizer2.0/ai_engine/__pycache__`: `0.04 MB`, `4` files
 - Remaining risk:
@@ -649,9 +848,9 @@ Import-preview mojibake cleanup + large web artifact cleanup completed on 2026-0
     - `apps/web/dist-check-next`
     - `apps/web/dist-check-ui`
     - `apps/web/dist-auth-check`
-    - `apps/web/public/tiles`
-  - kept `apps/web/public/dem` and `apps/web/public/terrain`
-  - updated `.gitignore` to ignore `dist-*`, `apps/web/dist-*`, and generated/sample `apps/web/public/tiles`
+    - historical `apps/web/public/tiles`
+  - kept the local DEM and terrain runtime assets; the current canonical paths are `apps/web/dem` and `apps/web/terrain`
+  - updated `.gitignore` to ignore `dist-*`, `apps/web/dist-*`, and generated/sample local tile directories
 - Verification:
   - `node apps/server/src/import-preview.test.js`
     - observed result: `4` tests passed
@@ -659,7 +858,7 @@ Import-preview mojibake cleanup + large web artifact cleanup completed on 2026-0
   - direct `node --test apps/server/src/import-preview.test.js` still failed in the current sandbox with `spawn EPERM`; direct script execution of the same test file passed
 - Remaining risk:
   - full `cmd /c npm test --workspace @mission/server` was not rerun to completion after this pass because this environment has repeatedly failed Node's test-runner child-process spawn with `EPERM`
-  - `apps/web/public/tiles` is now absent by default; run `npm run tiles:sample` or place real demo tiles back under that ignored path when offline base-map tiles are needed
+  - `apps/web/tiles` is absent by default unless generated or supplied locally; run `npm run tiles:sample` or place real demo tiles under that ignored path when offline base-map tiles are needed
 
 Project naming cleanup completed on 2026-04-15:
 

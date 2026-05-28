@@ -56,7 +56,7 @@ function submit() {
     <div class="map-service-config-panel__body">
       <p class="muted-text">
         最简单的方式是直接填写 `Cesium ion Token`。
-        保存后，在线底图会优先使用 Cesium World Imagery，在线地形会优先使用 Cesium World Terrain。
+        保存后，地图仍保持离线优先；未检测到本地 `/tiles` 或 `/terrain` 时，会自动回退到这里配置的在线影像或在线 DEM。
       </p>
 
       <label class="map-service-config-panel__field">

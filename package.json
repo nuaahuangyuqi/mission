@@ -6,10 +6,10 @@
     "apps/*"
   ],
   "scripts": {
-    "dev": "concurrently \"npm run dev --workspace @mission/server\" \"npm run dev --prefix apps\"",
-    "dev:web": "npm run dev --prefix apps",
+    "dev": "concurrently \"npm run dev --workspace @mission/server\" \"npm run dev --workspace @mission/web\"",
+    "dev:web": "npm run dev --workspace @mission/web",
     "dev:server": "npm run dev --workspace @mission/server",
-    "build": "npm run build --prefix apps && npm run build --workspace @mission/server",
+    "build": "npm run build --workspace @mission/web && npm run build --workspace @mission/server",
     "start": "node scripts/start-production.mjs",
     "tiles:sample": "powershell.exe -ExecutionPolicy Bypass -File scripts/generate-sample-tiles.ps1",
     "tiles:download": "node scripts/download-sample-tiles.mjs"

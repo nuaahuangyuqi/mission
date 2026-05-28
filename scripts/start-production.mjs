@@ -6,7 +6,8 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '..');
-const webIndex = path.join(rootDir, 'apps', 'dist', 'client', 'index.html');
+const webBuildDir = path.join(rootDir, 'apps', 'web', 'dist', 'client');
+const webIndex = path.join(webBuildDir, 'index.html');
 const isWin = process.platform === 'win32';
 const forceWebBuild = process.env.MISSION_FORCE_WEB_BUILD === '1';
 
@@ -52,12 +53,12 @@ if (shouldBuildWeb) {
       : '[start] Web build artifact is missing, building @mission/web before startup.',
   );
 
-  const buildResult = runNpm(['run', 'build', '--prefix', 'apps']);
+  const buildResult = runNpm(['run', 'build', '--workspace', '@mission/web']);
   if (buildResult.status !== 0) {
     process.exit(buildResult.status ?? 1);
   }
 } else {
-  console.log('[start] Reusing existing web build artifact at apps/dist/client.');
+  console.log('[start] Reusing existing web build artifact at apps/web/dist/client.');
 }
 
 const child = spawnNpm(['run', 'start', '--workspace', '@mission/server']);

@@ -661,7 +661,51 @@ async function handleFileChange(algorithmId, event) {
                   @change="updateAlgorithmOptions(selectedAlgorithm.id, { candidateCount: Number($event.target.value || 5) })"
                 />
               </label>
+              <label>
+                智能机降点数量
+                <input
+                  :value="resolveInput(selectedAlgorithm.id).options.landingCount"
+                  type="number"
+                  min="1"
+                  max="8"
+                  @change="updateAlgorithmOptions(selectedAlgorithm.id, { landingCount: Number($event.target.value || 5) })"
+                />
+              </label>
+              <label>
+                单个地域面积（km²）
+                <input
+                  :value="resolveInput(selectedAlgorithm.id).options.landingAreaSizeSqKm"
+                  type="number"
+                  min="0.05"
+                  max="3"
+                  step="0.05"
+                  @change="updateAlgorithmOptions(selectedAlgorithm.id, { landingAreaSizeSqKm: Number($event.target.value || 0.1) })"
+                />
+              </label>
+              <label>
+                安全距离约束（km）
+                <input
+                  :value="resolveInput(selectedAlgorithm.id).options.landingDistanceKm"
+                  type="number"
+                  min="1"
+                  max="180"
+                  step="1"
+                  @change="updateAlgorithmOptions(selectedAlgorithm.id, { landingDistanceKm: Number($event.target.value || 50) })"
+                />
+              </label>
+              <label class="full-span">
+                离线 terrain 路径（可选）
+                <input
+                  :value="resolveInput(selectedAlgorithm.id).options.terrainRoot"
+                  type="text"
+                  placeholder="默认自动使用 apps/web/terrain 或 apps/web/pubulic/terrain"
+                  @change="updateAlgorithmOptions(selectedAlgorithm.id, { terrainRoot: $event.target.value })"
+                />
+              </label>
             </div>
+            <p class="muted-text top-gap">
+              选择“智能机降算法”时，后端会直接使用系统内置 Cesium terrain 瓦片进行地形采样，不需要额外上传 GeoTIFF。
+            </p>
           </div>
 
           <div v-else-if="selectedAlgorithm.id === 'method-planning'" class="detail-card">

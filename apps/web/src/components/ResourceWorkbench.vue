@@ -267,10 +267,10 @@ function setTerrainExaggeration(value) {
 function saveOnlineMapConfig(config) {
   mapServiceConfig.value = saveMapServiceConfig(config);
   if (mapServiceConfig.value.ionToken || mapServiceConfig.value.imageryUrl || mapServiceConfig.value.token) {
-    basemap.value = 'online';
+    basemap.value = 'auto';
   }
   if (mapServiceConfig.value.ionToken || mapServiceConfig.value.terrainUrl) {
-    terrainMode.value = 'online';
+    terrainMode.value = 'offline';
   }
 }
 

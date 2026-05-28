@@ -64,7 +64,7 @@ if not "%MODE%"=="" (
 
 echo [start-backend] Starting local production backend...
 echo [start-backend] App address: http://localhost:%PORT%
-echo [start-backend] The launcher will reuse apps/dist/client when it exists.
+echo [start-backend] The launcher will reuse apps/web/dist/client when it exists.
 echo [start-backend] Press Ctrl+C to stop.
 echo.
 call npm run start

@@ -1,4 +1,4 @@
-import path from 'node:path';
+﻿import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { defineConfig } from 'vite';
 import vue from '@vitejs/plugin-vue';
@@ -10,6 +10,8 @@ const cesiumBuildRootPath = path.resolve(__dirname, 'node_modules/cesium/Build')
 const cesiumBuildPath = path.resolve(__dirname, 'node_modules/cesium/Build/Cesium');
 
 export default defineConfig({
+  envDir: path.resolve(__dirname, '..'),
+  publicDir: false,
   plugins: [
     vue(),
     cesium({
@@ -18,18 +20,9 @@ export default defineConfig({
       cesiumBaseUrl: 'cesium/',
     }),
   ],
-  server: {
-    port: 5173,
-    proxy: {
-      '/api': {
-        target: 'http://localhost:3100',
-        changeOrigin: true,
-      },
-    },
-  },
   build: {
-    outDir: 'dist/client',
-    copyPublicDir: false,
     sourcemap: false,
+    outDir: 'dist-auth-check',
+    emptyOutDir: true,
   },
 });

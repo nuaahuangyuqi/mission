@@ -9,6 +9,7 @@ MODE="${1:-dev}"
 TARGET="${2:-}"
 PORT="${PORT:-3100}"
 WEB_PORT="5173"
+WEB_DIR="${WEB_DIR:-apps/web}"
 
 print_usage() {
   cat <<'EOF'
@@ -46,15 +47,21 @@ require_command() {
 }
 
 ensure_dependencies() {
+  if [[ ! -f "$WEB_DIR/package.json" ]]; then
+    echo "[start-mac] ERROR: frontend package.json was not found at $WEB_DIR/package.json."
+    echo "[start-mac] Set WEB_DIR to the frontend package directory or restore apps/web/package.json."
+    exit 1
+  fi
+
   if [[ ! -d "node_modules" ]]; then
     echo "[start-mac] root node_modules is missing. Installing dependencies first..."
     npm install
     echo
   fi
 
-  if [[ ! -d "apps/node_modules" ]]; then
-    echo "[start-mac] apps/node_modules is missing. Installing frontend dependencies..."
-    npm install --prefix apps
+  if [[ ! -d "$WEB_DIR/node_modules" && ! -d "node_modules/vite" ]]; then
+    echo "[start-mac] $WEB_DIR/node_modules is missing. Installing frontend dependencies..."
+    npm install --prefix "$WEB_DIR"
     echo
   fi
 }

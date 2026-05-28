@@ -13,6 +13,7 @@ import {
   recordAlgorithmCall,
 } from './algorithm-gateway.js';
 import { normalizeImportedPreview } from './import-preview.js';
+import { runAirlandingPythonPipeline } from './planning-airlanding-python.js';
 import { runThreatPythonPipeline } from './planning-threat-python.js';
 
 function cloneData(value) {
@@ -174,6 +175,7 @@ function haversineDistanceKm(left = [], right = []) {
 
 const LOCAL_FILE_EXTENSIONS = ['.doc', '.docx', '.pdf', '.xls', '.xlsx', '.csv', '.txt'];
 const THREAT_LLM_METHOD_KEY = 'llm-analysis';
+const LANDING_INTELLIGENT_METHOD_KEY = 'intelligent-airlanding';
 
 const THREAT_METHODS = [
   {
@@ -398,7 +400,7 @@ function createDefaultSupportOptions() {
   };
 }
 
-const LANDING_SITE_METHODS = [
+const CLASSIC_LANDING_SITE_METHODS = [
   {
     key: 'weighted-score',
     label: '加权评分选址',
@@ -413,6 +415,15 @@ const LANDING_SITE_METHODS = [
     key: 'constraint-screening',
     label: '约束筛选优化',
     description: '先剔除高威胁和超航程候选点，再对剩余机降地域进行优化。',
+  },
+];
+
+const LANDING_SITE_METHODS = [
+  ...CLASSIC_LANDING_SITE_METHODS,
+  {
+    key: LANDING_INTELLIGENT_METHOD_KEY,
+    label: '智能机降算法',
+    description: '调用 apps/server/planning-python/airlanding_zone 中的 Python 算法，基于系统离线 terrain 瓦片、威胁场和机降需求生成可上图的机降地域。',
   },
 ];
 
@@ -1394,8 +1405,8 @@ const ALGORITHM_DEFINITIONS = [
     id: 'airborne-landing-site-selection',
     name: '机降地域优化选择',
     category: '机降选址',
-    description: '基于地形、敌方威胁分布、目标分配和直升机性能推导机降地域候选点，完成多目标评分、排序与三维展示。',
-    expectedInputs: ['敌情威胁结果', '目标分配结果', '环境要素', '直升机性能偏好'],
+    description: '基于系统离线 terrain 地形、敌方威胁分布、目标分配和直升机性能推导机降地域候选点，完成多目标评分、排序与三维展示。',
+    expectedInputs: ['敌情威胁结果', '目标分配结果', '系统离线 terrain 地形', '直升机性能偏好'],
     expectedOutputs: ['候选机降点排序', '机降地域评分', '地图标注与联动分析'],
     implementationStatus: 'implemented',
     supportedInputModes: ['upstream-result'],
@@ -1409,6 +1420,10 @@ const ALGORITHM_DEFINITIONS = [
         sitePreference: 'balanced',
         helicopterModel: 'medium-lift',
         candidateCount: 5,
+        landingCount: 5,
+        landingAreaSizeSqKm: 0.1,
+        landingDistanceKm: 50,
+        terrainRoot: '',
       },
     },
   },
@@ -7651,7 +7666,328 @@ function buildLandingLinkageAnalysis(preferredCandidate = {}, targetAllocation =
   ];
 }
 
-async function runBuiltinAirborneLandingSiteSelection(context, step, algorithm, input, dataset) {
+function scoreRatioToPercent(value = 0, digits = 1) {
+  const numericValue = Number(value || 0);
+  const percent = Math.abs(numericValue) <= 1 ? numericValue * 100 : numericValue;
+  return round(clamp(percent, 0, 100), digits);
+}
+
+function resolveAirlandingThreatCategory(node = {}) {
+  if (node.type === 'air-defense') return '防空阵地';
+  if (node.type === 'fire-coverage') return '火力节点';
+  if (node.type === 'recon-warning') return '雷达预警';
+  if (node.type === 'anti-airborne') return '步兵阵地';
+  if (node.type === 'deployment-sector') return '预备队';
+  return '综合目标';
+}
+
+function buildAirlandingThreatFactors(target = {}, node = {}) {
+  const factorSource = safeObject(target.factors);
+  const threatIndex = Number(target.threat_index || node.weight || 0.6);
+  const radiusKm = Number(node.radiusKm || target.radius_km || safeObject(target.equip_params).radius_km || 12);
+  const category = String(target.target_category || resolveAirlandingThreatCategory(node));
+  const airDefenseBoost = includesAny(category, ['防空', '导弹', '高炮']) ? 8 : 2;
+  const reconBoost = includesAny(category, ['雷达', '预警', '侦察']) ? 8 : 2;
+  const antiAirlandingBoost = includesAny(category, ['反机降', '步兵', '预备队']) ? 8 : 3;
+
+  return {
+    lethality_range_km: Number(factorSource.lethality_range_km || Math.max(radiusKm, 4)),
+    ew_erp_mw: Number(factorSource.ew_erp_mw || 0),
+    survivability_score: clamp(Number(factorSource.survivability_score || 4 + threatIndex * 4), 1, 10),
+    target_value: clamp(Number(factorSource.target_value || 4 + threatIndex * 4), 1, 10),
+    air_defense_score: clamp(Number(factorSource.air_defense_score || airDefenseBoost), 1, 10),
+    recon_warning_score: clamp(Number(factorSource.recon_warning_score || reconBoost), 1, 10),
+    anti_airlanding_score: clamp(Number(factorSource.anti_airlanding_score || antiAirlandingBoost), 1, 10),
+  };
+}
+
+function buildAirlandingPythonTargets(threatOutput = {}) {
+  const pythonTargets = safeArray(threatOutput.targetEntities)
+    .map((target, index) => {
+      const coordinates = normalizeCoordinate(target.coordinates || target.location || target.center);
+      if (!Number.isFinite(Number(coordinates[0])) || !Number.isFinite(Number(coordinates[1]))) return null;
+      return {
+        target_id: String(target.target_id || target.id || `T-${index + 1}`),
+        target_category: String(target.target_category || target.category || '综合目标'),
+        target_name: String(target.target_name || target.name || `目标 ${index + 1}`),
+        description: String(target.description || '').trim(),
+        raw_coordinates: String(target.raw_coordinates || `${coordinates[1]}, ${coordinates[0]}`),
+        lng: Number(coordinates[0]),
+        lat: Number(coordinates[1]),
+        heading_angle: Number(target.heading_angle ?? -1),
+        confidence: Number(target.confidence || 0.8),
+        threat_index: Number(target.threat_index || 0.6),
+        factors: buildAirlandingThreatFactors(target),
+        equip_params: cloneData(safeObject(target.equip_params)),
+      };
+    })
+    .filter(Boolean);
+
+  if (pythonTargets.length) return pythonTargets;
+
+  return buildThreatRiskNodes(threatOutput)
+    .map((node, index) => {
+      const coordinates = normalizeCoordinate(node.coordinates);
+      if (!Number.isFinite(Number(coordinates[0])) || !Number.isFinite(Number(coordinates[1]))) return null;
+      const target = {
+        target_id: String(node.id || `T-${index + 1}`),
+        target_category: resolveAirlandingThreatCategory(node),
+        target_name: String(node.name || `威胁节点 ${index + 1}`),
+        raw_coordinates: `${coordinates[1]}, ${coordinates[0]}`,
+        lng: Number(coordinates[0]),
+        lat: Number(coordinates[1]),
+        heading_angle: -1,
+        confidence: clamp(Number(node.weight || 0.6), 0.2, 1),
+        threat_index: clamp(Number(node.weight || 0.6), 0, 1),
+      };
+      return {
+        ...target,
+        factors: buildAirlandingThreatFactors(target, node),
+        equip_params: {
+          radius_km: Number(node.radiusKm || 0),
+        },
+      };
+    })
+    .filter(Boolean);
+}
+
+function buildAirlandingBounds(targets = [], fallbackAnchor = [120.18, 30.28, 0]) {
+  const points = safeArray(targets)
+    .map((target) => [Number(target.lng), Number(target.lat)])
+    .filter((point) => Number.isFinite(point[0]) && Number.isFinite(point[1]));
+  if (!points.length) {
+    const anchor = normalizeCoordinate(fallbackAnchor);
+    return {
+      west: round(Number(anchor[0]) - 0.3, 6),
+      south: round(Number(anchor[1]) - 0.3, 6),
+      east: round(Number(anchor[0]) + 0.3, 6),
+      north: round(Number(anchor[1]) + 0.3, 6),
+    };
+  }
+  const longitudes = points.map((point) => point[0]);
+  const latitudes = points.map((point) => point[1]);
+  const margin = points.length <= 1 ? 0.25 : 0.08;
+  return {
+    west: round(Math.min(...longitudes) - margin, 6),
+    south: round(Math.min(...latitudes) - margin, 6),
+    east: round(Math.max(...longitudes) + margin, 6),
+    north: round(Math.max(...latitudes) + margin, 6),
+  };
+}
+
+function buildAirlandingRequirements(options = {}) {
+  const landingCount = clamp(Number(options.landingCount || options.candidateCount || 5), 1, 8);
+  const areaSize = clamp(Number(options.landingAreaSizeSqKm || 0.1), 0.05, 3);
+  const areaDistance = clamp(Number(options.landingDistanceKm || 50), 1, 180);
+  const requirements = {
+    num: Math.round(landingCount),
+  };
+  for (let index = 0; index < requirements.num; index += 1) {
+    requirements[`landing_${index}`] = {
+      area_size: areaSize,
+      area_distance: areaDistance,
+    };
+  }
+  return requirements;
+}
+
+function buildAirlandingPythonPayload({
+  context = {},
+  input = {},
+  dataset = {},
+  fallbackAnchor = [120.18, 30.28, 0],
+  objectiveAnchor = [120.18, 30.28, 0],
+} = {}) {
+  const threatOutput = safeObject(context.stageOutputs?.['enemy-threat-analysis']);
+  const extractedTargets = buildAirlandingPythonTargets(threatOutput);
+  const objective = normalizeCoordinate(objectiveAnchor || fallbackAnchor);
+  const targets = extractedTargets.length ? extractedTargets : [{
+    target_id: 'DEFAULT-OBJECTIVE',
+    target_category: '综合目标',
+    target_name: '默认突击目标',
+    raw_coordinates: `${objective[1]}, ${objective[0]}`,
+    lng: Number(objective[0]),
+    lat: Number(objective[1]),
+    heading_angle: -1,
+    confidence: 0.6,
+    threat_index: 0.45,
+    factors: buildAirlandingThreatFactors({ target_category: '综合目标', threat_index: 0.45 }),
+    equip_params: {},
+  }];
+  const bounds = buildAirlandingBounds(targets, objectiveAnchor || fallbackAnchor);
+  return {
+    report_id: `planning-airlanding-${Date.now()}`,
+    bounds,
+    targets,
+    landing_requirements: buildAirlandingRequirements(input.options || {}),
+    options: cloneData(input.options || {}),
+    environment: cloneData(dataset.environment || []),
+  };
+}
+
+function normalizeAirlandingPythonCandidate(candidate = {}, index = 0) {
+  const center = safeObject(candidate.center);
+  const longitude = Number(center.lng ?? center.longitude);
+  const latitude = Number(center.lat ?? center.latitude);
+  const elevation = Number(candidate.elevation_m || candidate.refined_mean_elevation_m || 0);
+  const id = String(candidate.zone_id || candidate.candidate_id || `airlanding-candidate-${index + 1}`);
+  const name = String(candidate.zone_id || candidate.candidate_id || `智能候选机降区 ${index + 1}`);
+  const terrainScore = Number(candidate.refined_terrain_score || candidate.terrain_score || 0);
+  const surfacePenalty = Number(candidate.surface_penalty || 0);
+  const threatValue = Number(candidate.threat_value || 0);
+  const distanceScore = Number(candidate.distance_score || 0);
+  const compositeScore = scoreRatioToPercent(candidate.composite_score);
+  return {
+    id,
+    name,
+    rank: index + 1,
+    landingId: String(candidate.landing_id || ''),
+    candidateId: String(candidate.candidate_id || ''),
+    zoneId: String(candidate.zone_id || ''),
+    selected: Boolean(candidate.selected),
+    center: [round(longitude, 6), round(latitude, 6), round(elevation, 1)],
+    zone: safeArray(candidate.polygon)
+      .map((point) => [round(Number(point[0]), 6), round(Number(point[1]), 6), round(elevation, 1)])
+      .filter((point) => Number.isFinite(point[0]) && Number.isFinite(point[1])),
+    score: compositeScore,
+    concealment: round(clamp((1 - surfacePenalty) * 100, 0, 100), 1),
+    safety: round(clamp((1 - threatValue) * 100, 0, 100), 1),
+    assemblyEfficiency: scoreRatioToPercent(distanceScore),
+    helicopterFit: scoreRatioToPercent(terrainScore),
+    qualified: !candidate.refined_rejected && compositeScore >= 35,
+    terrainClass: String(candidate.terrain_class || 'unknown'),
+    elevationM: round(elevation, 1),
+    slopeDeg: round(Number(candidate.slope_deg || candidate.refined_max_slope_deg || 0), 2),
+    reliefM: round(Number(candidate.relief_m || candidate.refined_relief_m || 0), 2),
+    nearestThreatDistanceKm: round(Number(candidate.nearest_threat_distance_km || 0), 2),
+    nearestThreatId: String(candidate.nearest_threat_id || ''),
+    areaSizeSqKm: round(Number(candidate.area_size_sqkm || candidate.polygon_area_sqkm || 0), 4),
+    areaDistanceKm: round(Number(candidate.area_distance_km || 0), 2),
+    raw: cloneData(candidate),
+  };
+}
+
+function buildAirlandingPythonVisualization(rankedCandidates = [], preferredCandidate = null, stagingAnchor = [], objectiveAnchor = [], helicopterProfile = {}) {
+  const baseVisualization = buildLandingVisualization(rankedCandidates, preferredCandidate, stagingAnchor, objectiveAnchor, helicopterProfile);
+  const additionalZones = rankedCandidates
+    .filter((candidate) => candidate.selected && candidate.id !== preferredCandidate?.id && safeArray(candidate.zone).length >= 3)
+    .map((candidate) => ({
+      id: `landing-zone-${candidate.id}`,
+      name: `${candidate.name}机降地域`,
+      type: 'zone',
+      camp: 'neutral',
+      layerKey: 'symbols',
+      color: '#22c55e',
+      geometryType: 'polygon',
+      coordinates: candidate.zone,
+      radius: null,
+      annotation: `智能机降评分 ${candidate.score}`,
+      visible: true,
+      meta: {
+        source: 'airlanding-zone-python',
+      },
+    }));
+  return {
+    ...baseVisualization,
+    entities: [
+      ...safeArray(baseVisualization.entities),
+      ...additionalZones,
+    ],
+  };
+}
+
+function buildAirlandingPythonOutput({
+  rawResult = {},
+  input = {},
+  algorithm = {},
+  targetAllocation = {},
+  stagingAnchor = [],
+  objectiveAnchor = [],
+  helicopterProfile = {},
+}) {
+  const pipeline = safeObject(rawResult.pipeline);
+  const candidates = safeArray(pipeline.candidates).map(normalizeAirlandingPythonCandidate);
+  const selectedIds = new Set(safeArray(pipeline.zones).map((item) => String(item.zone_id || item.candidate_id || '')));
+  const rankedCandidates = sortByScore(candidates.map((candidate) => ({
+    ...candidate,
+    selected: candidate.selected || selectedIds.has(candidate.zoneId) || selectedIds.has(candidate.candidateId),
+  })), 'score').map((candidate, index) => ({
+    ...candidate,
+    rank: index + 1,
+  }));
+  const preferredCandidate = rankedCandidates.find((candidate) => candidate.selected) || rankedCandidates[0] || null;
+  const selectedCandidates = rankedCandidates.filter((candidate) => candidate.selected);
+  const averageScore = round(average(rankedCandidates.map((item) => item.score)), 1);
+  const methodLabel = findMethodLabel(algorithm.builtinMethods, input.builtinMethodKey);
+
+  return {
+    summary: `已调用智能机降算法完成 ${rankedCandidates.length} 个候选地域生成，并推荐 ${preferredCandidate?.name || '待确认'}。`,
+    outputPreview: [
+      `地形数据源：系统离线 terrain / ${pipeline.dem_source?.filename || 'terrain'}`,
+      `候选机降区 ${rankedCandidates.length} 个，优选 ${selectedCandidates.length || (preferredCandidate ? 1 : 0)} 个`,
+      preferredCandidate ? `推荐评分 ${preferredCandidate.score} / 安全 ${preferredCandidate.safety} / 地形适配 ${preferredCandidate.helicopterFit}` : '暂无可用候选点',
+    ],
+    artifacts: [
+      createArtifact('智能机降候选地域', '输出 Python airlanding_zone 算法生成的候选机降区、多指标评分和地形约束结果。'),
+      createArtifact('离线 terrain 地形采样过程', '使用系统内置 Cesium terrain 瓦片完成高程、坡度和起伏采样。'),
+      createArtifact('机降地域地图标注', '输出候选点、优选机降地域和接近航路，可直接在三维球地图展示。'),
+    ],
+    structuredOutput: {
+      implementationStatus: 'implemented',
+      builtinMethodKey: input.builtinMethodKey,
+      builtinMethodLabel: methodLabel,
+      appliedOptions: cloneData(input.options || {}),
+      helicopterProfile,
+      stagingAnchor,
+      objectiveAnchor,
+      candidateCount: Number(pipeline.candidate_count || rankedCandidates.length),
+      terrainSource: {
+        provider: String(pipeline.dem_source?.provider || 'local_cesium_terrain'),
+        dataset: String(pipeline.dem_source?.dataset || 'LOCAL_CESIUM_TERRAIN'),
+        terrainRoot: String(rawResult.integrationMeta?.terrainRoot || pipeline.dem_source?.terrain_root || ''),
+        filename: String(pipeline.dem_source?.filename || ''),
+      },
+      landingRequirements: cloneData(pipeline.landing_requirements || {}),
+      landingGroups: cloneData(pipeline.landing_groups || []),
+      warnings: safeArray(pipeline.warnings),
+      methodComparison: [{
+        methodKey: LANDING_INTELLIGENT_METHOD_KEY,
+        methodLabel,
+        bestCandidateName: preferredCandidate?.name || '--',
+        score: preferredCandidate?.score || 0,
+        averageScore,
+        qualifiedCount: rankedCandidates.filter((item) => item.qualified).length,
+      }],
+      rankedCandidates,
+      selectedCandidates,
+      preferredCandidateId: preferredCandidate?.id || '',
+      preferredCandidate,
+      linkageAnalysis: buildLandingLinkageAnalysis(preferredCandidate || {}, targetAllocation, helicopterProfile),
+      visualization: buildAirlandingPythonVisualization(rankedCandidates, preferredCandidate, stagingAnchor, objectiveAnchor, helicopterProfile),
+      processTrace: safeArray(rawResult.processEvents).map((event) => ({
+        emittedAt: String(event.emittedAt || ''),
+        phase: String(event.phase || ''),
+        channel: String(event.channel || 'process'),
+        level: String(event.level || 'info'),
+        title: String(event.title || ''),
+        message: String(event.message || ''),
+        data: cloneData(event.data || {}),
+      })),
+      terminalOutput: safeArray(rawResult.processEvents)
+        .filter((event) => event.channel === 'terminal' || String(event.phase || '').includes(':stream'))
+        .map((event) => String(event.message || ''))
+        .filter(Boolean),
+      sourceCompatibility: {
+        source: 'python-subprocess',
+        pythonProject: 'airlanding_zone',
+        terrainRoot: String(rawResult.integrationMeta?.terrainRoot || ''),
+      },
+      rawAirlandingOutput: cloneData(pipeline),
+    },
+  };
+}
+
+async function runBuiltinAirborneLandingSiteSelection(context, step, algorithm, input, dataset, runtime = {}) {
   const threatOutput = safeObject(context.stageOutputs['enemy-threat-analysis']);
   const forceGrouping = safeObject(context.stageOutputs['force-grouping']);
   const targetAllocation = safeObject(context.stageOutputs['target-allocation']);
@@ -7663,6 +7999,30 @@ async function runBuiltinAirborneLandingSiteSelection(context, step, algorithm, 
   const threatNodes = buildThreatRiskNodes(threatOutput);
   const threatCenter = buildWeightedCenter(threatNodes, objectiveAnchor);
   const helicopterProfile = buildHelicopterProfile(input.options.helicopterModel);
+
+  if (input.builtinMethodKey === LANDING_INTELLIGENT_METHOD_KEY) {
+    const rawResult = await runAirlandingPythonPipeline({
+      payload: buildAirlandingPythonPayload({
+        context,
+        input,
+        dataset,
+        fallbackAnchor,
+        objectiveAnchor,
+      }),
+      onProgress: runtime.onProgress,
+      timeoutMs: Number(input.options.pythonTimeoutMs || 600000),
+    });
+    return buildAirlandingPythonOutput({
+      rawResult,
+      input,
+      algorithm,
+      targetAllocation,
+      stagingAnchor,
+      objectiveAnchor,
+      helicopterProfile,
+    });
+  }
+
   const candidateCount = clamp(Number(input.options.candidateCount || 5), 3, 8);
   const rawCandidates = buildLandingSeedCandidates(
     stagingAnchor,
@@ -7680,13 +8040,13 @@ async function runBuiltinAirborneLandingSiteSelection(context, step, algorithm, 
     helicopterProfile,
   ));
 
-  const evaluatedByMethod = Object.fromEntries(LANDING_SITE_METHODS.map((method) => [
+  const evaluatedByMethod = Object.fromEntries(CLASSIC_LANDING_SITE_METHODS.map((method) => [
     method.key,
     evaluateLandingCandidates(rawCandidates, method.key, input.options.sitePreference),
   ]));
   const rankedCandidates = evaluatedByMethod[input.builtinMethodKey] || evaluatedByMethod['weighted-score'] || [];
   const preferredCandidate = rankedCandidates[0] || null;
-  const methodComparison = LANDING_SITE_METHODS.map((method) => {
+  const methodComparison = CLASSIC_LANDING_SITE_METHODS.map((method) => {
     const candidates = evaluatedByMethod[method.key] || [];
     const best = candidates[0] || null;
     return {
