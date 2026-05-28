@@ -2,6 +2,29 @@
 
 Updated: 2026-05-28
 
+Offline terrain dark-band and overlay occlusion fix completed on 2026-05-28:
+
+- Files:
+  - `apps/web/src/components/CesiumGlobe.vue`
+  - `README.md`
+  - `开发指南.md`
+  - `agent.md`
+- Notes:
+  - after offline DEM was enabled, `refreshTerrain()` restored Cesium globe lighting and terrain depth testing for all non-flat terrain
+  - globe lighting could produce a visible dark day/night terminator band over the imagery, especially on the offline terrain package
+  - global terrain depth testing could hide planned routes, labels, polygons, and tactical overlays behind local DEM geometry
+  - `refreshTerrain()` now keeps `viewer.scene.globe.enableLighting` and `viewer.scene.globe.depthTestAgainstTerrain` disabled after assigning the terrain provider; terrain relief remains geometry-based, while tactical map readability stays consistent
+- Verification:
+  - `npm run build --workspace @mission/web`
+    - observed result: build succeeded; Vite still emits the existing large chunk warning
+  - `npm test --workspace @mission/server`
+    - observed result: 13 tests passed
+  - Browser verification on `http://localhost:5173/data-service`
+    - observed result: 专题态势子模块 loaded with `当前地形：离线 DEM / /terrain`; the map no longer showed the large dark vertical band and overlays were visible above the terrain
+    - observed result: browser console warnings/errors list was empty during the verification pass
+- Remaining risk:
+  - the local imagery source still has its own tile coverage and color differences; this fix targets Cesium lighting/depth artifacts, not offline imagery data completeness
+
 Offline terrain black-screen follow-up fix completed on 2026-05-28:
 
 - Files:

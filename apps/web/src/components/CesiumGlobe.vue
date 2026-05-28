@@ -1641,8 +1641,11 @@ async function refreshTerrain() {
   }
 
   viewer.terrainProvider = provider;
-  viewer.scene.globe.depthTestAgainstTerrain = resolvedMode !== 'flat';
-  viewer.scene.globe.enableLighting = resolvedMode !== 'flat';
+  // Keep the tactical map readable: terrain relief still comes from geometry,
+  // while globe lighting can create dark terminator bands and depth testing can
+  // hide planned routes, labels, and overlays behind local DEM tiles.
+  viewer.scene.globe.depthTestAgainstTerrain = false;
+  viewer.scene.globe.enableLighting = false;
 
   terrainState.value = {
     requested: props.terrainMode,

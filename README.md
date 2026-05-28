@@ -96,6 +96,7 @@
   - 底图 `自动` 模式下优先使用离线瓦片，没有离线瓦片时再尝试在线影像
   - 地形默认读取 `apps/web/terrain` 暴露出的 `/terrain/layer.json`；未检测到离线地形时会尝试在线 DEM，再回退到平面椭球
   - 本地 Cesium terrain 的 `layer.json` 会在开发服务和生产服务中自动修正：系统会根据真实 `.terrain` 文件生成 Cesium 可用的 `available` 范围，并移除会让 Cesium 忽略该范围的 `metadataAvailability`；前端读取离线地形时会关闭瓦片内 metadata 解析，避免部分转换工具生成的 metadata 扩展导致根瓦片加载失败
+  - 三维地球启用离线 DEM 后会保持全局光照和地形深度测试关闭，避免离线影像出现大块明暗分界，也避免路线、标签和标绘图层被地形遮挡
 - 左键重叠目标辅助选择
 - 左键拖拽单位、命令线端点、区域顶点
 - 右键元素编辑 / 删除 / 定位 / 快速创建
@@ -729,6 +730,7 @@ apps/web/terrain/0/0/0.terrain
 - `apps/web/terrain/0` 至 `apps/web/terrain/14`、`layer.json`、`meta.json` 和 `README.txt` 是当前离线 DEM 运行资产，若需要保留离线地形功能，不要删除。
 - 若离线 terrain 原始 `layer.json` 的 `available` 与实际瓦片不一致，或包含 `metadataAvailability`，启动后的 `/terrain/layer.json` / `/dem/layer.json` 会动态返回修正版；响应头 `X-Mission-Terrain-Layer: repaired` 表示当前已启用该兼容修复。
 - 离线 terrain provider 会显式关闭 `requestMetadata`，因为当前本地瓦片已通过修正版 `layer.json` 提供顶层可用性；继续解析瓦片内部 metadata 可能导致 Cesium 根瓦片加载异常，表现为离线 DEM 黑屏。
+- 地形渲染完成后，前端会显式保持 `enableLighting=false` 和 `depthTestAgainstTerrain=false`；前者避免离线地图被太阳光照终止线压暗，后者保证态势标绘、命令线、标签和规划结果不会被 DEM 表面遮住。
 - 智能任务规划中的 `智能机降算法` 也会读取同一套 Cesium terrain 数据用于地形采样；它不读取原始 `.dem/.tif` 栅格，也不要求在前端上传 GeoTIFF。
 - `apps/web/terrain/.tmp/` 是地形转换或解压过程的临时目录，`apps/web/terrain/**/*.zip` 是转换完成后的原始压缩包副本；它们不被前端运行时读取，已加入忽略规则，可作为瘦身对象清理。
 
