@@ -55,6 +55,34 @@ function isFiniteNumber(value) {
   return Number.isFinite(Number(value));
 }
 
+function normalizeOverlayBounds(bounds = {}) {
+  if (Array.isArray(bounds) && bounds.length >= 4) {
+    const [west, south, east, north] = bounds.map(Number);
+    return Number.isFinite(west)
+      && Number.isFinite(south)
+      && Number.isFinite(east)
+      && Number.isFinite(north)
+      && east > west
+      && north > south
+      ? { west, south, east, north }
+      : null;
+  }
+
+  const source = safeObject(bounds);
+  const west = Number(source.west ?? source.minLon ?? source.minX);
+  const south = Number(source.south ?? source.minLat ?? source.minY);
+  const east = Number(source.east ?? source.maxLon ?? source.maxX);
+  const north = Number(source.north ?? source.maxLat ?? source.maxY);
+  return Number.isFinite(west)
+    && Number.isFinite(south)
+    && Number.isFinite(east)
+    && Number.isFinite(north)
+    && east > west
+    && north > south
+    ? { west, south, east, north }
+    : null;
+}
+
 function formatNumber(value, digits = 2) {
   const number = Number(value);
   if (!Number.isFinite(number)) return '--';
@@ -82,6 +110,29 @@ function coordinateOf(target = {}) {
 
 function colorForCategory(category) {
   return CATEGORY_STYLES[category]?.color || '#a3e635';
+}
+
+function normalizeMapEntity(entity = {}) {
+  if (!entity || typeof entity !== 'object') return entity;
+  const geometryType = String(entity.geometryType || '');
+  const isKnownLayer = ['units', 'detection', 'symbols', 'orders', 'environment'].includes(entity.layerKey);
+  if (isKnownLayer) return entity;
+  const layerKey = geometryType === 'circle'
+    ? 'detection'
+    : geometryType === 'polygon'
+      ? 'symbols'
+      : 'units';
+  const targetId = entity.meta?.targetId || entity.targetId || String(entity.id || '').replace(/^threat-(target|coverage)-/, '');
+  const targetCategory = entity.meta?.targetCategory || entity.meta?.category || entity.target_category || entity.category;
+  return {
+    ...entity,
+    layerKey,
+    meta: {
+      ...(entity.meta || {}),
+      targetId,
+      targetCategory: CATEGORY_STYLES[targetCategory]?.label || targetCategory,
+    },
+  };
 }
 
 function normalizeTargets(threatField = {}) {
@@ -174,6 +225,7 @@ function resolveRows(section) {
 }
 
 const threatFieldData = computed(() => safeObject(props.threatField));
+const displayEntities = computed(() => safeArray(props.entities).map(normalizeMapEntity));
 const threatTargets = computed(() => normalizeTargets(threatFieldData.value));
 const categories = computed(() => {
   const grouped = new Map();
@@ -210,7 +262,7 @@ const rankedTargets = computed(() => (
   [...filteredTargets.value].sort((left, right) => Number(right.threat_index || 0) - Number(left.threat_index || 0))
 ));
 const filteredEntities = computed(() => {
-  const entities = safeArray(props.entities);
+  const entities = displayEntities.value;
   const targetEntities = filterByTargetCategory(
     entities.filter((entity) => (
       entity.id?.startsWith?.('threat-target-')
@@ -235,15 +287,35 @@ const filteredEntities = computed(() => {
   });
 });
 const filteredEnvironment = computed(() => {
-  if (showCoverage.value) return safeArray(props.environment);
-  return safeArray(props.environment).filter((item) => item.kind !== 'threat-heat');
+  if (showHeatmap.value) return safeArray(props.environment);
+  return safeArray(props.environment).filter((item) => item.kind !== 'threat-heat' && item.type !== 'threat-heat');
 });
 const heatmapOverlay = computed(() => {
   const threatField = threatFieldData.value;
-  const bounds = safeObject(threatField.bounds || safeObject(threatField.heatmap).bounds);
+  if (!showHeatmap.value) return [];
+
+  const overlays = safeArray(threatField.imageOverlays)
+    .map((overlay, index) => {
+      const bounds = normalizeOverlayBounds(overlay.bounds || overlay.rectangle || overlay.extent);
+      const imageBase64 = overlay.imageBase64 || overlay.base64 || overlay.image;
+      if (!bounds || !imageBase64) return null;
+      return {
+        ...overlay,
+        id: overlay.id || `threat-spatial-field-${index + 1}`,
+        imageBase64,
+        bounds,
+        alpha: Number(overlay.opacity ?? overlay.alpha ?? 0.82),
+        zIndex: Number(overlay.zIndex ?? 20),
+        visible: overlay.visible !== false,
+      };
+    })
+    .filter(Boolean);
+  if (overlays.length) return overlays;
+
+  const bounds = normalizeOverlayBounds(threatField.bounds || safeObject(threatField.heatmap).bounds);
   const imageBase64 = threatField.heatmapImage || threatField.heatmapBase64 || safeObject(threatField.heatmap).base64Png;
-  if (!showHeatmap.value || !imageBase64 || !isFiniteNumber(bounds.west) || !isFiniteNumber(bounds.east)) return [];
-  return [{ id: 'threat-spatial-field', imageBase64, bounds, alpha: 0.76 }];
+  if (!imageBase64 || !bounds) return [];
+  return [{ id: 'threat-spatial-field', imageBase64, bounds, alpha: 0.82, zIndex: 20 }];
 });
 const summaryStats = computed(() => {
   const heatmap = safeObject(threatFieldData.value.heatmap);

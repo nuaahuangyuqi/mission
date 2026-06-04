@@ -1,10 +1,8 @@
 ﻿<script setup>
 import { computed, reactive, ref, watch } from 'vue';
 import CesiumGlobe from './CesiumGlobe.vue';
-import MapServiceConfigPanel from './MapServiceConfigPanel.vue';
 import { exportKml, exportViewerToPdf, exportViewerToPng } from '../utils/exporters';
 import { commandStyles, detectionSensorTypes, unitTypeGroups, zoneShapes } from '../data/situationCatalog';
-import { loadMapServiceConfig, resetMapServiceConfig, saveMapServiceConfig } from '../modules/mapServiceConfig';
 
 const props = defineProps({
   entities: { type: Array, default: () => [] },
@@ -20,7 +18,6 @@ const basemap = ref('auto');
 const mapMode = ref('3D');
 const terrainMode = ref('offline');
 const terrainExaggeration = ref(1);
-const mapServiceConfig = ref(loadMapServiceConfig());
 const activeMeasurementMode = ref('');
 const activeEntityId = ref('');
 const drawStepCount = ref(0);
@@ -80,20 +77,6 @@ function clampTerrainExaggeration(value) {
 
 function setTerrainExaggeration(value) {
   terrainExaggeration.value = clampTerrainExaggeration(value);
-}
-
-function saveOnlineMapConfig(config) {
-  mapServiceConfig.value = saveMapServiceConfig(config);
-  if (mapServiceConfig.value.ionToken || mapServiceConfig.value.imageryUrl || mapServiceConfig.value.token) {
-    basemap.value = 'auto';
-  }
-  if (mapServiceConfig.value.ionToken || mapServiceConfig.value.terrainUrl) {
-    terrainMode.value = 'offline';
-  }
-}
-
-function resetOnlineMapConfig() {
-  mapServiceConfig.value = resetMapServiceConfig();
 }
 
 watch(() => props.entities, (list) => {
@@ -566,7 +549,6 @@ function handleMeasurementStateChange(state) {
           :map-mode="mapMode"
           :terrain-mode="terrainMode"
           :terrain-exaggeration="terrainExaggeration"
-          :map-service-config="mapServiceConfig"
           :layer-visibility="layerVisibility"
           :draw-tool="drawTool"
           :active-entity-id="activeEntityId"
@@ -716,7 +698,7 @@ function handleMeasurementStateChange(state) {
         <div class="segmented-row">
           <button class="segmented" :class="{ active: basemap === 'auto' }" @click="basemap = 'auto'">自动</button>
           <button class="segmented" :class="{ active: basemap === 'offline' }" @click="basemap = 'offline'">离线瓦片</button>
-          <button class="segmented" :class="{ active: basemap === 'online' }" @click="basemap = 'online'">在线 API</button>
+          <button class="segmented" :class="{ active: basemap === 'tianditu' }" @click="basemap = 'tianditu'">天地图</button>
         </div>
       </div>
 
@@ -725,7 +707,6 @@ function handleMeasurementStateChange(state) {
         <div class="segmented-row">
           <button class="segmented" :class="{ active: terrainMode === 'flat' }" @click="terrainMode = 'flat'">平面</button>
           <button class="segmented" :class="{ active: terrainMode === 'offline' }" @click="terrainMode = 'offline'">离线 DEM</button>
-          <button class="segmented" :class="{ active: terrainMode === 'online' }" @click="terrainMode = 'online'">在线 DEM</button>
         </div>
         <div class="terrain-exaggeration-control top-gap">
           <div class="terrain-exaggeration-control__header">
@@ -753,11 +734,6 @@ function handleMeasurementStateChange(state) {
             <button class="button button-ghost" @click="setTerrainExaggeration(1)">1×</button>
           </div>
         </div>
-        <MapServiceConfigPanel
-          :model-value="mapServiceConfig"
-          @save="saveOnlineMapConfig"
-          @reset="resetOnlineMapConfig"
-        />
       </div>
 
       <div class="panel-group top-gap">

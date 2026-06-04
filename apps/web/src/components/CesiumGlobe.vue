@@ -3,7 +3,6 @@ import 'cesium/Build/Cesium/Widgets/widgets.css';
 import * as Cesium from 'cesium';
 import { onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { commandStyleMap, detectionSensorTypeMap, detectionSensorTypes, unitTypeMap } from '../data/situationCatalog';
-import { getCesiumIonToken, getEffectiveOnlineImageryConfig, getEffectiveOnlineTerrainUrl, hasCesiumIonToken } from '../modules/mapServiceConfig';
 
 const props = defineProps({
   entities: { type: Array, default: () => [] },
@@ -12,7 +11,6 @@ const props = defineProps({
   mapMode: { type: String, default: '3D' },
   terrainMode: { type: String, default: 'flat' },
   terrainExaggeration: { type: Number, default: 1 },
-  mapServiceConfig: { type: Object, default: () => ({}) },
   layerVisibility: { type: Object, required: true },
   drawTool: { type: Object, required: true },
   activeEntityId: { type: String, default: '' },
@@ -52,10 +50,14 @@ const selectionMenu = reactive({
   items: [],
 });
 
+const token = import.meta.env.VITE_TDT_TOKEN;
+const terrainUrlFromEnv = import.meta.env.VITE_TDT_TERRAIN_URL;
+
 let viewer;
 let drawHandler;
 let situationSource;
 let environmentSource;
+let imageOverlaySource;
 let draftSource;
 let measurementSource;
 let measurementDraftSource;
@@ -84,6 +86,10 @@ let offlineTerrainConfig = {
   maximumLevel: 0,
 };
 let imageOverlayLayers = [];
+let tiandituImageryProbe = {
+  ok: null,
+  checkedAt: 0,
+};
 const defaultDetectionFillLayers = [
   { scale: 0.92, alpha: 0.18 },
   { scale: 0.78, alpha: 0.14 },
@@ -1034,13 +1040,50 @@ function probeImage(url, timeout = 4000) {
   });
 }
 
+async function isTiandituImageryReachable(force = false) {
+  if (!token) return false;
+  const now = Date.now();
+  if (!force && typeof tiandituImageryProbe.ok === 'boolean' && now - tiandituImageryProbe.checkedAt < 60000) {
+    return tiandituImageryProbe.ok;
+  }
+
+  const sampleUrl = `https://t0.tianditu.gov.cn/DataServer?T=img_w&x=13&y=6&l=4&tk=${token}`;
+  const ok = await probeImage(sampleUrl, 3500);
+  tiandituImageryProbe = { ok, checkedAt: now };
+  return ok;
+}
+
 function isValidImageOverlayBounds(bounds = {}) {
-  return Number.isFinite(Number(bounds.west))
-    && Number.isFinite(Number(bounds.south))
-    && Number.isFinite(Number(bounds.east))
-    && Number.isFinite(Number(bounds.north))
-    && Number(bounds.east) > Number(bounds.west)
-    && Number(bounds.north) > Number(bounds.south);
+  const normalized = normalizeImageOverlayBounds(bounds);
+  return Boolean(normalized);
+}
+
+function normalizeImageOverlayBounds(bounds = {}) {
+  if (Array.isArray(bounds) && bounds.length >= 4) {
+    const [west, south, east, north] = bounds.map(Number);
+    return Number.isFinite(west)
+      && Number.isFinite(south)
+      && Number.isFinite(east)
+      && Number.isFinite(north)
+      && east > west
+      && north > south
+      ? { west, south, east, north }
+      : null;
+  }
+
+  const source = bounds && typeof bounds === 'object' ? bounds : {};
+  const west = Number(source.west ?? source.minLon ?? source.minX);
+  const south = Number(source.south ?? source.minLat ?? source.minY);
+  const east = Number(source.east ?? source.maxLon ?? source.maxX);
+  const north = Number(source.north ?? source.maxLat ?? source.maxY);
+  return Number.isFinite(west)
+    && Number.isFinite(south)
+    && Number.isFinite(east)
+    && Number.isFinite(north)
+    && east > west
+    && north > south
+    ? { west, south, east, north }
+    : null;
 }
 
 function resolveImageOverlayUrl(overlay = {}) {
@@ -1052,6 +1095,9 @@ function resolveImageOverlayUrl(overlay = {}) {
 }
 
 function clearImageOverlays() {
+  if (imageOverlaySource) {
+    imageOverlaySource.entities.removeAll();
+  }
   if (!viewer) {
     imageOverlayLayers = [];
     return;
@@ -1069,24 +1115,32 @@ function clearImageOverlays() {
 }
 
 function refreshImageOverlays() {
-  if (!viewer) return;
+  if (!viewer || !imageOverlaySource) return;
   clearImageOverlays();
   props.imageOverlays
     .filter((overlay) => overlay && overlay.visible !== false)
+    .slice()
+    .sort((left, right) => Number(left.zIndex || 0) - Number(right.zIndex || 0))
     .forEach((overlay) => {
       const url = resolveImageOverlayUrl(overlay);
-      const bounds = overlay.bounds || {};
+      const bounds = normalizeImageOverlayBounds(overlay.bounds || overlay.rectangle || overlay.extent);
       if (!url || !isValidImageOverlayBounds(bounds)) return;
       const rectangle = Cesium.Rectangle.fromDegrees(
-        Number(bounds.west),
-        Number(bounds.south),
-        Number(bounds.east),
-        Number(bounds.north),
+        bounds.west,
+        bounds.south,
+        bounds.east,
+        bounds.north,
       );
-      const layer = viewer.imageryLayers.addImageryProvider(
-        new Cesium.SingleTileImageryProvider({ url, rectangle }),
-      );
-      layer.alpha = Math.min(1, Math.max(0, Number(overlay.alpha ?? 0.72)));
+      const alpha = Math.min(1, Math.max(0, Number(overlay.opacity ?? overlay.alpha ?? 0.82)));
+      const provider = new Cesium.SingleTileImageryProvider({
+        url,
+        rectangle,
+        tileWidth: Number(overlay.tileWidth || 960),
+        tileHeight: Number(overlay.tileHeight || 960),
+      });
+      const layer = viewer.imageryLayers.addImageryProvider(provider);
+      layer.alpha = alpha;
+      layer.show = true;
       imageOverlayLayers.push(layer);
     });
   viewer.scene.requestRender();
@@ -1415,6 +1469,10 @@ async function detectOfflineTerrain() {
     maximumLevel: 0,
   };
 }
+function getTiandituTerrainUrl() {
+  return terrainUrlFromEnv || '';
+}
+
 async function resolveTerrainServiceUrl(rawUrl) {
   const normalized = String(rawUrl || '').trim();
   if (!normalized) return '';
@@ -1438,17 +1496,8 @@ async function resolveTerrainServiceUrl(rawUrl) {
   return '';
 }
 
-function applyCesiumIonToken() {
-  const ionToken = getCesiumIonToken(props.mapServiceConfig);
-  if (ionToken) {
-    Cesium.Ion.defaultAccessToken = ionToken;
-  }
-  return ionToken;
-}
-
-async function createImageryProviders(mode) {
+function createImageryProviders(mode) {
   const providers = [new Cesium.GridImageryProvider({ cells: 8, color: Cesium.Color.fromCssColorString('#6f8f52') })];
-  const onlineImageryConfig = getEffectiveOnlineImageryConfig(props.mapServiceConfig);
 
   if (mode === 'grid') {
     return providers;
@@ -1466,28 +1515,19 @@ async function createImageryProviders(mode) {
     return providers;
   }
 
-  if (mode === 'online' && (onlineImageryConfig.sourceType === 'ion' || onlineImageryConfig.imageryUrl)) {
-    if (onlineImageryConfig.sourceType === 'ion') {
-      applyCesiumIonToken();
-      providers.push(await Cesium.createWorldImageryAsync({
-        style: Cesium.IonWorldImageryStyle.AERIAL_WITH_LABELS,
-      }));
-      return providers;
-    }
-    providers.push(new Cesium.UrlTemplateImageryProvider({
-      url: onlineImageryConfig.imageryUrl,
-      subdomains: onlineImageryConfig.subdomains,
-      maximumLevel: onlineImageryConfig.maximumLevel,
-      credit: onlineImageryConfig.sourceLabel || 'Online Imagery',
-    }));
-    if (onlineImageryConfig.annotationUrl) {
-      providers.push(new Cesium.UrlTemplateImageryProvider({
-        url: onlineImageryConfig.annotationUrl,
-        subdomains: onlineImageryConfig.subdomains,
-        maximumLevel: onlineImageryConfig.maximumLevel,
-        credit: onlineImageryConfig.sourceLabel || 'Online Annotation',
-      }));
-    }
+  if (mode === 'tianditu' && token) {
+    providers.push(
+      new Cesium.UrlTemplateImageryProvider({
+        url: `https://t{s}.tianditu.gov.cn/DataServer?T=img_w&x={x}&y={y}&l={z}&tk=${token}`,
+        subdomains: ['0', '1', '2', '3', '4', '5', '6', '7'],
+        maximumLevel: 18,
+      }),
+      new Cesium.UrlTemplateImageryProvider({
+        url: `https://t{s}.tianditu.gov.cn/DataServer?T=cia_w&x={x}&y={y}&l={z}&tk=${token}`,
+        subdomains: ['0', '1', '2', '3', '4', '5', '6', '7'],
+        maximumLevel: 18,
+      }),
+    );
     return providers;
   }
 
@@ -1498,64 +1538,64 @@ async function refreshBasemap() {
   if (!viewer) return;
 
   clearImageOverlays();
-  const onlineImageryConfig = getEffectiveOnlineImageryConfig(props.mapServiceConfig);
-  const hasOnlineImagery = onlineImageryConfig.sourceType === 'ion' || Boolean(onlineImageryConfig.imageryUrl);
   basemapState.value = {
     requested: props.basemap,
     resolved: 'grid',
     message: '正在检测底图...',
   };
   offlineTileConfig = await detectOfflineTiles();
+  const needsTianditu = props.basemap === 'auto' || props.basemap === 'tianditu' || props.basemap === 'offline';
+  const tiandituAvailable = needsTianditu ? await isTiandituImageryReachable(props.basemap === 'tianditu') : false;
 
   let resolvedMode = props.basemap;
+  let fallbackMessage = '';
   if (resolvedMode === 'auto') {
-    resolvedMode = offlineTileConfig.available ? 'offline' : (hasOnlineImagery ? 'online' : 'grid');
+    resolvedMode = offlineTileConfig.available ? 'offline' : (tiandituAvailable ? 'tianditu' : 'grid');
+    if (!offlineTileConfig.available && token && !tiandituAvailable) {
+      fallbackMessage = '天地图瓦片当前不可用，已自动回退到网格演示底图。';
+    }
   }
 
   if (resolvedMode === 'offline' && !offlineTileConfig.available) {
-    resolvedMode = hasOnlineImagery ? 'online' : 'grid';
-    basemapState.value = {
-      requested: props.basemap,
-      resolved: resolvedMode,
-      message: '未检测到离线瓦片，已自动回退到其他底图。',
-    };
+    resolvedMode = tiandituAvailable ? 'tianditu' : 'grid';
+    fallbackMessage = tiandituAvailable
+      ? '未检测到离线瓦片，已自动回退到天地图影像。'
+      : '未检测到离线瓦片，天地图瓦片也不可用，已回退到网格演示底图。';
   }
 
-  if (resolvedMode === 'online' && !hasOnlineImagery) {
+  if (resolvedMode === 'tianditu' && !token) {
     resolvedMode = offlineTileConfig.available ? 'offline' : 'grid';
-    basemapState.value = {
-      requested: props.basemap,
-      resolved: resolvedMode,
-      message: '未配置在线影像 API，已自动回退。',
-    };
+    fallbackMessage = '未配置天地图令牌，已自动回退。';
+  }
+
+  if (resolvedMode === 'tianditu' && token && !tiandituAvailable) {
+    resolvedMode = offlineTileConfig.available ? 'offline' : 'grid';
+    fallbackMessage = resolvedMode === 'offline'
+      ? '天地图瓦片当前不可用，已回退到离线瓦片。'
+      : '天地图瓦片当前不可用，已回退到网格演示底图。';
   }
 
   viewer.imageryLayers.removeAll();
-  for (const provider of await createImageryProviders(resolvedMode)) {
+  for (const provider of createImageryProviders(resolvedMode)) {
     viewer.imageryLayers.addImageryProvider(provider);
   }
   refreshImageOverlays();
 
-  if (!basemapState.value.message || basemapState.value.message === '正在检测底图...') {
-    basemapState.value = {
-      requested: props.basemap,
-      resolved: resolvedMode,
-      message: resolvedMode === 'offline'
-        ? `当前底图：离线瓦片 .${offlineTileConfig.extension} / 级别 ${offlineTileConfig.minimumLevel}~${offlineTileConfig.maximumLevel}${offlineTileConfig.useReverseY ? ' / TMS' : ''}`
-        : resolvedMode === 'online'
-          ? `当前底图：${onlineImageryConfig.sourceLabel || '在线影像'}`
-          : '当前底图：网格演示底图',
-    };
-  }
+  basemapState.value = {
+    requested: props.basemap,
+    resolved: resolvedMode,
+    message: fallbackMessage || (resolvedMode === 'offline'
+      ? `当前底图：离线瓦片 .${offlineTileConfig.extension} / 级别 ${offlineTileConfig.minimumLevel}~${offlineTileConfig.maximumLevel}${offlineTileConfig.useReverseY ? ' / TMS' : ''}`
+      : resolvedMode === 'tianditu'
+        ? '当前底图：天地图影像'
+        : '当前底图：网格演示底图'),
+  };
 }
 
 async function createOfflineTerrainProvider() {
   return Cesium.CesiumTerrainProvider.fromUrl(offlineTerrainConfig.url, {
     requestVertexNormals: true,
     requestWaterMask: false,
-    // Local terrain uses repaired top-level availability; parsing embedded
-    // metadata without metadataAvailability breaks Cesium root tile loading.
-    requestMetadata: false,
   });
 }
 
@@ -1582,52 +1622,41 @@ async function refreshTerrain() {
 
   offlineTerrainConfig = await detectOfflineTerrain();
   let resolvedMode = props.terrainMode;
-  const onlineTerrainUrl = getEffectiveOnlineTerrainUrl(props.mapServiceConfig);
-  const hasIonTerrain = hasCesiumIonToken(props.mapServiceConfig);
-  const hasOnlineTerrain = hasIonTerrain || Boolean(onlineTerrainUrl);
   let provider = new Cesium.EllipsoidTerrainProvider();
   let message = '当前地形：平面椭球';
 
   try {
     if (resolvedMode === 'offline') {
       if (!offlineTerrainConfig.available) {
-        resolvedMode = hasOnlineTerrain ? 'online' : 'flat';
-        message = hasOnlineTerrain
-          ? '未检测到离线 DEM，正在尝试在线 DEM。'
-          : '未检测到离线 DEM，请检查 /terrain 或 /dem。';
+        resolvedMode = 'flat';
+        message = '未检测到离线 DEM，请检查 /terrain 或 /dem。';
       } else {
         provider = await createOfflineTerrainProvider();
         message = `当前地形：离线 DEM / ${offlineTerrainConfig.url}`;
       }
     }
 
-    if (resolvedMode === 'online') {
-      if (hasIonTerrain) {
-        applyCesiumIonToken();
-        provider = await Cesium.createWorldTerrainAsync();
-        message = '当前地形：Cesium World Terrain';
-      } else {
-        const terrainUrl = await resolveTerrainServiceUrl(onlineTerrainUrl);
-        if (!terrainUrl) {
-          if (offlineTerrainConfig.available) {
-            resolvedMode = 'offline';
-            provider = await createOfflineTerrainProvider();
-            message = `在线 DEM 不可用，已回退到离线 DEM / ${offlineTerrainConfig.url}`;
-          } else {
-            resolvedMode = 'flat';
-            message = '在线 DEM 不可用，已回退到平面椭球。';
-          }
+    if (resolvedMode === 'tianditu') {
+      const terrainUrl = await resolveTerrainServiceUrl(getTiandituTerrainUrl());
+      if (!terrainUrl) {
+        if (offlineTerrainConfig.available) {
+          resolvedMode = 'offline';
+          provider = await createOfflineTerrainProvider();
+          message = `在线 DEM 不可用，已回退到离线 DEM / ${offlineTerrainConfig.url}`;
         } else {
-          provider = await Cesium.CesiumTerrainProvider.fromUrl(terrainUrl, {
-            requestVertexNormals: true,
-            requestWaterMask: false,
-          });
-          message = `当前地形：在线 DEM / ${terrainUrl}`;
+          resolvedMode = 'flat';
+          message = '在线 DEM 不可用，已回退到平面椭球。';
         }
+      } else {
+        provider = await Cesium.CesiumTerrainProvider.fromUrl(terrainUrl, {
+          requestVertexNormals: true,
+          requestWaterMask: false,
+        });
+        message = '当前地形：在线 DEM';
       }
     }
   } catch {
-    if (offlineTerrainConfig.available && resolvedMode === 'online') {
+    if (offlineTerrainConfig.available && resolvedMode === 'tianditu') {
       provider = await createOfflineTerrainProvider().catch(() => new Cesium.EllipsoidTerrainProvider());
       resolvedMode = provider instanceof Cesium.EllipsoidTerrainProvider ? 'flat' : 'offline';
       message = resolvedMode === 'offline'
@@ -1641,10 +1670,7 @@ async function refreshTerrain() {
   }
 
   viewer.terrainProvider = provider;
-  // Keep the tactical map readable: terrain relief still comes from geometry,
-  // while globe lighting can create dark terminator bands and depth testing can
-  // hide planned routes, labels, and overlays behind local DEM tiles.
-  viewer.scene.globe.depthTestAgainstTerrain = false;
+  viewer.scene.globe.depthTestAgainstTerrain = resolvedMode !== 'flat';
   viewer.scene.globe.enableLighting = false;
 
   terrainState.value = {
@@ -3086,10 +3112,12 @@ onMounted(() => {
 
   situationSource = new Cesium.CustomDataSource('situation');
   environmentSource = new Cesium.CustomDataSource('environment');
+  imageOverlaySource = new Cesium.CustomDataSource('image-overlays');
   draftSource = new Cesium.CustomDataSource('draft');
   measurementSource = new Cesium.CustomDataSource('measurement');
   measurementDraftSource = new Cesium.CustomDataSource('measurement-draft');
   viewer.dataSources.add(environmentSource);
+  viewer.dataSources.add(imageOverlaySource);
   viewer.dataSources.add(situationSource);
   viewer.dataSources.add(measurementSource);
   viewer.dataSources.add(draftSource);
@@ -3115,10 +3143,6 @@ watch(() => props.terrainMode, () => {
 watch(() => props.terrainExaggeration, () => {
   applyTerrainExaggeration();
 });
-watch(() => props.mapServiceConfig, () => {
-  void refreshBasemap();
-  void refreshTerrain();
-}, { deep: true });
 watch(() => props.mapMode, (mode) => {
   if (mode === '2D') {
     void refreshTerrain();

@@ -2,8 +2,6 @@
 import * as echarts from 'echarts';
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import CesiumGlobe from './CesiumGlobe.vue';
-import MapServiceConfigPanel from './MapServiceConfigPanel.vue';
-import { loadMapServiceConfig, resetMapServiceConfig, saveMapServiceConfig } from '../modules/mapServiceConfig';
 
 const props = defineProps({
   sources: { type: Array, default: () => [] },
@@ -39,7 +37,6 @@ const basemap = ref('auto');
 const mapMode = ref('3D');
 const terrainMode = ref('offline');
 const terrainExaggeration = ref(1);
-const mapServiceConfig = ref(loadMapServiceConfig());
 const rightTab = ref('preview');
 const importType = ref('database');
 const graphKeyword = ref('');
@@ -262,20 +259,6 @@ function clampTerrainExaggeration(value) {
 
 function setTerrainExaggeration(value) {
   terrainExaggeration.value = clampTerrainExaggeration(value);
-}
-
-function saveOnlineMapConfig(config) {
-  mapServiceConfig.value = saveMapServiceConfig(config);
-  if (mapServiceConfig.value.ionToken || mapServiceConfig.value.imageryUrl || mapServiceConfig.value.token) {
-    basemap.value = 'auto';
-  }
-  if (mapServiceConfig.value.ionToken || mapServiceConfig.value.terrainUrl) {
-    terrainMode.value = 'offline';
-  }
-}
-
-function resetOnlineMapConfig() {
-  mapServiceConfig.value = resetMapServiceConfig();
 }
 
 function parsePolygonText(textValue) {
@@ -1064,12 +1047,11 @@ onBeforeUnmount(() => {
           <div class="segmented-row wrap">
             <button class="segmented" :class="{ active: basemap === 'auto' }" @click="basemap = 'auto'">自动</button>
             <button class="segmented" :class="{ active: basemap === 'offline' }" @click="basemap = 'offline'">离线</button>
-            <button class="segmented" :class="{ active: basemap === 'online' }" @click="basemap = 'online'">在线 API</button>
+            <button class="segmented" :class="{ active: basemap === 'tianditu' }" @click="basemap = 'tianditu'">天地图</button>
           </div>
           <div class="segmented-row segmented-row--compact">
             <button class="segmented" :class="{ active: terrainMode === 'flat' }" @click="terrainMode = 'flat'">平面</button>
             <button class="segmented" :class="{ active: terrainMode === 'offline' }" @click="terrainMode = 'offline'">离线 DEM</button>
-            <button class="segmented" :class="{ active: terrainMode === 'online' }" @click="terrainMode = 'online'">在线 DEM</button>
           </div>
           <div class="terrain-exaggeration-control">
             <div class="terrain-exaggeration-control__header">
@@ -1097,11 +1079,6 @@ onBeforeUnmount(() => {
               <button class="button button-ghost" @click="setTerrainExaggeration(1)">1×</button>
             </div>
           </div>
-          <MapServiceConfigPanel
-            :model-value="mapServiceConfig"
-            @save="saveOnlineMapConfig"
-            @reset="resetOnlineMapConfig"
-          />
         </div>
       </div>
 
@@ -1128,7 +1105,6 @@ onBeforeUnmount(() => {
         :map-mode="mapMode"
         :terrain-mode="terrainMode"
         :terrain-exaggeration="terrainExaggeration"
-        :map-service-config="mapServiceConfig"
         :layer-visibility="previewLayerVisibility"
         :draw-tool="inactiveDrawTool"
         active-entity-id=""

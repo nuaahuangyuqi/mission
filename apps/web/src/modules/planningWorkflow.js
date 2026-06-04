@@ -5,8 +5,6 @@ import { authState } from '../auth';
 
 const RESULT_SNAPSHOTS_STORAGE_KEY = 'mission-planning-result-history';
 const SELECTED_TASK_INSTANCE_STORAGE_KEY = 'mission-planning-selected-task-instance';
-const PLANNING_LLM_CONFIG_STORAGE_KEY = 'mission-planning-llm-config';
-const THREAT_LLM_METHOD_KEY = 'llm-analysis';
 const RESULT_SNAPSHOT_LIMIT = 20;
 const VALID_PLANNING_STAGES = ['library', 'flow', 'execute'];
 
@@ -97,43 +95,6 @@ function persistSelectedTaskInstanceId(taskId = '') {
   }
 }
 
-function createDefaultPlanningLlmConfig() {
-  return {
-    apiKey: '',
-    baseUrl: '',
-  };
-}
-
-function normalizePlanningLlmConfig(value = {}) {
-  const current = safeObject(value);
-  return {
-    apiKey: String(current.apiKey || '').trim(),
-    baseUrl: String(current.baseUrl || '').trim(),
-  };
-}
-
-function readPersistedPlanningLlmConfig() {
-  if (typeof window === 'undefined') return createDefaultPlanningLlmConfig();
-  try {
-    const raw = window.localStorage.getItem(buildScopedStorageKey(PLANNING_LLM_CONFIG_STORAGE_KEY));
-    return normalizePlanningLlmConfig(raw ? JSON.parse(raw) : {});
-  } catch {
-    return createDefaultPlanningLlmConfig();
-  }
-}
-
-function persistPlanningLlmConfig(config = {}) {
-  if (typeof window === 'undefined') return;
-  try {
-    window.localStorage.setItem(
-      buildScopedStorageKey(PLANNING_LLM_CONFIG_STORAGE_KEY),
-      JSON.stringify(normalizePlanningLlmConfig(config)),
-    );
-  } catch {
-    // ignore
-  }
-}
-
 function readFileAsArrayBuffer(file) {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -162,6 +123,24 @@ function createUploadedFilePayload(file, fileContentBase64) {
   };
 }
 
+function createExecutionStreamState() {
+  return {
+    active: false,
+    done: false,
+    progress: 0,
+    currentStepId: '',
+    currentStepName: '',
+    currentEvent: '',
+    runId: null,
+    taskCenterId: null,
+    terminalLines: [],
+    llmChunks: [],
+    stepStates: [],
+    events: [],
+    errorMessage: '',
+  };
+}
+
 const state = reactive({
   loading: false,
   calculating: false,
@@ -186,11 +165,7 @@ const state = reactive({
   selectedRunDetail: null,
   savedResultSnapshots: [],
   storageScope: '',
-  executionProcessEvents: [],
-  executionOutputEvents: [],
-  activeExecutionStep: null,
-  executionProgress: 0,
-  planningLlmConfig: createDefaultPlanningLlmConfig(),
+  executionStream: createExecutionStreamState(),
 });
 
 let persistTimer = null;
@@ -332,52 +307,6 @@ const intelligenceRecords = computed(() => state.resources.intelligence || []);
 const environmentRecords = computed(() => state.resources.environment || []);
 const extractionRecords = computed(() => state.resources.extractions || []);
 const runHistory = computed(() => state.runHistory || []);
-const executionProcessEvents = computed(() => state.executionProcessEvents || []);
-const executionOutputEvents = computed(() => {
-  if (safeArray(state.executionOutputEvents).length) {
-    return state.executionOutputEvents;
-  }
-
-  return executionSteps.value.flatMap((step) => {
-    const preview = safeArray(step.outputPreview).length ? step.outputPreview : [step.summary].filter(Boolean);
-    return preview.map((message, index) => ({
-      id: `${step.stepId || step.algorithm?.id || 'step'}-${index}`,
-      emittedAt: resultsGeneratedAt.value || '',
-      phase: 'result:preview',
-      channel: 'output',
-      level: step.structuredOutput?.implementationStatus === 'implemented' ? 'success' : 'warning',
-      title: step.algorithm?.name || step.stepName || '算法输出',
-      message,
-      step: {
-        order: step.order,
-        stepId: step.stepId,
-        stepName: step.stepName,
-        algorithmId: step.algorithm?.id,
-        algorithmName: step.algorithm?.name,
-        bindingName: step.binding?.name,
-      },
-    }));
-  });
-});
-const activeExecutionStep = computed(() => state.activeExecutionStep || null);
-const planningLlmConfig = computed(() => state.planningLlmConfig || createDefaultPlanningLlmConfig());
-const planningLlmConfigReady = computed(() => Boolean(
-  String(planningLlmConfig.value.apiKey || '').trim()
-  && String(planningLlmConfig.value.baseUrl || '').trim(),
-));
-const planningRequiresLlmConfig = computed(() => {
-  const threatStep = orderedTaskSteps.value.find((step) => step.algorithmId === 'enemy-threat-analysis');
-  if (!threatStep) return false;
-  const algorithm = getAlgorithmById('enemy-threat-analysis');
-  const requestedVariantId = normalizePlanningVariantId(
-    state.algorithmBindings?.[threatStep.id]
-    || selectedTask.value?.defaultBindings?.[threatStep.id]
-    || algorithm?.defaultVariantId
-    || '',
-  );
-  if (!requestedVariantId.endsWith(':builtin')) return false;
-  return getAlgorithmInput('enemy-threat-analysis').builtinMethodKey === THREAT_LLM_METHOD_KEY;
-});
 
 const resourceSummary = computed(() => ({
   sourceCount: sourceOptions.value.length,
@@ -442,52 +371,6 @@ function markResultsDirty() {
   state.resultsDirty = true;
 }
 
-function normalizeExecutionEvent(rawEvent = {}) {
-  const step = safeObject(rawEvent.step);
-  return {
-    id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    type: String(rawEvent.type || 'progress'),
-    emittedAt: String(rawEvent.emittedAt || new Date().toISOString()),
-    phase: String(rawEvent.phase || ''),
-    channel: String(rawEvent.channel || 'process'),
-    level: String(rawEvent.level || 'info'),
-    title: String(rawEvent.title || ''),
-    message: String(rawEvent.message || ''),
-    progress: Number.isFinite(Number(rawEvent.progress)) ? Number(rawEvent.progress) : null,
-    preview: safeArray(rawEvent.preview),
-    step: Object.keys(step).length ? step : null,
-    runId: rawEvent.runId || null,
-  };
-}
-
-function resetExecutionWorkbench() {
-  state.executionProcessEvents = [];
-  state.executionOutputEvents = [];
-  state.activeExecutionStep = null;
-  state.executionProgress = 0;
-}
-
-function appendExecutionWorkbenchEvent(rawEvent = {}) {
-  const event = normalizeExecutionEvent(rawEvent);
-  const targetKey = event.channel === 'output' ? 'executionOutputEvents' : 'executionProcessEvents';
-  state[targetKey] = [...safeArray(state[targetKey]), event].slice(-160);
-  if (event.step) {
-    state.activeExecutionStep = event.step;
-  }
-  if (event.progress !== null) {
-    state.executionProgress = Math.max(0, Math.min(100, event.progress));
-  }
-}
-
-function setPlanningLlmConfig(patch = {}) {
-  state.planningLlmConfig = normalizePlanningLlmConfig({
-    ...safeObject(state.planningLlmConfig),
-    ...safeObject(patch),
-  });
-  persistPlanningLlmConfig(state.planningLlmConfig);
-  clearError();
-}
-
 function formatPlanningError(error) {
   const type = String(error?.type || '').trim();
   const message = String(error?.message || '智能任务规划失败。');
@@ -496,6 +379,151 @@ function formatPlanningError(error) {
   if (type === 'permission_denied') return `权限不足：${message}`;
   if (type === 'algorithm_failed') return `算法执行失败：${message}`;
   return message;
+}
+
+function resetExecutionStream() {
+  state.executionStream = createExecutionStreamState();
+}
+
+function pushExecutionEvent(eventType, payload = {}) {
+  const entry = {
+    type: eventType,
+    timestamp: payload.timestamp || new Date().toISOString(),
+    message: payload.message || payload.summary || '',
+  };
+  state.executionStream.events = [...state.executionStream.events, entry].slice(-120);
+  state.executionStream.currentEvent = eventType;
+}
+
+function updateStreamStep(stepId, patch = {}) {
+  const normalizedStepId = String(stepId || patch.stepId || '');
+  if (!normalizedStepId) return;
+  const list = [...safeArray(state.executionStream.stepStates)];
+  const index = list.findIndex((item) => item.stepId === normalizedStepId);
+  const next = {
+    ...(index >= 0 ? list[index] : {}),
+    stepId: normalizedStepId,
+    stepName: patch.stepName || (index >= 0 ? list[index].stepName : ''),
+    algorithmId: patch.algorithmId || (index >= 0 ? list[index].algorithmId : ''),
+    bindingName: patch.bindingName || (index >= 0 ? list[index].bindingName : ''),
+    order: patch.order ?? (index >= 0 ? list[index].order : list.length + 1),
+    status: patch.status || (index >= 0 ? list[index].status : 'pending'),
+    summary: patch.summary || (index >= 0 ? list[index].summary : ''),
+    durationMs: patch.durationMs ?? (index >= 0 ? list[index].durationMs : null),
+  };
+  if (index >= 0) {
+    list[index] = next;
+  } else {
+    list.push(next);
+  }
+  state.executionStream.stepStates = list.sort((left, right) => {
+    const leftOrder = Number(left.order || 0);
+    const rightOrder = Number(right.order || 0);
+    return leftOrder - rightOrder;
+  });
+}
+
+function appendTerminalLine(payload = {}) {
+  const rawMessage = String(payload.message || payload.raw || '').trimEnd();
+  if (!rawMessage) return;
+  const lines = rawMessage.split(/\r?\n/).filter(Boolean).map((line) => ({
+    timestamp: payload.timestamp || new Date().toISOString(),
+    stepName: payload.stepName || state.executionStream.currentStepName || '',
+    stream: payload.stream || 'terminal',
+    message: line,
+  }));
+  state.executionStream.terminalLines = [...state.executionStream.terminalLines, ...lines].slice(-320);
+}
+
+function appendLlmChunk(payload = {}) {
+  const content = String(payload.content || payload.raw || '');
+  if (!content) return;
+  let chunks = [...state.executionStream.llmChunks, {
+    timestamp: payload.timestamp || new Date().toISOString(),
+    stepName: payload.stepName || state.executionStream.currentStepName || '',
+    content,
+  }];
+  while (chunks.reduce((total, item) => total + String(item.content || '').length, 0) > 16000) {
+    chunks = chunks.slice(1);
+  }
+  state.executionStream.llmChunks = chunks;
+}
+
+function handlePlanningStreamEvent(eventType, payload = {}) {
+  pushExecutionEvent(eventType, payload);
+  if (payload.runId) state.executionStream.runId = Number(payload.runId);
+  if (payload.taskCenterId) state.executionStream.taskCenterId = Number(payload.taskCenterId);
+
+  if (eventType === 'run-start') {
+    state.executionStream.active = true;
+    state.executionStream.done = false;
+    state.executionStream.currentEvent = payload.phase || eventType;
+    state.executionStream.progress = Math.max(state.executionStream.progress, 1);
+    appendTerminalLine({ ...payload, stream: 'system', message: payload.phase === 'created' ? '规划执行记录已创建。' : '规划流式执行已启动。' });
+    return;
+  }
+
+  if (eventType === 'validation') {
+    state.executionStream.active = true;
+    state.executionStream.progress = payload.status === 'succeeded' ? Math.max(state.executionStream.progress, 6) : Math.max(state.executionStream.progress, 3);
+    appendTerminalLine({ ...payload, stream: 'system', message: payload.message || '规划前置校验更新。' });
+    return;
+  }
+
+  if (eventType === 'step-start') {
+    state.executionStream.active = true;
+    state.executionStream.currentStepId = payload.stepId || '';
+    state.executionStream.currentStepName = payload.stepName || '';
+    updateStreamStep(payload.stepId, { ...payload, status: 'running' });
+    appendTerminalLine({ ...payload, stream: 'system', message: `开始执行：${payload.stepName || payload.algorithmName || '规划步骤'}` });
+    return;
+  }
+
+  if (eventType === 'progress') {
+    state.executionStream.progress = Math.max(0, Math.min(100, Number(payload.progress || state.executionStream.progress)));
+    state.executionStream.currentStepId = payload.currentStepId || state.executionStream.currentStepId;
+    state.executionStream.currentStepName = payload.currentStepName || state.executionStream.currentStepName;
+    return;
+  }
+
+  if (eventType === 'terminal') {
+    appendTerminalLine(payload);
+    return;
+  }
+
+  if (eventType === 'llm-chunk') {
+    appendLlmChunk(payload);
+    return;
+  }
+
+  if (eventType === 'step-complete') {
+    state.executionStream.progress = Math.max(state.executionStream.progress, Number(payload.progress || 0));
+    updateStreamStep(payload.stepId, { ...payload, status: 'completed' });
+    appendTerminalLine({ ...payload, stream: 'system', message: `完成步骤：${payload.stepName || '规划步骤'}。${payload.summary || ''}` });
+    return;
+  }
+
+  if (eventType === 'final') {
+    state.results = payload;
+    state.resultsDirty = false;
+    state.activeResultRunId = Number(payload?.runId || 0) || null;
+    state.executionStream.progress = 100;
+    appendTerminalLine({ ...payload, stream: 'system', message: '规划结果已生成并归档。' });
+    return;
+  }
+
+  if (eventType === 'error') {
+    state.executionStream.errorMessage = payload.message || '规划执行失败。';
+    if (payload.stepId) updateStreamStep(payload.stepId, { ...payload, status: 'failed', summary: payload.message || '' });
+    appendTerminalLine({ ...payload, stream: 'error', message: payload.message || '规划执行失败。' });
+    return;
+  }
+
+  if (eventType === 'done') {
+    state.executionStream.active = false;
+    state.executionStream.done = true;
+    if (payload.status === 'succeeded') state.executionStream.progress = 100;
+  }
 }
 
 function applyTaskInstanceToState(instance) {
@@ -507,10 +535,10 @@ function applyTaskInstanceToState(instance) {
     state.planningStageKey = 'library';
     state.results = null;
     state.resultsDirty = true;
-    resetExecutionWorkbench();
     state.runHistory = [];
     state.activeResultRunId = null;
     state.selectedRunDetail = null;
+    resetExecutionStream();
     persistSelectedTaskInstanceId('');
     return;
   }
@@ -524,9 +552,9 @@ function applyTaskInstanceToState(instance) {
   state.algorithmInputs = mergeAlgorithmInputsWithDefaults(instance.planningAlgorithmInputs || {});
   state.results = null;
   state.resultsDirty = true;
-  resetExecutionWorkbench();
   state.activeResultRunId = null;
   state.selectedRunDetail = null;
+  resetExecutionStream();
   persistSelectedTaskInstanceId(String(instance.id));
 }
 
@@ -619,7 +647,6 @@ async function replayTaskRun(runId, { silent = false } = {}) {
   state.selectedRunDetail = detail;
   const resultPayload = detail?.result?.resultPayload;
   if (resultPayload && typeof resultPayload === 'object') {
-    resetExecutionWorkbench();
     state.results = cloneData(resultPayload);
     state.resultsDirty = false;
     state.activeResultRunId = Number(runId);
@@ -681,7 +708,6 @@ async function initializePlanningWorkflow(force = false) {
   clearError();
   state.storageScope = nextScope;
   state.savedResultSnapshots = readPersistedResultSnapshots();
-  state.planningLlmConfig = readPersistedPlanningLlmConfig();
 
   state.initializingPromise = Promise.all([loadPlanningTemplate(), loadPlanningResources()])
     .then(() => loadPlanningTaskInstances({ preserveSelection: true }))
@@ -774,19 +800,20 @@ async function calculatePlanningAssessment() {
   }
 
   state.calculating = true;
-  resetExecutionWorkbench();
   clearError();
+  resetExecutionStream();
 
   try {
     await persistCurrentTaskConfig({ silent: true });
     const response = await api.evaluatePlanningStream(
-      {
-        taskCenterId: state.selectedTaskInstanceId,
-        assessmentName: state.assessmentName,
-        llmConfig: planningRequiresLlmConfig.value ? normalizePlanningLlmConfig(state.planningLlmConfig) : {},
-      },
-      { onEvent: appendExecutionWorkbenchEvent },
+      { taskCenterId: state.selectedTaskInstanceId, assessmentName: state.assessmentName },
+      { onEvent: handlePlanningStreamEvent },
     );
+    if (!response) {
+      const streamError = new Error(state.executionStream.errorMessage || '规划执行流未返回最终结果。');
+      streamError.type = 'algorithm_failed';
+      throw streamError;
+    }
 
     state.results = response;
     state.resultsDirty = false;
@@ -796,16 +823,10 @@ async function calculatePlanningAssessment() {
     await loadTaskRuns(state.selectedTaskInstanceId);
     if (state.activeResultRunId) await replayTaskRun(state.activeResultRunId, { silent: true });
   } catch (error) {
+    state.executionStream.active = false;
+    state.executionStream.done = true;
+    state.executionStream.errorMessage = state.executionStream.errorMessage || error.message || '规划执行失败。';
     state.errorMessage = formatPlanningError(error);
-    appendExecutionWorkbenchEvent({
-      type: 'error',
-      phase: 'client:error',
-      channel: 'process',
-      level: 'error',
-      title: '执行请求失败',
-      message: state.errorMessage,
-      progress: state.executionProgress || 100,
-    });
     throw error;
   } finally {
     state.calculating = false;
@@ -958,7 +979,10 @@ function removeAlgorithmFile(algorithmId, fileId) {
 
 function resolveOutputPackageContent(outputPackage = {}) {
   if (typeof outputPackage.contentBase64 === 'string' && outputPackage.contentBase64) {
-    const binary = window.atob(outputPackage.contentBase64);
+    const encoded = outputPackage.contentBase64.includes(',')
+      ? outputPackage.contentBase64.slice(outputPackage.contentBase64.indexOf(',') + 1)
+      : outputPackage.contentBase64;
+    const binary = window.atob(encoded);
     const bytes = new Uint8Array(binary.length);
     for (let index = 0; index < binary.length; index += 1) {
       bytes[index] = binary.charCodeAt(index);
@@ -1016,8 +1040,12 @@ function saveCurrentResultSnapshot() {
 
 function downloadResultPackage(packageKey) {
   const outputPackage = safeObject(resultOutputPackages.value[packageKey]);
+  downloadPlanningFile(outputPackage);
+}
+
+function downloadPlanningFile(outputPackage = {}) {
   if (!outputPackage.fileName) {
-    throw new Error('当前没有可导出的规划输出包。');
+    throw new Error('当前没有可导出的文件。');
   }
 
   triggerPackageDownload(outputPackage);
@@ -1025,7 +1053,7 @@ function downloadResultPackage(packageKey) {
 }
 
 function formatVariantType(type) {
-  return type === 'external-model' ? '外部算法工程' : '内置算法';
+  return type === 'external-model' ? '扩展算法实现' : '内置算法';
 }
 
 function formatStatusLabel(status) {
@@ -1074,11 +1102,6 @@ export function usePlanningWorkflow() {
     environmentRecords,
     extractionRecords,
     runHistory,
-    executionProcessEvents,
-    executionOutputEvents,
-    activeExecutionStep,
-    planningLlmConfig,
-    planningLlmConfigReady,
     resourceSummary,
     workflowSummary,
     initializePlanningWorkflow,
@@ -1090,6 +1113,7 @@ export function usePlanningWorkflow() {
     calculatePlanningAssessment,
     saveCurrentResultSnapshot,
     downloadResultPackage,
+    downloadPlanningFile,
     setPlanningStage,
     setAssessmentName,
     setSelectedTask,
@@ -1101,7 +1125,6 @@ export function usePlanningWorkflow() {
     toggleAlgorithmSource,
     updateAlgorithmOptions,
     updateAlgorithmRuntimeOptions,
-    setPlanningLlmConfig,
     addAlgorithmFiles,
     removeAlgorithmFile,
     getAlgorithmInput,

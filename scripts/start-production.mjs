@@ -6,8 +6,7 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const rootDir = path.resolve(__dirname, '..');
-const webBuildDir = path.join(rootDir, 'apps', 'web', 'dist', 'client');
-const webIndex = path.join(webBuildDir, 'index.html');
+const webIndex = path.join(rootDir, 'apps', 'web', 'dist', 'client', 'index.html');
 const isWin = process.platform === 'win32';
 const forceWebBuild = process.env.MISSION_FORCE_WEB_BUILD === '1';
 

@@ -13,11 +13,8 @@ const {
   selectedTask,
   selectedTaskInstance,
   workflowSummary,
-  planningLlmConfig,
-  planningLlmConfigReady,
   initializePlanningWorkflow,
   selectTaskInstance,
-  setPlanningLlmConfig,
 } = usePlanningWorkflow();
 
 const moduleItems = [
@@ -161,40 +158,6 @@ watch(() => route.query.taskId, async (taskIdValue) => {
           <p v-else-if="!state.results" class="muted-text">尚未生成任务规划结果。</p>
           <p v-else-if="state.resultsDirty" class="muted-text">参数已变更，请重新生成规划结果。</p>
           <p v-if="state.errorMessage" class="muted-text module-topbar__error">{{ state.errorMessage }}</p>
-        </div>
-      </div>
-
-      <div class="planning-llm-config-panel">
-        <div class="planning-llm-config-panel__head">
-          <div>
-            <span class="eyebrow">LLM API</span>
-            <strong>大模型接口配置</strong>
-          </div>
-          <span class="pill" :class="planningLlmConfigReady ? 'pill-active' : 'pill-muted'">
-            {{ planningLlmConfigReady ? '已配置' : '待填写' }}
-          </span>
-        </div>
-
-        <div class="planning-llm-config-panel__fields">
-          <label>
-            API Key
-            <input
-              :value="planningLlmConfig.apiKey"
-              type="password"
-              autocomplete="off"
-              placeholder="请输入大模型 API Key"
-              @input="setPlanningLlmConfig({ apiKey: $event.target.value })"
-            />
-          </label>
-          <label>
-            Base URL
-            <input
-              :value="planningLlmConfig.baseUrl"
-              type="text"
-              placeholder="https://your-llm-provider.example/v1"
-              @input="setPlanningLlmConfig({ baseUrl: $event.target.value })"
-            />
-          </label>
         </div>
       </div>
     </header>

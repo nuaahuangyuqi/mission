@@ -14,9 +14,6 @@ const {
   resultOutputPackages,
   resultsGeneratedAt,
   runHistory,
-  executionProcessEvents,
-  executionOutputEvents,
-  activeExecutionStep,
   savedResultSnapshotCount,
   latestSavedResultSnapshot,
   loadTaskRuns,
@@ -33,6 +30,17 @@ const availablePackageCount = computed(() => ['storageSnapshot', 'reportExport',
   .filter((key) => outputPackages.value?.[key]).length);
 const implementedStepCount = computed(() => executionSteps.value
   .filter((item) => item.structuredOutput?.implementationStatus === 'implemented').length);
+const streamState = computed(() => state.executionStream || {});
+const streamPanelVisible = computed(() => Boolean(
+  streamState.value.active
+  || streamState.value.done
+  || streamState.value.terminalLines?.length
+  || streamState.value.llmChunks?.length
+  || streamState.value.stepStates?.length,
+));
+const llmStreamText = computed(() => (streamState.value.llmChunks || [])
+  .map((item) => item.content)
+  .join(''));
 
 const executionStateLabel = computed(() => {
   if (state.calculating) return '执行中';
@@ -47,9 +55,9 @@ const packageCards = computed(() => [
     label: outputPackages.value.storageSnapshot?.label || '结构化结果快照',
     format: outputPackages.value.storageSnapshot?.format || 'json',
     meta: `本地已保存 ${savedResultSnapshotCount.value} 份`,
-    actionLabel: '保存快照',
+    actionLabel: '导出快照',
     enabled: Boolean(outputPackages.value.storageSnapshot?.data),
-    action: handleSaveSnapshot,
+    action: () => handleDownloadPackage('storageSnapshot'),
   },
   {
     key: 'reportExport',
@@ -86,9 +94,7 @@ const packageCards = computed(() => [
 const resultStepCards = computed(() => executionSteps.value.map((item) => {
   const structuredOutput = item.structuredOutput || {};
   const status = structuredOutput.implementationStatus === 'implemented' ? '已实现' : '规划中';
-  const preview = Array.isArray(item.outputPreview) && item.outputPreview.length
-    ? item.outputPreview
-    : [item.summary].filter(Boolean);
+  const preview = resolveStepPreview(item);
   return {
     ...item,
     status,
@@ -98,73 +104,21 @@ const resultStepCards = computed(() => executionSteps.value.map((item) => {
   };
 }));
 
-const processWorkbenchEvents = computed(() => {
-  if (executionProcessEvents.value.length) {
-    return executionProcessEvents.value;
+function resolveStepPreview(item = {}) {
+  const output = item.structuredOutput || {};
+  if (item.algorithm?.id === 'force-grouping') {
+    const preferred = output.preferredScheme || {};
+    const preferredLabel = preferred.name || preferred.methodLabel || '--';
+    return [
+      `推荐方案：${preferredLabel} / ${preferred.score ?? '--'} 分`,
+      `编组数量：${Array.isArray(preferred.groups) ? preferred.groups.length : preferred.actualGroupCount || '--'}`,
+      `约束状态：${output.constraintSummary?.overallStatus || preferred.constraintEvaluation?.overallStatus || '--'}`,
+    ];
   }
-  const traceEvents = executionSteps.value.flatMap((item) => (item.structuredOutput?.processTrace || []).map((event, index) => ({
-    id: `trace-${item.stepId}-${index}`,
-    emittedAt: event.emittedAt || resultsGeneratedAt.value || '',
-    phase: event.phase || 'trace',
-    channel: event.channel || 'process',
-    level: event.level || 'info',
-    title: event.title || item.algorithm?.name || item.stepName,
-    message: event.message || '',
-    progress: null,
-    step: {
-      order: item.order,
-      stepName: item.stepName,
-      algorithmName: item.algorithm?.name,
-      bindingName: item.binding?.name,
-    },
-  })));
-  if (traceEvents.length) return traceEvents;
-  return executionSteps.value.map((item) => ({
-    id: `process-${item.stepId}`,
-    emittedAt: resultsGeneratedAt.value || '',
-    phase: 'result:summary',
-    channel: 'process',
-    level: item.structuredOutput?.implementationStatus === 'implemented' ? 'success' : 'warning',
-    title: item.algorithm?.name || item.stepName,
-    message: item.summary,
-    progress: null,
-    step: {
-      order: item.order,
-      stepName: item.stepName,
-      algorithmName: item.algorithm?.name,
-      bindingName: item.binding?.name,
-    },
-  }));
-});
-
-const outputWorkbenchEvents = computed(() => executionOutputEvents.value);
-const terminalWorkbenchLines = computed(() => processWorkbenchEvents.value
-  .filter((item) => {
-    const phase = String(item.phase || '');
-    return item.channel === 'terminal'
-      || item.level === 'error'
-      || phase.includes('stream:error')
-      || phase.includes('client:error');
-  })
-  .flatMap((item) => eventMessages(item).map((message, index) => ({
-    id: `${item.id}-${index}`,
-    level: item.level,
-    text: item.channel === 'terminal' ? message : `${message}${String(message).endsWith('\n') ? '' : '\n'}`,
-  }))));
-
-const currentExecutionStep = computed(() => (
-  activeExecutionStep.value
-  || resultStepCards.value.at(-1)
-  || null
-));
-
-const currentAlgorithmLabel = computed(() => {
-  const step = currentExecutionStep.value;
-  if (!step) return state.calculating ? '等待调度' : '暂无运行算法';
-  return step.algorithmName || step.stepName || '算法运行中';
-});
-
-const progressPercent = computed(() => Math.round(Number(state.executionProgress || 0)));
+  return Array.isArray(item.outputPreview) && item.outputPreview.length
+    ? item.outputPreview
+    : [item.summary].filter(Boolean);
+}
 
 function resolveStepMetric(item = {}) {
   const output = item.structuredOutput || {};
@@ -173,7 +127,7 @@ function resolveStepMetric(item = {}) {
     return `${output.threatLevel || '--'} / ${output.threatScore ?? '--'} 分`;
   }
   if (algorithmId === 'force-grouping') {
-    return `${output.preferredScheme?.name || '推荐编组'} / ${output.preferredScheme?.score ?? '--'} 分`;
+    return `${output.preferredScheme?.name || output.preferredScheme?.methodLabel || '推荐编组'} / ${output.preferredScheme?.score ?? '--'} 分`;
   }
   if (algorithmId === 'target-allocation') {
     return `${output.preferredPlan?.name || '推荐分配'} / ${output.preferredPlan?.score ?? '--'} 分`;
@@ -225,26 +179,15 @@ function formatRunStatus(status) {
   return status || '--';
 }
 
-function formatEventTime(value) {
+function formatStreamStepStatus(status) {
+  if (status === 'completed') return '完成';
+  if (status === 'running') return '运行中';
+  if (status === 'failed') return '失败';
+  return '等待';
+}
+
+function formatStreamTime(value) {
   return value ? String(value).slice(11, 19) : '--:--:--';
-}
-
-function eventLevelClass(level) {
-  if (level === 'success') return 'planning-live-event--success';
-  if (level === 'warning') return 'planning-live-event--warning';
-  if (level === 'error') return 'planning-live-event--error';
-  return '';
-}
-
-function eventMessages(item = {}) {
-  return item.preview?.length ? item.preview : [item.message].filter(Boolean);
-}
-
-function terminalLineClass(level) {
-  if (level === 'error') return 'planning-terminal-line--error';
-  if (level === 'warning') return 'planning-terminal-line--warning';
-  if (level === 'success') return 'planning-terminal-line--success';
-  return '';
 }
 
 async function handleRefreshRuns() {
@@ -287,6 +230,9 @@ function openStepResult(item) {
           </button>
           <button class="button button-secondary" :disabled="!outputPackages.storageSnapshot?.data" @click="handleSaveSnapshot">
             保存结果快照
+          </button>
+          <button class="button button-secondary" :disabled="!outputPackages.storageSnapshot" @click="handleDownloadPackage('storageSnapshot')">
+            导出结果快照
           </button>
           <button class="button button-secondary" :disabled="!outputPackages.reportExport" @click="handleDownloadPackage('reportExport')">
             导出分析报告
@@ -333,67 +279,73 @@ function openStepResult(item) {
       <p v-if="state.errorMessage" class="auth-error capability-inline-error top-gap">{{ state.errorMessage }}</p>
     </article>
 
-    <div class="planning-live-run-strip">
-      <div>
-        <span>当前运行算法</span>
-        <strong>{{ currentAlgorithmLabel }}</strong>
-        <small>{{ currentExecutionStep?.bindingName || currentExecutionStep?.binding?.name || '等待执行调度' }}</small>
-      </div>
-      <div class="planning-live-meter" :style="{ '--planning-live-progress': `${progressPercent}%` }">
-        <span></span>
-      </div>
-      <strong class="planning-live-percent">{{ progressPercent }}%</strong>
-    </div>
-
-    <div class="planning-execution-workbench-grid">
-      <article class="capability-stage-card planning-live-workbench planning-terminal-workbench">
-        <div class="section-heading compact">
-          <h3>大模型流式输出工作台</h3>
+    <article v-if="streamPanelVisible" class="capability-stage-card planning-stream-monitor">
+      <div class="planning-stream-monitor__head">
+        <div>
+          <span class="eyebrow">Live Execution</span>
+          <h3>执行监控</h3>
         </div>
-
-        <div class="planning-terminal-output">
-          <pre v-if="terminalWorkbenchLines.length"><span
-            v-for="line in terminalWorkbenchLines.slice(-120)"
-            :key="line.id"
-            :class="terminalLineClass(line.level)"
-            v-text="line.text"
-          ></span></pre>
-          <pre v-else></pre>
+        <div class="planning-stream-monitor__meta">
+          <span class="pill" :class="streamState.errorMessage ? 'pill-muted' : 'pill-active'">
+            {{ streamState.active ? '流式执行中' : streamState.errorMessage ? '执行失败' : '执行结束' }}
+          </span>
+          <span class="pill pill-muted">Run {{ streamState.runId ? `#${streamState.runId}` : '--' }}</span>
         </div>
-      </article>
+      </div>
 
-      <article class="capability-stage-card planning-live-workbench">
-        <div class="section-heading compact">
-          <div>
-            <h3>算法输出工作台</h3>
-            <p>显示每个算法已产出的摘要、关键指标和可进入结果页的输出线索。</p>
+      <div class="planning-stream-progress top-gap">
+        <div class="planning-stream-progress__bar">
+          <span :style="{ width: `${Math.max(0, Math.min(100, Number(streamState.progress || 0)))}%` }"></span>
+        </div>
+        <strong>{{ Math.round(Number(streamState.progress || 0)) }}%</strong>
+      </div>
+
+      <div class="planning-stream-current top-gap">
+        <span>当前步骤</span>
+        <strong>{{ streamState.currentStepName || '等待任务启动' }}</strong>
+        <small>{{ streamState.currentEvent || '--' }}</small>
+      </div>
+
+      <div v-if="streamState.stepStates?.length" class="planning-stream-steps top-gap">
+        <article
+          v-for="item in streamState.stepStates"
+          :key="item.stepId"
+          class="planning-stream-step"
+          :class="`planning-stream-step--${item.status || 'pending'}`"
+        >
+          <span>步骤 {{ item.order || '--' }}</span>
+          <strong>{{ item.stepName || item.algorithmId }}</strong>
+          <small>{{ formatStreamStepStatus(item.status) }}</small>
+        </article>
+      </div>
+
+      <p v-if="streamState.errorMessage" class="auth-error capability-inline-error top-gap">{{ streamState.errorMessage }}</p>
+
+      <div class="planning-stream-console-grid top-gap">
+        <section class="planning-stream-console">
+          <div class="planning-stream-console__head">
+            <h4>终端提示</h4>
+            <span>{{ streamState.terminalLines?.length || 0 }} 行</span>
           </div>
-          <span class="pill pill-muted">输出 {{ outputWorkbenchEvents.length }}</span>
-        </div>
+          <div class="planning-stream-console__body">
+            <p v-if="!streamState.terminalLines?.length" class="muted-text">等待算法输出阶段日志。</p>
+            <pre v-else><template v-for="(line, index) in streamState.terminalLines" :key="`${line.timestamp}-${index}`">[{{ formatStreamTime(line.timestamp) }}] {{ line.stepName ? `${line.stepName} ` : '' }}{{ line.stream }} &gt; {{ line.message }}
+</template></pre>
+          </div>
+        </section>
 
-        <div v-if="!outputWorkbenchEvents.length" class="detail-card compact-empty-state top-gap">
-          <p class="muted-text">算法完成阶段性输出后，这里会持续追加输出摘要。</p>
-        </div>
-
-        <div v-else class="planning-live-output-list top-gap">
-          <article
-            v-for="item in outputWorkbenchEvents.slice(-12)"
-            :key="item.id"
-            class="planning-live-output"
-            :class="eventLevelClass(item.level)"
-          >
-            <div class="planning-live-output__head">
-              <span class="pill pill-active">{{ item.step?.algorithmName || item.title || '算法输出' }}</span>
-              <time>{{ formatEventTime(item.emittedAt) }}</time>
-            </div>
-            <strong>{{ item.title || item.step?.stepName || '输出摘要' }}</strong>
-            <ul class="action-text-list top-gap">
-              <li v-for="message in eventMessages(item)" :key="message">{{ message }}</li>
-            </ul>
-          </article>
-        </div>
-      </article>
-    </div>
+        <section class="planning-stream-console planning-stream-console--llm">
+          <div class="planning-stream-console__head">
+            <h4>大模型片段</h4>
+            <span>{{ streamState.llmChunks?.length || 0 }} 段</span>
+          </div>
+          <div class="planning-stream-console__body">
+            <p v-if="!llmStreamText" class="muted-text">选择启用流式 LLM 的 Python 算法后，这里会显示 stdout 中的模型片段。</p>
+            <pre v-else>{{ llmStreamText }}</pre>
+          </div>
+        </section>
+      </div>
+    </article>
 
     <div class="planning-execution-overview-grid">
       <article class="capability-stage-card planning-execution-overview-card planning-execution-overview-card--full">

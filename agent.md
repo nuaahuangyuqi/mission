@@ -1,385 +1,6 @@
 ﻿# Agent Memory
 
-Updated: 2026-05-28
-
-Offline terrain dark-band and overlay occlusion fix completed on 2026-05-28:
-
-- Files:
-  - `apps/web/src/components/CesiumGlobe.vue`
-  - `README.md`
-  - `开发指南.md`
-  - `agent.md`
-- Notes:
-  - after offline DEM was enabled, `refreshTerrain()` restored Cesium globe lighting and terrain depth testing for all non-flat terrain
-  - globe lighting could produce a visible dark day/night terminator band over the imagery, especially on the offline terrain package
-  - global terrain depth testing could hide planned routes, labels, polygons, and tactical overlays behind local DEM geometry
-  - `refreshTerrain()` now keeps `viewer.scene.globe.enableLighting` and `viewer.scene.globe.depthTestAgainstTerrain` disabled after assigning the terrain provider; terrain relief remains geometry-based, while tactical map readability stays consistent
-- Verification:
-  - `npm run build --workspace @mission/web`
-    - observed result: build succeeded; Vite still emits the existing large chunk warning
-  - `npm test --workspace @mission/server`
-    - observed result: 13 tests passed
-  - Browser verification on `http://localhost:5173/data-service`
-    - observed result: 专题态势子模块 loaded with `当前地形：离线 DEM / /terrain`; the map no longer showed the large dark vertical band and overlays were visible above the terrain
-    - observed result: browser console warnings/errors list was empty during the verification pass
-- Remaining risk:
-  - the local imagery source still has its own tile coverage and color differences; this fix targets Cesium lighting/depth artifacts, not offline imagery data completeness
-
-Offline terrain black-screen follow-up fix completed on 2026-05-28:
-
-- Files:
-  - `apps/web/src/components/CesiumGlobe.vue`
-  - `README.md`
-  - `开发指南.md`
-  - `agent.md`
-- Notes:
-  - after the terrain `layer.json` repair, local offline terrain could turn the globe black because converted root tiles include embedded metadata extensions
-  - Cesium defaults `requestMetadata` to true; once `metadataAvailability` is removed from `layer.json`, parsing embedded metadata attempts to update `layer.availabilityTilesLoaded`, which is undefined in the top-level availability path
-  - `createOfflineTerrainProvider()` now sets `requestMetadata: false`, so local terrain uses the repaired top-level `available` ranges and does not parse embedded metadata availability
-  - online terrain behavior is unchanged
-- Verification:
-  - direct Cesium Node smoke against Vite-served `/terrain` confirmed root tiles `0/0/0` and `0/1/0` failed with `requestMetadata: true` and loaded successfully with `requestMetadata: false`
-  - direct Cesium `sampleTerrainMostDetailed` smoke with `requestMetadata: false` returned finite heights for `120,30` and `100.37,31.46`
-  - `node --check apps/server/src/local-terrain-layer.js`
-  - `node --check apps/server/src/index.js`
-  - `node --check apps/web/vite.config.js`
-  - `npm test --workspace @mission/server`
-    - observed result: 13 tests passed
-  - `npm run build --workspace @mission/web`
-    - observed result: build succeeded; Vite still emits the existing large chunk warning
-- Remaining risk:
-  - visual browser screenshot verification was not available; verification used direct Cesium terrain requests and sampling plus build/tests
-
-Offline Cesium terrain metadata repair completed on 2026-05-28:
-
-- Files:
-  - `apps/server/src/local-terrain-layer.js`
-  - `apps/server/src/local-terrain-layer.test.js`
-  - `apps/server/src/index.js`
-  - `apps/server/package.json`
-  - `apps/web/vite.config.js`
-  - `README.md`
-  - `开发指南.md`
-  - `agent.md`
-- Notes:
-  - fixed the offline terrain relief issue by serving a repaired `layer.json` for local `/terrain/layer.json` and `/dem/layer.json` in both Vite dev mode and Express production mode
-  - the repair scans the real local `.terrain` files, filters out out-of-range edge tiles, generates Cesium-compatible `available` ranges, and removes `metadataAvailability`
-  - removing `metadataAvailability` is required because Cesium ignores the top-level `available` array when that field is present and otherwise expects per-tile availability metadata
-  - the current local `apps/web/pubulic/terrain` package is repaired to 44 availability ranges, with levels 0-10 recognized as full coverage and higher levels kept as local partial coverage
-  - responses include `X-Mission-Terrain-Layer: repaired` and `X-Mission-Terrain-Ranges` headers to make the active repair visible during HTTP checks
-- Verification:
-  - direct `buildTerrainLayerJson('./apps/web/pubulic/terrain')` smoke confirmed `metadataAvailability` is removed, `z0` is `0..1 / 0`, `z9` is full `0..1023 / 0..511`, and `z10` is full `0..2047 / 0..1023`
-  - `node --check apps/server/src/local-terrain-layer.js`
-  - `node --check apps/server/src/index.js`
-  - `node --check apps/web/vite.config.js`
-  - `node --test apps/server/src/local-terrain-layer.test.js`
-  - `npm test --workspace @mission/server`
-    - observed result: 13 tests passed
-  - `npm run build --workspace @mission/web`
-    - observed result: build succeeded; Vite still emits the existing large chunk warning
-  - Vite dev static smoke on `http://127.0.0.1:5190/terrain/layer.json`
-    - observed result: `200 OK`, `X-Mission-Terrain-Layer: repaired`, no `metadataAvailability`, corrected availability ranges
-  - Express production static smoke on `http://127.0.0.1:3199/terrain/layer.json`
-    - observed result: `200 OK`, `X-Mission-Terrain-Layer: repaired`, no `metadataAvailability`, corrected availability ranges
-- Remaining risk:
-  - no browser screenshot verification was run because no in-app Browser tool was exposed; validation used HTTP-level terrain metadata checks, build, and tests
-  - the first request for a large local terrain package may spend a short time scanning files before the in-memory cache is warm
-
-Intelligent airlanding algorithm integration completed on 2026-05-28:
-
-- Files:
-  - `apps/server/src/planning-runtime.js`
-  - `apps/server/src/planning-airlanding-python.js`
-  - `apps/server/planning-python/airlanding_zone/__init__.py`
-  - `apps/server/planning-python/airlanding_zone/main.py`
-  - `apps/server/planning-python/airlanding_zone/config.py`
-  - `apps/server/planning-python/airlanding_zone/dem_provider.py`
-  - `apps/server/planning-python/airlanding_zone/candidate_generator.py`
-  - `apps/server/planning-python/airlanding_zone/optimizer.py`
-  - `apps/server/planning-python/airlanding_zone/threat_field.py`
-  - `apps/server/planning-python/airlanding_zone/landcover_provider.py`
-  - `apps/web/src/views/planning/PlanningAlgorithmsStep.vue`
-  - `apps/web/src/views/planning/PlanningTaskFlowStep.vue`
-  - `README.md`
-  - `开发指南.md`
-  - `agent.md`
-- Notes:
-  - `机降地域优化选择` now has a new built-in method named `智能机降算法`
-  - the original `加权评分选址`、`Pareto 多目标排序` and `约束筛选优化` implementations remain on the original Node path and are not changed
-  - selecting `智能机降算法` calls `apps/server/planning-python/airlanding_zone/main.py` through `apps/server/src/planning-airlanding-python.js`
-  - the Python algorithm now defaults to the system Cesium terrain directory instead of requiring GeoTIFF upload; it checks `PLANNING_TERRAIN_ROOT`, then `apps/web/terrain`, `apps/web/pubulic/terrain`, and `apps/web/public/terrain`
-  - `dem_provider.py` now includes a `LocalCesiumTerrain` provider that reads quantized-mesh `.terrain` tiles and samples height from the configured terrain level
-  - Python output is normalized into the existing frontend result contract: `rankedCandidates`, `preferredCandidate`, `selectedCandidates`, `methodComparison`, `visualization.entities`, and terrain/source metadata
-  - `PlanningTaskFlowStep.vue` now exposes built-in method selection directly in the workflow orchestration page, so the airlanding step can be switched to `智能机降算法` there
-  - `PlanningAlgorithmsStep.vue` now exposes intelligent airlanding parameters for landing count, area, distance constraint, and optional terrain root override
-- Verification:
-  - `python3 -m py_compile apps/server/planning-python/airlanding_zone/*.py`
-  - `node --check apps/server/src/planning-airlanding-python.js`
-  - `node --check apps/server/src/planning-runtime.js`
-  - direct terrain provider smoke sampled heights from `apps/web/pubulic/terrain`
-  - direct Python `airlanding_zone/main.py` smoke with one target and one landing requirement produced `candidate_count: 10`, `zones: 1`, `warnings: 0`
-- Remaining risk:
-  - full frontend build and server test suite still need to be rerun after this integration
-  - Python terrain sampling uses nearest quantized-mesh vertices, which is sufficient for current planning display but is not a calibrated survey-grade DEM pipeline
-
-Frontend workspace relocation startup fix completed on 2026-05-28:
-
-- Files:
-  - `package.json`
-  - `start-mac.sh`
-  - `start-backend.bat`
-  - `scripts/start-production.mjs`
-  - `apps/server/src/index.js`
-  - `apps/web/vite.config.js`
-  - `apps/web/vite.config.auth-check.js`
-  - `apps/web/src/config/branding.js`
-  - `.gitignore`
-  - `README.md`
-  - `开发指南.md`
-  - `agent.md`
-  - removed obsolete `apps/package-lock.json`
-- Notes:
-  - the frontend package now lives at `apps/web/package.json`, so root scripts use workspace `@mission/web` instead of `npm --prefix apps`
-  - `start-mac.sh` now checks `apps/web/package.json` and installs frontend dependencies from `apps/web` when needed, fixing the `ENOENT ... apps/package.json` failure
-  - production startup now builds and reuses `apps/web/dist/client/index.html`
-  - the Express server now serves the SPA from `apps/web/dist/client` and still mounts local `/terrain`, `/dem`, and `/tiles` resources from `apps/web`
-  - Vite local asset middleware now resolves local map resources from the `apps/web` package root and also tolerates the existing misspelled `apps/web/pubulic` directory
-  - `apps/web/src/config/branding.js` now resolves the repository-root `logo.png` correctly after the extra `web/` path segment
-  - `.gitignore` no longer ignores all of `apps/web`; it ignores only frontend dependencies/builds and large local map resource directories so moved frontend source can be tracked
-- Verification:
-  - `node --check apps/server/src/index.js`
-  - `node --check scripts/start-production.mjs`
-  - `node --check apps/web/vite.config.js`
-  - `node --check apps/web/vite.config.auth-check.js`
-  - `node --check apps/web/src/config/branding.js`
-  - `npm run build --workspace @mission/web`
-    - observed result: build succeeded and emitted `dist/client/assets/logo-BUTaoDRU.png`; Vite still emits the existing large chunk warning
-  - `npm test --workspace @mission/server`
-    - observed result: 12 tests passed
-  - `npm run build`
-    - observed result: web build succeeded and server build printed `server build not required`
-  - `./start-mac.sh check`
-    - observed result: Node.js and npm checks passed
-  - `./start-mac.sh dev`
-    - observed result: the previous `ENOENT ... apps/package.json` failure is gone; script now reaches port validation and stops because ports `5173` and `3100` are already occupied by an existing running stack
-  - current listener smoke:
-    - `curl -I http://localhost:5173/` returned `200 OK`
-    - `curl -s http://localhost:3100/api/health` returned `{ "ok": true, ... }`
-    - `curl -I http://localhost:5173/terrain/layer.json` and `curl -I http://localhost:3100/terrain/layer.json` both returned `200 OK`
-  - `git check-ignore -v ...` confirmed `apps/web/node_modules`, `apps/web/dist`, `apps/web/pubulic`, `apps/web/tiles`, runtime DB, and local env remain ignored while `apps/web/src/main.js` and `apps/web/package.json` are no longer ignored
-
-Offline-first terrain/static map fallback update completed on 2026-05-28:
-
-- Files:
-  - `apps/vite.config.js`
-  - `apps/server/src/index.js`
-  - `apps/src/components/CesiumGlobe.vue`
-  - `apps/src/components/SituationWorkbench.vue`
-  - `apps/src/components/ResourceWorkbench.vue`
-  - `apps/src/components/MapServiceConfigPanel.vue`
-  - `scripts/download-sample-tiles.mjs`
-  - `scripts/generate-sample-tiles.ps1`
-  - `README.md`
-  - `开发指南.md`
-  - `agent.md`
-- Notes:
-  - the canonical local offline resource directories are now `apps/web/terrain`, `apps/web/dem`, and `apps/web/tiles`, served at `/terrain`, `/dem`, and `/tiles`
-  - Vite dev mode now has a local asset middleware for these routes, with legacy compatibility for `apps/web/public/terrain`, `apps/web/public/dem`, and `apps/web/public/tiles`
-  - the production Express server now mounts the same local asset routes before the SPA fallback; after the frontend workspace relocation, the active Vite output directory is `apps/web/dist/client`
-  - `离线 DEM` mode now tries `apps/web/terrain` first; if local terrain is missing and an online DEM or Cesium ion token is configured, it falls back to online terrain before finally using the flat ellipsoid
-  - saving the `在线 API 配置` no longer forces the current workbench into online basemap / online DEM; basemap stays `自动`, terrain stays `离线 DEM`, and runtime selection remains offline-first
-  - sample tile scripts now write to `apps/web/tiles` instead of the historical `apps/web/public/tiles`
-- Verification:
-  - `node --check apps/vite.config.js`
-  - `node --check apps/server/src/index.js`
-  - `npm test --workspace @mission/server`
-    - observed result: 12 tests passed
-  - `npm run build --prefix apps`
-    - observed result: build succeeded and emitted `dist/client/assets/logo-BUTaoDRU.png`; Vite still emits the existing large chunk warning
-  - production static smoke: started `PORT=3199 node apps/server/src/index.js`, requested `http://localhost:3199/terrain/layer.json`, observed `200 OK` and `application/json; charset=utf-8`
-  - dev static smoke: started `npm run dev --prefix apps -- --host 127.0.0.1 --port 5188`, requested `http://127.0.0.1:5188/terrain/layer.json`, observed `200 OK` and `application/json; charset=utf-8`
-- Remaining risk:
-  - no visual browser run was completed because no callable in-app Browser tool was exposed in this session; behavior was verified through build, tests, and direct HTTP smoke checks
-
-Logo path fix and developer guide documentation completed on 2026-05-27:
-
-- Files:
-  - `apps/src/config/branding.js`
-  - `AGENTS.md`
-  - `README.md`
-  - `开发指南.md`
-  - `agent.md`
-- Notes:
-  - fixed the global logo reference by changing `brandingConfig.logoUrl` from `../../../../logo.png` to `../../../logo.png`, which correctly resolves from `apps/src/config/branding.js` to the repository-root `logo.png`
-  - added root-level `开发指南.md` as the developer-facing file map, covering root files, frontend entry points, components, workflow modules, views, backend services, Python threat-analysis files, ignored runtime directories, common modification entry points, and verification commands
-  - updated `AGENTS.md` so every new agent must read `AGENTS.md -> agent.md -> README.md -> 开发指南.md`
-  - updated `README.md` with a document-entry section and the new agent/developer-guide synchronization requirement
-- Verification:
-  - `node --check apps/src/config/branding.js`
-  - `npm run build --prefix apps`
-    - observed result: build succeeded and emitted `dist/client/assets/logo-BUTaoDRU.png`; the previous `logo.png doesn't exist at build time` warning no longer appears
-    - remaining Vite warning: existing large chunk warning only
-- Remaining risk:
-  - no browser screenshot verification was run in this session; validation relies on Vite resolving and bundling the logo asset successfully
-
-Git repository ignore policy setup completed on 2026-05-27:
-
-- Files:
-  - `.gitignore`
-  - `README.md`
-  - `agent.md`
-- Notes:
-  - initialized/reinitialized the local Git metadata for `/Users/hyq/Documents/602/mission`; no commit was created
-  - replaced the minimal ignore list with a project-oriented policy that keeps source files trackable while excluding Node dependencies, frontend build outputs, runtime SQLite data, local env files, Python caches, generated Python reports, editor/OS files, and Codex local cache folders
-  - `apps/web/` is now ignored as a whole per user request, so its terrain/DEM/static asset files will not be synchronized
-  - `apps/src/data/**` is explicitly unignored because the user's global Git ignore file contains a broad `data/` rule; this keeps frontend source data such as `situationCatalog.js` eligible for tracking
-  - `.codex/skills/**` remains eligible for tracking, while `.codex/cache/` and `.codex/tmp/` are ignored
-- Verification:
-  - `git check-ignore -v apps/web/terrain/layer.json apps/server/data/mission-demo.sqlite apps/server/data/mission-demo.sqlite-wal apps/.env.local apps/dist/client/index.html apps/node_modules/.vite/deps/package.json .vscode/settings.json apps/server/planning-python/theat_analyze/generated_reports/operational_assessment_1779698199247.docx`
-    - observed result: every path matched the intended ignore rule
-  - `git ls-files --others --exclude-standard apps/web apps/server/data apps/dist apps/node_modules node_modules apps/.env.local .vscode apps/src/data`
-    - observed result: only `apps/src/data/situationCatalog.js` remained trackable from that targeted set
-  - `git status --short --branch --ignored`
-    - observed result: `apps/web/`, dependency folders, build outputs, runtime DB files, env local file, Python caches, and generated reports are ignored
-- Remaining risk:
-  - the first commit has not been staged or created yet; run `git add .` and review staged files before committing
-
-Planning terminal stream rendering fix completed on 2026-05-27:
-
-- Files:
-  - `apps/src/views/planning/PlanningTaskExecutionOverview.vue`
-  - `apps/src/styles.css`
-  - `README.md`
-  - `agent.md`
-- Notes:
-  - fixed the `大模型流式输出工作台` display issue where each LLM/Python stream chunk was rendered as a block and received an extra template newline, causing Chinese output to appear broken into very short vertical-looking lines
-  - stream chunks now render inline with `v-text`, preserving only the newlines provided by the model/Python stderr itself
-  - the terminal panel spacing was tightened by removing the extra top-gap and zeroing the terminal workbench heading margin
-- Verification:
-  - `node --check apps/src/modules/planningWorkflow.js`
-  - `npm run build --prefix apps`
-    - observed result: build succeeded; Vite still reports the existing `logo.png` URL warning and large chunk warning
-- Remaining risk:
-  - visual verification is based on the user-provided screenshot plus successful build because the in-app Browser tool was unavailable in this session
-
-Planning LLM threat-analysis method and execution workbench update completed on 2026-05-27:
-
-- Files:
-  - `apps/server/src/planning-runtime.js`
-  - `apps/server/src/planning-threat-python.js`
-  - `apps/server/src/index.js`
-  - `apps/server/planning-python/theat_analyze/analyze.py`
-  - `apps/server/planning-python/theat_analyze/extractor.py`
-  - `apps/server/planning-python/theat_analyze/generate_assessment.py`
-  - `apps/src/api.js`
-  - `apps/src/modules/planningWorkflow.js`
-  - `apps/src/views/PlanningView.vue`
-  - `apps/src/views/planning/PlanningTaskExecutionOverview.vue`
-  - `apps/src/styles.css`
-  - `README.md`
-  - `agent.md`
-- Notes:
-  - `敌情威胁自动分析` now exposes a third built-in method named `基于大模型分析算法`
-  - the existing `知识融合分析` and `覆盖优先分析` methods no longer auto-call the Python threat-analysis pipeline; they keep using the original Node.js built-in logic
-  - selecting `基于大模型分析算法` forces the backend to call `apps/server/planning-python/theat_analyze` through the existing Python subprocess adapter
-  - the Python adapter now emits progress/log events for input materialization, stage-one analysis, stage-two assessment, raw subprocess stderr stream chunks, subprocess stderr log lines, and final output summary
-  - added `/api/planning/evaluate/stream`, an NDJSON streaming planning execution endpoint that reports validation, current step, per-algorithm progress, process events, output events, errors, and final result
-  - the frontend planning workflow now consumes the streaming endpoint and keeps live process/output event buffers plus active algorithm/progress state
-  - the intelligent planning module top page now includes `大模型接口配置` fields for API Key and Base URL; values are persisted in browser local storage per logged-in user and sent with planning execution requests only when the selected task uses `基于大模型分析算法`
-  - `analyze.py`, `generate_assessment.py`, and `extractor.py` no longer hardcode API Key or Base URL; the backend injects the frontend-provided values into the Python subprocess environment, with server env vars still available as fallback
-  - the planning execution overview now has two consistent workbench panels:
-    - `大模型流式输出工作台`, a terminal-style panel that only renders raw LLM/Python stream content and errors
-    - algorithm output workbench for stage summaries and output previews
-  - the current running algorithm and overall progress moved into a separate status strip above the workbenches so the terminal panel stays output-only
-  - README now documents the explicit LLM method selection path and the changed Python execution semantics
-- Verification:
-  - `node --check apps/server/src/planning-runtime.js`
-  - `node --check apps/server/src/planning-threat-python.js`
-  - `node --check apps/server/src/index.js`
-  - `node --check apps/src/api.js`
-  - `node --check apps/src/modules/planningWorkflow.js`
-  - `python3 -m py_compile apps/server/planning-python/theat_analyze/analyze.py apps/server/planning-python/theat_analyze/generate_assessment.py apps/server/planning-python/theat_analyze/extractor.py`
-  - `npm test --workspace @mission/server`
-    - observed result: 12 tests passed
-  - `npm run build --prefix apps`
-    - observed result: build succeeded; Vite still reports the existing large chunk warning
-  - targeted hardcoded-credential scan across `apps/server/src`, `apps/server/planning-python/theat_analyze`, `apps/src`, `README.md`, and `agent.md`
-    - observed result: no matches, confirming the old fixed API Key/Base URL are no longer present
-  - authenticated `GET /api/planning/template`
-    - confirmed `敌情威胁自动分析` exposes `知识融合分析 / 覆盖优先分析 / 基于大模型分析算法`
-  - direct `runThreatPythonPipeline({ forceRequired: true })` smoke
-    - confirmed missing API Key and missing Base URL fail fast with explicit configuration errors
-  - authenticated `POST /api/planning/evaluate/stream`
-    - confirmed NDJSON status/error events are emitted for a validation-failure smoke request
-- Remaining risk:
-  - in-app Browser verification was unavailable in this session (`Browser is not available: iab`), so visual confirmation relies on the successful Vite build and API smoke checks
-  - a real LLM/Python end-to-end run is still pending until dependencies/model network access are exercised with selected task inputs
-  - token stream fidelity depends on the upstream Python/OpenAI-compatible client chunking stderr writes; the frontend now shows the raw chunks it receives rather than packaging them as process summaries
-
-macOS port management launcher update completed on 2026-05-27:
-
-- Files:
-  - `start-mac.sh`
-  - `README.md`
-  - `agent.md`
-- Notes:
-  - extended `start-mac.sh` beyond the original foreground-only startup flow
-  - added `status`, `stop`, and `restart` modes so macOS users can inspect and release the managed frontend/backend ports directly from the launcher
-  - the script now checks port occupancy before `dev / web / server / prod` startup and surfaces the listening process via `lsof` instead of failing later with a generic port-in-use error
-  - managed ports remain frontend `5173` and backend / production `3100`; `stop web` and `stop server` allow targeted shutdown
-  - README macOS startup section now documents the new port-management commands and the updated behavior
-- Verification:
-  - `bash -n start-mac.sh`
-  - `./start-mac.sh check`
-  - `./start-mac.sh status`
-- Remaining risk:
-  - `stop` intentionally terminates whatever process is listening on the managed port, so if a non-project service is bound to `5173` or `3100`, it will be stopped as well
-  - port management depends on `lsof`, which is standard on macOS but still an external system command outside the Node toolchain
-
-Cross-platform startup compatibility fixes completed on 2026-05-27:
-
-- Files:
-  - `package.json`
-  - `scripts/start-production.mjs`
-  - `start-backend.bat`
-  - `start-mac.sh`
-  - `README.md`
-  - `agent.md`
-- Notes:
-  - superseded on 2026-05-28 by the `apps/web` frontend workspace relocation; keep this entry only as historical context
-  - fixed the root startup scripts so frontend commands now match the actual repo layout
-  - root `npm run dev` and `npm run dev:web` no longer rely on a nonexistent root workspace resolution for `@mission/web`; they now start the frontend via `npm --prefix apps`
-  - root `npm run build` now builds the frontend via `npm --prefix apps` before running the server workspace build
-  - `scripts/start-production.mjs` now looks for the real frontend build artifact at `apps/dist/client/index.html` and builds the frontend with `npm run build --prefix apps`
-  - `start-backend.bat` message text was updated to reference the correct production frontend build directory
-  - added a new macOS launcher `start-mac.sh` with `dev / web / server / prod / check` modes
-  - README now explicitly documents Windows compatibility caveats and the new macOS launcher
-- Verification:
-  - code/path review confirms the frontend package lives at `apps/package.json` while the backend workspace lives at `apps/server/package.json`
-  - the updated root npm scripts now align with that layout instead of assuming a root-discoverable `@mission/web` workspace
-- Remaining risk:
-  - `start-mac.sh` assumes a bash-compatible shell environment and requires `chmod +x start-mac.sh` once before first use
-  - Windows Python-based planning execution still depends on a separately installed Python runtime and compatible native dependencies
-
-Planning algorithm development summary document added on 2026-05-26:
-
-- Files:
-  - `docs/开发技术文档.md`
-  - `README.md`
-  - `agent.md`
-- Notes:
-  - added a new developer-facing Markdown document `docs/开发技术文档.md`
-  - the document summarizes the current 6 built-in planning algorithms from an implementation perspective:
-    - required inputs
-    - expected outputs
-    - upstream/downstream dependencies
-    - high-level implementation approach
-    - recommended development order and data contract guidance
-  - README documentation index now includes a direct link to this new document so future agents and users can find it from the main repo guide
-- Verification:
-  - manually reviewed the new Markdown content for all 6 algorithms against the current README planning-module descriptions
-- Remaining risk:
-  - this document is a high-level development summary rather than a field-by-field contract generated from runtime code, so if any algorithm output schema evolves later, the document should be refreshed together with README
+Updated: 2026-06-04
 
 Purpose: keep a handoff-ready memory for future agents working on the data-service, planning, and calculation modules.
 
@@ -390,132 +11,409 @@ Purpose: keep a handoff-ready memory for future agents working on the data-servi
   1. `AGENTS.md`
   2. `agent.md`
   3. `README.md`
-  4. `开发指南.md`
-- After any code change, the agent must update `agent.md` and `README.md` before finishing the task; update `开发指南.md` too when file responsibilities, entry points, structure, or developer workflows change.
+- After any code change, the agent must update both `agent.md` and `README.md` before finishing the task.
 
 ## Current Status
 
-Planning step-decoupling / partial-result execution completed on 2026-05-25:
+GitHub publication hygiene prepared on 2026-06-04:
+
+- Files:
+  - `.gitignore`
+  - `apps/web/.env.example`
+  - `algorithms/enemy-threat-analysis/enemy_threat_analysis/config.py`
+  - `algorithms/enemy-threat-analysis/enemy_threat_analysis/llm_extractor.py`
+  - `README.md`
+  - `agent.md`
+- Notes:
+  - Expanded `.gitignore` to exclude dependencies, build output, runtime databases, imported/generated data, temporary files, local map/terrain assets, Python environments/caches, generated algorithm results/archives, OS/editor files, and local Codex/plugin caches.
+  - Replaced the tracked Tianditu token example with a placeholder.
+  - Removed a hardcoded enemy-threat LLM API key and changed the related configuration errors to direct users to page parameters or environment variables.
+  - Remaining untracked source/test/document additions are under 1 MB; local terrain assets (~19 GB), dependencies, runtime database files, and generated algorithm results are excluded.
+- Verification:
+  - `npm run build --workspace @mission/web`: passed; Vite still emits the existing large chunk warning.
+  - `npm test --workspace @mission/server`: 12 tests passed.
+  - `node algorithms/run-with-venv.mjs -m pytest algorithms/enemy-threat-analysis/tests/test_enemy_threat_analysis.py algorithms/force-grouping/tests/test_force_grouping.py -q`: 34 tests passed.
+  - `git push --dry-run origin main`: passed, confirming the configured GitHub remote accepts the current Git credentials.
+- Remaining risk:
+  - The Tianditu token existed in earlier repository history and should be rotated if it remains active. The removed LLM key was found only in the previously untracked algorithm source, but it should also be rotated if still valid.
+
+Planning generated-file export controls completed on 2026-06-04:
+
+- Files:
+  - `apps/web/src/modules/planningWorkflow.js`
+  - `apps/web/src/components/PlanningTaskExecutionPanel.vue`
+  - `apps/web/src/views/planning/PlanningTaskExecutionOverview.vue`
+  - `apps/web/src/views/planning/PlanningTaskExecutionResultStep.vue`
+  - `apps/web/src/styles.css`
+  - `README.md`
+  - `agent.md`
+- Notes:
+  - Added a threat-analysis-only `导出分析文件` control to the single-algorithm result header.
+  - Threat analysis prefers the existing Python `assessmentDocxBase64 / assessmentDocxFileName` DOCX report and falls back to a structured JSON analysis file when a built-in or archived result has no DOCX.
+  - The result page now recognizes threat-analysis generated DOCX, heatmap PNG, target-map PNG, combined-map PNG, and threat-field GeoJSON files.
+  - Every declared stage artifact now renders as a file card with its own `导出文件` control. Existing archives whose artifact entries only contain name/description/status are exported as focused JSON artifact files without changing the server archive contract.
+  - Every single-algorithm result page also provides an independent full structured-output JSON export.
+  - The execution overview and legacy execution panel now expose a separate JSON file export for the result snapshot while retaining the existing browser-local snapshot save action.
+  - Shared planning downloads now accept raw base64 and `data:*;base64,...` payloads, so generated binary files and future external algorithm artifacts use the same download path.
+- Verification:
+  - `npm run build --workspace @mission/web`: passed; Vite still emits the existing large chunk warning.
+  - `npm test --workspace @mission/server`: 12 tests passed.
+  - In-app browser validation against archived task instance `#23`, run `#50`:
+    - enemy-threat result displayed one `导出分析文件`, eight per-file `导出文件` controls, and one full JSON export;
+    - generated files were identified as one DOCX, three PNG files, one GeoJSON file, and three JSON stage artifacts;
+    - force-grouping result displayed three per-artifact export controls plus the full JSON export and no threat-only analysis button;
+    - execution overview displayed separate result-snapshot save and JSON export controls, including the output-package card export action;
+    - desktop and 760px narrow layouts had no page-level horizontal overflow; browser console had no warnings or errors.
+  - Direct archive payload validation confirmed the DOCX begins with a valid ZIP/DOCX signature, all three images begin with valid PNG signatures, and the GeoJSON contains 6400 features.
+- Remaining risk:
+  - The Codex in-app browser does not support receiving downloaded files, so click-through could confirm control presence but not capture the browser download itself; binary payload validity and shared download construction were verified from the archived result data and successful production build.
+
+Planning force-grouping multi-scheme result browser completed on 2026-06-04:
+
+- Files:
+  - `apps/web/src/components/PlanningForceGroupingPanel.vue`
+  - `apps/web/src/views/planning/PlanningTaskExecutionResultStep.vue`
+  - `apps/web/src/views/planning/PlanningTaskExecutionOverview.vue`
+  - `apps/web/src/styles.css`
+  - `apps/server/src/planning-runtime.js`
+  - `README.md`
+  - `agent.md`
+- Notes:
+  - Added a dedicated force-grouping result browser to the single-algorithm result page.
+  - The browser renders every available `schemes[]` candidate, moves the `preferredSchemeId` candidate to the first full-width row, and selects it by default. Missing preferred IDs fall back to `systemBestSchemeId`, then highest score.
+  - Clicking a scheme switches the visible score, constraint result, capability metrics, functional groups, and unit membership without reloading the page.
+  - Each functional group now states `第 i 个编组由 ... 单位构成` and provides a unit table with readable category/role/readiness labels, strength, capability summary, and location when present.
+  - Generic force-grouping tables no longer repeat or collapse `schemes` / `preferredScheme.groups` into `X 项`; comparison, rule evidence, and evidence trace remain visible.
+  - Historical Python outputs that only provide `methodLabel` now show that label in result headers, preview summaries, and execution overview cards instead of `--` or `待确认方案`. Python candidate counts also fall back to `forceUnitCount / blueIntelligenceCount`.
+  - New local Python executions use the same `methodLabel` fallback in server-generated summary and preview text.
+- Verification:
+  - `npm run build --workspace @mission/web`: completed successfully twice; Vite still emits the existing large chunk warning.
+  - `node --check apps/server/src/planning-runtime.js`: passed.
+  - `node algorithms/run-with-venv.mjs -m pytest algorithms/force-grouping/tests/test_force_grouping.py -q`: 13 tests passed.
+  - `npm test --workspace @mission/server`: 12 tests passed.
+  - In-app browser validation against archived task instance `#23`, run `#50`:
+    - displayed 3 scheme cards with the preferred scheme first and selected;
+    - clicking the other two schemes changed the selected heading and first group composition;
+    - preferred view displayed 4 group-composition statements and 12 unit rows;
+    - narrow viewport rendered scheme and metric cards in one column with no page-level horizontal overflow;
+    - browser console reported no warnings or errors.
+  - Restarted `launchctl` label `com.mission.server.dev`; new backend PID `37206` is listening on `http://localhost:3100`, and `/api/health` returned the expected ready response.
+- Remaining risk:
+  - Archived `outputPreview` strings remain unchanged in stored server payloads, but the current frontend rebuilds the force-grouping preview from structured output during replay, so user-visible historical pages are corrected without migrating archives.
+
+Planning enemy threat heatmap zoom/continuity fix completed on 2026-06-04:
+
+- Files:
+  - `apps/web/src/components/CesiumGlobe.vue`
+  - `apps/web/src/views/planning/PlanningTaskExecutionResultStep.vue`
+  - `apps/web/vite.config.js`
+  - `algorithms/enemy-threat-analysis/enemy_threat_analysis/image_exporter.py`
+  - `algorithms/enemy-threat-analysis/enemy_threat_analysis/visualization_builder.py`
+  - `algorithms/enemy-threat-analysis/tests/test_enemy_threat_analysis.py`
+  - `README.md`
+  - `agent.md`
+- Notes:
+  - Fixed the follow-up issue where the heatmap could disappear when zoomed in and show an empty/hollow center when zoomed out.
+  - Root cause:
+    - The previous Cesium overlay used a fixed-height rectangle entity (`height=28`) which could be hidden by terrain/depth behavior at close zoom levels.
+    - The previous anti-rectangle attempt used a hard percentile display floor, which removed low-but-valid threat cells and could create a transparent hole inside the heat field.
+  - `CesiumGlobe.vue` now renders image overlays as `SingleTileImageryProvider` imagery layers instead of rectangle entities, so the heatmap is draped with the base imagery and is not occluded by DEM terrain when zooming.
+  - Python heatmap rendering now creates a low-resolution RGBA threat raster, bicubic-resamples it to 960px, applies Gaussian smoothing with transparent padding, and uses a soft alpha falloff instead of a hard cutoff. Low threat fades down, but valid middle-field values remain visible.
+  - New Python overlays now carry `displayVersion=soft-continuous-v2`; older archived overlays with no current display version are regenerated from `heatmap.grid` on the frontend instead of reusing stale hard-cut PNGs.
+  - The frontend legacy/archived-result heatmap canvas fallback mirrors the same soft display curve, high-quality smoothing, and robust grid-id row/column parsing.
+  - `apps/web/vite.config.js` now binds Vite to `0.0.0.0` so both `http://localhost:5173/` and `http://127.0.0.1:5173/` work during development.
+  - Regression tests now cover the overlay display version, visible hotspot alpha, transparent/very-low-alpha outer corners, nonempty center alpha, zero-threat transparency, and softened cell boundaries.
+- Verification:
+  - Generated `tmp/enemy-heatmap-soft-continuous.png` from `examples/mock_extraction.json`; alpha stats were max `215`, center `184`, corner `3`, confirming no center hole and a very faint edge.
+  - Static Cesium smoke confirmed `SingleTileImageryProvider` construction works with the installed Cesium package.
+  - `node algorithms/run-with-venv.mjs -m pytest algorithms/enemy-threat-analysis/tests/test_enemy_threat_analysis.py -q`: 21 tests passed.
+  - `npm run build --workspace @mission/web`: completed successfully; Vite still emits the existing large chunk warning.
+  - `npm test --workspace @mission/server`: 12 tests passed.
+  - Restarted the frontend dev server with the new Vite host binding; `curl -I http://127.0.0.1:5173/` and `curl -I http://localhost:5173/` both returned `200 OK`.
+  - In-app browser opened `http://127.0.0.1:5173/` successfully and showed the login page (`任务规划系统`).
+- Remaining risk:
+  - Full in-app browser visual click-through to an archived enemy-threat result page was not completed because that requires selecting an existing run after login; validation covers PNG generation, Cesium overlay construction, frontend build, local app load, and HTTP availability.
+
+Planning enemy threat heatmap visibility fix completed on 2026-06-04:
+
+- Files:
+  - `apps/web/src/components/CesiumGlobe.vue`
+  - `apps/web/src/components/PlanningThreatMapPanel.vue`
+  - `apps/web/src/views/planning/PlanningTaskExecutionResultStep.vue`
+  - `algorithms/enemy-threat-analysis/enemy_threat_analysis/image_exporter.py`
+  - `algorithms/enemy-threat-analysis/enemy_threat_analysis/visualization_builder.py`
+  - `algorithms/enemy-threat-analysis/tests/test_enemy_threat_analysis.py`
+  - `README.md`
+  - `agent.md`
+- Notes:
+  - Fixed the follow-up bug where the heatmap could still appear invisible even though `heatmapBase64` existed.
+  - Root cause was twofold:
+    - Python PNG coloring used absolute `0-100` score scaling; in realistic sample fields with max threat around `35`, the hottest cells only reached low alpha/color contrast.
+    - Frontend rendered the image as an imagery layer, which was less reliable for result-panel ordering and basemap refresh interactions.
+  - `image_exporter.py` now normalizes heatmap colors against the current heatmap `statistics.maxThreat`, applies a gamma lift, preserves transparent near-zero cells, and guarantees visible hotspot alpha.
+  - `visualization_builder.py` now emits heatmap overlay alpha `0.82` plus `normalizedForDisplay=true` for new Python-generated heatmap images.
+  - Archived/previous outputs whose overlays do not carry `normalizedForDisplay=true` are enhanced once in the frontend from `heatmap.grid`, so existing result pages do not require rerunning the algorithm just to see the heatmap.
+  - `CesiumGlobe.vue` now renders image overlays through a dedicated `imageOverlaySource` using rectangle `ImageMaterialProperty`, inserted above environment/base imagery and below unit/situation entities.
+  - Result-page and threat-panel overlay fallbacks now use alpha `0.82`.
+- Verification:
+  - Generated a sample enemy heatmap PNG from `examples/mock_extraction.json` and inspected it visually; the heatmap is now clearly visible.
+  - Sample pixel stats improved from max alpha `86` / mean alpha `48.11` to max alpha `230` / mean alpha `161.21`.
+  - `node algorithms/run-with-venv.mjs -m pytest algorithms/enemy-threat-analysis/tests/test_enemy_threat_analysis.py -q`: 20 tests passed.
+  - `npm test --workspace @mission/server`: 12 tests passed.
+  - `npm run build --workspace @mission/web`: completed successfully; Vite still emits the existing large chunk warning.
+  - Static Cesium construction smoke confirmed rectangle `ImageMaterialProperty` is accepted by the installed Cesium package.
+- Remaining risk:
+  - In-app browser and Chrome visual validation could not be completed because the browser routes/extensions were unavailable or could not connect to the local dev URL in this session; validation is based on generated image inspection, pixel assertions, Cesium construction smoke, tests, and frontend production build.
+
+macOS launcher completed on 2026-06-04:
+
+- Files:
+  - `start-macos.command`
+  - `README.md`
+  - `agent.md`
+- Notes:
+  - Added a Finder/Terminal-friendly macOS launcher script at the repo root.
+  - Default mode is `dev`, which runs the full frontend + backend development stack.
+  - Supported modes: `dev`, `web`, `server`, `backend`, `production`, `stop`, and `--check`.
+  - The script prepends common Homebrew paths, auto-cd's to the project root, checks Node.js/npm, installs dependencies when `node_modules` is missing, and preserves the existing `PORT` / `MISSION_FORCE_WEB_BUILD` behavior.
+  - `stop` closes only processes listening on project ports, defaulting to `5173` and `$PORT` (`3100` by default); custom ports are supported via `./start-macos.command stop 5173 3100`.
+- Verification:
+  - `chmod +x start-macos.command`
+  - `bash -n start-macos.command`
+  - `./start-macos.command --check`: passed and reported Node/npm versions.
+  - `./start-macos.command stop 65534`: completed safely with no listener.
+- Remaining risk:
+  - Full long-running startup was not executed to avoid leaving dev/prod servers running in this turn; validation covers syntax, prerequisites, executable permissions, and the stop path on an idle port.
+
+Planning enemy threat static heatmap overlay completed on 2026-06-03:
+
+- Files:
+  - `apps/web/src/components/CesiumGlobe.vue`
+  - `apps/web/src/components/PlanningThreatMapPanel.vue`
+  - `apps/web/src/views/planning/PlanningTaskExecutionResultStep.vue`
+  - `algorithms/enemy-threat-analysis/enemy_threat_analysis/image_exporter.py`
+  - `algorithms/enemy-threat-analysis/enemy_threat_analysis/visualization_builder.py`
+  - `algorithms/enemy-threat-analysis/tests/test_enemy_threat_analysis.py`
+  - `README.md`
+  - `agent.md`
+- Notes:
+  - Enemy-threat heatmaps now use the Python algorithm output as a static transparent PNG plus geospatial bounds instead of frontend real-time grid rendering.
+  - Python `visualization_builder.py` emits `visualization.imageOverlays` with `imageBase64Field=heatmapBase64`, normalized `west/south/east/north` bounds, alpha, zIndex, and `single-tile-image` rendering metadata.
+  - `image_exporter.py` keeps zero-threat heatmap cells transparent and uses partial alpha for nonzero threat values so the bottom imagery remains readable.
+  - `PlanningTaskExecutionResultStep.vue` resolves explicit `visualization.imageOverlays` for new outputs and falls back to `heatmapBase64 + heatmap.bounds` for archived outputs.
+  - `PlanningThreatMapPanel.vue` binds the “威胁场” switch to Cesium image overlays: on adds the heatmap texture, off removes it; filtering no longer depends on the coverage-circle switch.
+  - `CesiumGlobe.vue` normalizes overlay bounds from both frontend and Python field names, sorts overlays by zIndex, applies alpha/opacity, and renders them as `SingleTileImageryProvider` imagery layers above the basemap and below entity data sources.
+- Verification:
+  - `node algorithms/run-with-venv.mjs -m pytest algorithms/enemy-threat-analysis/tests/test_enemy_threat_analysis.py -q`: 19 tests passed.
+  - `npm test --workspace @mission/server`: 12 tests passed.
+  - `npm run build --workspace @mission/web`: completed successfully; Vite still emits the existing large chunk warning.
+- Remaining risk:
+  - In-app browser visual validation could not be completed because the Browser plugin reported no available browser route for this session; validation is based on Python image/overlay regressions, server tests, and successful frontend production build.
+
+Planning enemy threat visualization type rules completed on 2026-06-03:
+
+- Files:
+  - `apps/web/src/views/planning/PlanningTaskExecutionResultStep.vue`
+  - `algorithms/enemy-threat-analysis/enemy_threat_analysis/llm_extractor.py`
+  - `algorithms/enemy-threat-analysis/enemy_threat_analysis/visualization_builder.py`
+  - `algorithms/enemy-threat-analysis/tests/test_enemy_threat_analysis.py`
+  - `README.md`
+  - `agent.md`
+- Notes:
+  - Fixed the follow-up issue where every parsed target received a coverage circle after the result-page bridge fix.
+  - Frontend derived enemy threat entities now use category-specific visualization rules:
+    - `fire_unit / fireCoverage`, `air_defense / airDefenseSystem`, `recon_sensor / electronic_warfare / reconEarlyWarning` may render coverage circles.
+    - `command_control`, `mobility_unit`, `logistics_support`, `fortification / antiAirborneFacilities`, and `unknown` default to point/symbol visualization only.
+    - Explicit `visualizationType`, `coverageTypes`, and `hasCoverage` can override the default rules when an algorithm result has stronger evidence.
+  - Enemy result pages now prefer the frontend-derived threat entities for enemy-threat results, preventing old Python `visualization.entities` from reintroducing all-target coverage circles.
+  - LLM prompt instructions now explicitly tell the model not to invent coverage ranges for point-only categories.
+  - `_coerce_coverage()` now normalizes every parsed LLM payload before validation and no longer defaults non-coverage categories to an 8 km coverage radius.
+  - Python `visualization_builder.py` only emits coverage circle entities for coverage-capable categories with `hasCoverage=true`.
+- Verification:
+  - `node algorithms/run-with-venv.mjs -m pytest algorithms/enemy-threat-analysis/tests/test_enemy_threat_analysis.py -q`: 17 tests passed.
+  - `npm run build --workspace @mission/web`: completed successfully; Vite still emits the existing large chunk warning.
+  - `npm test --workspace @mission/server`: 12 tests passed.
+- Remaining risk:
+  - Browser visual click-through was not repeated for this follow-up; validation is based on parser regressions, frontend production build, and server tests.
+
+Planning enemy threat map target bridge fix completed on 2026-06-03:
+
+- Files:
+  - `apps/web/src/views/planning/PlanningTaskExecutionResultStep.vue`
+  - `apps/web/src/components/PlanningThreatMapPanel.vue`
+  - `README.md`
+  - `agent.md`
+- Notes:
+  - Fixed the result-page mismatch where the enemy algorithm parsed 12 structured targets but the 3D threat panel showed `目标 0 / 类别 0` and no map markers.
+  - Root cause:
+    - The 3D side panel only counted `threatField.targets` / `situationMap.targets`, while the Python algorithm stores located targets primarily in `targetAssessments` and the structured sections (`fireCoverage`, `airDefenseSystem`, `reconEarlyWarning`, `antiAirborneFacilities`).
+    - Existing Python `visualization.entities` can carry layer keys such as `fireCoverage`, `airDefense`, or `sensors`, but `CesiumGlobe` visibility only recognizes keys like `units`, `detection`, `symbols`, and `orders`, so those entities could be passed in but hidden.
+  - `PlanningTaskExecutionResultStep.vue` now derives locatable threat targets from `targetEntities`, `targetAssessments`, and the structured threat sections; it generates target point entities and coverage circle entities with Cesium-visible layer keys.
+  - `PlanningThreatMapPanel.vue` now normalizes legacy/algorithm-specific entity layer keys to visible Cesium layers before filtering.
+  - Heatmap bounds are normalized from Python-style `minLon/minLat/maxLon/maxLat` to frontend overlay-style `west/south/east/north`.
+- Verification:
+  - `npm run build --workspace @mission/web`: completed successfully; Vite still emits the existing large chunk warning.
+  - `npm test --workspace @mission/server`: 12 tests passed.
+  - Browser login/navigation automation was attempted; the app loaded the login page without console errors, but the automated login click timed out in the in-app browser session, so final visual confirmation is based on build/static path verification rather than a screenshot.
+- Remaining risk:
+  - The user should refresh/reopen the planning result page so Vite/HMR or the rebuilt client loads the new bridge logic for archived results.
+
+Planning enemy LLM equipment quantity repair completed on 2026-06-03:
+
+- Files:
+  - `algorithms/enemy-threat-analysis/enemy_threat_analysis/llm_extractor.py`
+  - `algorithms/enemy-threat-analysis/tests/test_enemy_threat_analysis.py`
+  - `README.md`
+  - `agent.md`
+- Notes:
+  - Fixed the current execution failure where the enemy-threat LLM returned `equipment[].quantity` as text values such as `estimated`, `multiple`, or `various`; Pydantic expected integers and rejected the extraction.
+  - `_coerce_equipment()` now normalizes quantities to integers, maps common vague English/Chinese quantity terms to conservative counts, extracts embedded numbers such as `约 3 套`, and normalizes scalar `capabilityTags` to lists.
+  - README now documents this LLM schema tolerance alongside the existing `spatialContext` normalization.
+- Verification:
+  - `node --check apps/server/src/planning-runtime.js`
+  - `node --check algorithms/run-with-venv.mjs`
+  - `node algorithms/run-with-venv.mjs -m pytest algorithms/enemy-threat-analysis/tests/test_enemy_threat_analysis.py -q`: 15 tests passed.
+  - `npm test --workspace @mission/server`: 12 tests passed.
+  - Restarted `launchctl` label `com.mission.server.dev`; new backend PID `78855` is listening on `http://localhost:3100`.
+  - `curl http://localhost:3100/api/not-found` returned the expected JSON auth response (`401`, `未登录或登录状态已失效`).
+- Remaining risk:
+  - Browser click-through was not repeated after restart; validation is based on the pasted execution trace, parser regression tests, server tests, and HTTP availability.
+
+Planning local Python venv bootstrap completed on 2026-06-03:
 
 - Files:
   - `apps/server/src/planning-runtime.js`
+  - `algorithms/run-with-venv.mjs`
+  - `algorithms/requirements.txt`
+  - `.gitignore`
+  - `algorithms/README.md`
+  - `README.md`
+  - `agent.md`
+- Notes:
+  - The planning local Python runner now defaults to the Node-based `algorithms/run-with-venv.mjs` wrapper instead of directly spawning `python3`.
+  - The wrapper creates/reuses `algorithms/.venv`, installs/syncs root and sub-algorithm requirements, sets `VIRTUAL_ENV`, `PATH`, `PYTHONPATH`, and `PYTHONIOENCODING`, then runs the requested Python module or script through the venv interpreter.
+  - `PLANNING_PYTHON_BIN` still overrides the default wrapper; `PLANNING_PYTHON_BOOTSTRAP_BIN` can select the base Python used for first-time venv creation.
+  - Added root `algorithms/requirements.txt` for shared airlanding dependencies (`numpy`, `pyproj`) and ignored generated venv/cache directories.
+- Verification:
+  - `node --check apps/server/src/planning-runtime.js`
+  - `node --check algorithms/run-with-venv.mjs`
+  - `node algorithms/run-with-venv.mjs -c "import sys, numpy, pyproj, pydantic, docx, pypdf, openpyxl, PIL; print(sys.executable); print('venv-ok')"` created `algorithms/.venv`, installed dependencies, and printed the venv interpreter path plus `venv-ok`.
+  - `node algorithms/run-with-venv.mjs -m py_compile algorithms/enemy-threat-analysis/enemy_threat_analysis/cli.py algorithms/force-grouping/force_grouping/cli.py algorithms/airlanding_zone/main.py algorithms/airlanding_zone/candidate_generator.py`
+  - `npm test --workspace @mission/server`: 12 tests passed.
+- Remaining risk:
+  - First execution may take time while pip downloads dependencies; optional `rasterio` remains intentionally unpinned because airlanding treats it as an optional enhanced DEM path.
+
+Planning Python venv enforcement fix completed on 2026-06-03:
+
+- Files:
+  - `apps/server/src/planning-runtime.js`
+  - `algorithms/enemy-threat-analysis/enemy_threat_analysis/llm_extractor.py`
+  - `algorithms/enemy-threat-analysis/tests/test_enemy_threat_analysis.py`
+  - `README.md`
+  - `algorithms/README.md`
+  - `agent.md`
+- Notes:
+  - Fixed a runtime footgun where an inherited `PLANNING_PYTHON_BIN=python3` could bypass `algorithms/run-with-venv.mjs` and run the local enemy algorithm without `python-docx`, causing `ModuleNotFoundError: No module named 'docx'`.
+  - Local Python planning execution now uses the algorithms venv by default even when `PLANNING_PYTHON_BIN` is present; that variable is passed through as the venv bootstrap Python instead.
+  - Direct bare-Python execution is now opt-in via `PLANNING_PYTHON_USE_VENV=0`.
+  - While verifying the enemy CLI, fixed a follow-on LLM schema tolerance issue where `spatialContext.terrain` or `spatialContext.weather` returned as scalar strings failed validation; these are now coerced to list items before Pydantic validation.
+- Verification:
+  - `node --check apps/server/src/planning-runtime.js`
+  - `node --check algorithms/run-with-venv.mjs`
+  - `node algorithms/run-with-venv.mjs -m pytest algorithms/enemy-threat-analysis/tests/test_enemy_threat_analysis.py -q`: 14 tests passed.
+  - `node algorithms/run-with-venv.mjs -m enemy_threat_analysis.cli --files algorithms/enemy-threat-analysis/examples/sample_enemy_report.txt --output "$tmpdir/enemy.json" --artifact-dir "$tmpdir/artifacts" --skip-assessment`: succeeded with `ok=true`, `implementationStatus=implemented`, `threatScore=34.89`, confirming `docx` imports through the venv.
+  - `npm test --workspace @mission/server`: 12 tests passed.
+  - Restarted `launchctl` label `com.mission.server.dev`; new backend PID `76737` is listening on `http://localhost:3100`.
+  - `curl http://localhost:3100/api/not-found` returned the expected JSON auth response (`401`, `未登录或登录状态已失效`), confirming the backend is responding after restart.
+- Remaining risk:
+  - Browser click-through was not repeated after the backend restart; validation is based on direct CLI reproduction, unit tests, server tests, and HTTP availability.
+
+Intelligent task planning local Python algorithm integration completed on 2026-06-03:
+
+- Files:
+  - `apps/server/src/algorithm-gateway.js`
+  - `apps/server/src/planning-runtime.js`
+  - `apps/server/src/index.js`
   - `apps/server/src/planning-runtime.support.test.js`
+  - `apps/web/src/api.js`
+  - `apps/web/src/modules/planningWorkflow.js`
+  - `apps/web/src/views/planning/PlanningTaskExecutionOverview.vue`
+  - `apps/web/src/styles.css`
+  - `algorithms/airlanding_zone/threat_field.py`
   - `README.md`
   - `agent.md`
 - Notes:
-  - planning execution no longer aborts the entire task as soon as a later step throws
-  - `executeTaskPlanning()` now records per-step `implemented / failed / blocked` outcomes instead of throwing after the first runtime failure
-  - when one step fails, its `structuredOutput.implementationStatus` is now `failed` and the error is preserved in the step result payload
-  - downstream steps that require a failed/non-implemented upstream algorithm are now marked `blocked` before execution, rather than cascading additional runtime exceptions
-  - already successful earlier steps remain available in `execution.steps`, `result.consolidatedOutputs`, and the single-step result pages, which is the key behavior needed when only stage one of threat analysis is integrated
-  - execution summary now includes `failedSteps` and `blockedSteps` in addition to the previous implemented/placeholder counts
+  - Registered three active `external-model` local Python variants without changing built-in defaults:
+    - `enemy-threat-analysis:enemy-threat-analysis-local` / `基于大模型分析算法`
+    - `force-grouping:force-grouping-local` / `智能编组算法`
+    - `airborne-landing-site-selection:airlanding-zone-local` / `机降地域优化选择 Python 算法`
+  - Added a planning local Python runner that creates per-run temp workdirs, materializes explicitly selected resource-library data, uploaded files, and upstream outputs, runs `python3` (override via `PLANNING_PYTHON_BIN`), reads algorithm JSON outputs, redacts API keys in persisted result config, and cleans temp dirs after execution.
+  - Added `POST /api/planning/evaluate/stream` as a `text/event-stream` endpoint while keeping `POST /api/planning/evaluate`; stream events include `run-start`, `validation`, `step-start`, `progress`, `terminal`, `llm-chunk`, `step-complete`, `final`, `error`, and `done`.
+  - Frontend planning execution now uses the stream endpoint and displays an embedded monitor with progress, current step, per-step statuses, terminal logs, and LLM fragments. Historical result replay and single-algorithm result pages continue to use archived server results.
+  - `airlanding_zone/threat_field.py` now falls back to an internal distance-decay threat evaluator when the optional `theat_analyze/threat_analyzer.py` dependency is absent, allowing `algorithms/airlanding_zone/main.py` to run standalone with planning targets.
+  - Current local dev state: Vite is listening on `http://localhost:5173`; backend was relaunched through `launchctl` label `com.mission.server.dev` and is listening on `http://localhost:3100`.
 - Verification:
   - `node --check apps/server/src/planning-runtime.js`
-  - `npm test --workspace @mission/server`
-    - observed result: 12 tests passed
-    - includes new regression `planning execution preserves earlier step results when a later step fails`
+  - `node --check apps/server/src/index.js`
+  - `node --check apps/server/src/algorithm-gateway.js`
+  - `node --check apps/web/src/modules/planningWorkflow.js`
+  - `python3 -m py_compile algorithms/airlanding_zone/threat_field.py`
+  - `npm test --workspace @mission/server`: 12 tests passed, including new local Python variant registration and validation coverage
+  - `npm run build --workspace @mission/web`: completed successfully; Vite still emits the existing large chunk warning
+  - Python smoke:
+    - enemy `analyze(..., extraction_json=..., generate_assessment=False)` returned `implementationStatus=implemented`, `threatScore=31.04`, `fireCoverage=1`
+    - force CLI with `--mock-extraction` returned `implementationStatus=implemented` and a `preferredScheme`
+    - airlanding CLI against `apps/web/public/terrain` returned `zones=1`, `candidates=10`, `landingGroups=1`
+  - Authenticated curl confirmed planning template exposes the three local active variants and `/api/planning/evaluate/stream` emits SSE events with structured validation/error/done payloads.
 - Remaining risk:
-  - the frontend still treats only `implementationStatus === 'implemented'` steps as directly openable from the overview card, so failed/blocked steps remain intentionally non-clickable there
-  - later built-in algorithms still assume their upstream outputs are semantically complete when they do execute; the new decoupling prevents total run failure but does not auto-synthesize missing downstream data
+  - Browser automation tools were not available in this thread, so final visual validation of the execution monitor was not captured by screenshot; validation is based on Vite build, API checks, and local server availability.
+  - Enemy and force live LLM calls were not exercised to avoid invoking a real external model/key during smoke tests; stream plumbing was verified by endpoint behavior and stdout handling code paths.
+  - Backend service is currently running via `launchctl submit`; if it needs to be stopped manually, remove label `com.mission.server.dev`.
 
-Python threat-analysis subprocess integration completed on 2026-05-25:
+Data-service Cesium basemap fallback fix completed on 2026-06-03:
 
 - Files:
-  - `apps/server/src/planning-runtime.js`
-  - `apps/server/src/planning-threat-python.js`
-  - `apps/server/src/import-preview.js`
-  - `apps/server/src/import-preview.test.js`
-  - `apps/server/planning-python/requirements.txt`
-  - `apps/server/planning-python/theat_analyze/__init__.py`
-  - `apps/server/planning-python/theat_analyze/analyze.py`
-  - `apps/server/planning-python/theat_analyze/api_server.py`
-  - `apps/server/planning-python/theat_analyze/assessment_report.py`
-  - `apps/server/planning-python/theat_analyze/extractor.py`
-  - `apps/server/planning-python/theat_analyze/generate_assessment.py`
-  - `apps/server/planning-python/theat_analyze/geo_math.py`
-  - `apps/server/planning-python/theat_analyze/schemas.py`
-  - `apps/server/planning-python/theat_analyze/threat_analyzer.py`
+  - `apps/web/src/components/CesiumGlobe.vue`
   - `README.md`
   - `agent.md`
 - Notes:
-  - the previously removed Tactical-Visualizer-style Python threat-analysis files are now vendored back into `apps/server/planning-python/theat_analyze/` so the Node planning backend can reuse the uploaded algorithm sources directly
-  - the Node backend now prefers a local Python subprocess path for `enemy-threat-analysis` before falling back to the existing JS rule engine
-  - the new adapter lives in `apps/server/src/planning-threat-python.js`; it materializes selected resource-library previews/extractions, red intelligence, environment notes, and uploaded files into temporary `.txt/.docx` inputs, then runs the vendored `analyze.py` and `generate_assessment.py`
-  - superseded on 2026-05-27: the vendored Python files no longer keep in-file API Key or Base URL defaults; stage-one and stage-two model names still default to `qwen-flash` and `qwen-plus`, while API coordinates are injected from the frontend request or server environment variables
-  - the adapter still supports `PLANNING_THREAT_PYTHON_MODE` and `PLANNING_THREAT_PYTHON_BIN`; when the LLM method is explicitly selected, missing model API coordinates now surface as a structured failure instead of silently using a fixed credential
-  - `runBuiltinThreatAnalysis()` now returns Python-derived `targetEntities`, `heatmapBase64`, `bounds`, `situationMap`, `assessmentReport`, coverage/node collections, and a Cesium-ready visualization object when the subprocess path succeeds
-  - the planning upload preview/backend path now supports `.txt` files end to end instead of advertising them only in the frontend accept string
-  - local Python dependencies for the vendored pipeline were installed into the current user environment via `python3 -m pip install --user -r apps/server/planning-python/requirements.txt`
+  - Diagnosed the black map on macOS/in-app browser as a failed external TianDiTu imagery path: direct tile requests to `https://t0.tianditu.gov.cn/DataServer?...` returned HTTP `418`, so Cesium was adding unavailable imagery layers over the local scene.
+  - `refreshBasemap()` now probes a representative TianDiTu image tile before using TianDiTu imagery; if the token/service/network path is unavailable, `auto` and explicit TianDiTu selections fall back to available offline tiles or the built-in grid demo basemap instead of leaving a black globe.
+  - The TianDiTu probe is cached briefly to avoid repeated slow tile checks while still allowing a later retry.
+  - DEM mode now keeps Cesium globe lighting disabled so the data-service/situation workbench remains readable regardless of time-of-day lighting when using offline terrain.
 - Verification:
-  - `node --check apps/server/src/planning-runtime.js`
-  - `node --check apps/server/src/planning-threat-python.js`
-  - `python3 -m py_compile apps/server/planning-python/theat_analyze/*.py`
-  - `python3 -c "import docx, pyproj, numpy, PIL, openai, ollama; print('python-deps-ok')"`
-    - observed result: `python-deps-ok`
-  - `npm test --workspace @mission/server`
-    - observed result: 11 tests passed, including the new `.txt` import-preview regression
-  - `npm run build --workspace @mission/server`
-    - observed result: `server build not required`
-  - `curl -s http://localhost:3100/api/health`
-    - observed result: `{"ok":true,"message":"mission-learning-sandbox api ready"}`
+  - `curl -I` against TianDiTu image/label tile URLs returned HTTP `418`, reproducing the external imagery failure.
+  - `curl -I http://localhost:5173/terrain/layer.json` returned HTTP `200`, confirming local terrain metadata is present.
+  - `npm run build --workspace @mission/web` completed successfully; Vite still emits the existing large chunk warning.
 - Remaining risk:
-  - no full end-to-end planning execution was exercised in this session against a real uploaded document, so the Python network path and result mapping were validated by code/test checks rather than a live threat-analysis run
-  - in `auto` mode, Python runtime/import/network failures intentionally fall back to the older JS threat-analysis path; this preserves availability but can hide Python-only regressions until a real document run is exercised
-  - the vendored upstream Python sources still rely on LLM-only extraction for stage one; there is no deterministic Python fallback in those files if the remote model endpoint is unavailable
+  - The in-app Browser automation endpoint was unavailable during the final visual retry, so final validation is based on source inspection, HTTP reproduction, successful Vite build, and dev-server HMR rather than a fresh screenshot.
+  - If a real TianDiTu token/network path becomes reachable again, users may need to click the TianDiTu control again or refresh after the short probe cache expires.
 
-Cesium static asset path fix completed on 2026-05-25:
+Intelligent task planning algorithm design documentation completed on 2026-05-30:
 
 - Files:
-  - `apps/vite.config.js`
+  - `docs/intelligent-task-planning/00-module-overview.md`
+  - `docs/intelligent-task-planning/01-enemy-threat-analysis-design-test.md`
+  - `docs/intelligent-task-planning/02-force-grouping-design-test.md`
+  - `docs/intelligent-task-planning/03-target-allocation-design-test.md`
+  - `docs/intelligent-task-planning/04-airborne-landing-site-selection-design-test.md`
+  - `docs/intelligent-task-planning/05-method-planning-design-test.md`
+  - `docs/intelligent-task-planning/06-support-planning-design-test.md`
   - `README.md`
   - `agent.md`
 - Notes:
-  - the map black-screen issue with only a small corner icon was caused by `vite-plugin-cesium` resolving `Assets / Workers / Widgets` from the wrong `node_modules` directory
-  - the previous config pointed at `../../node_modules/cesium/Build*`, which matched the repo root layout but not the actual frontend package layout under `apps/`
-  - `apps/vite.config.js` now resolves Cesium build paths from absolute paths rooted at the `apps/` directory, so dev and build both serve the real Cesium static assets
+  - Documented the current intelligent task planning module location, registration path, execution chain, front/back-end API flow, task-instance persistence path, unified input/output envelopes, status/error handling, result package format, and upstream/downstream model.
+  - Documented all 6 current planning algorithms from `apps/server/src/planning-runtime.js`: `enemy-threat-analysis`, `force-grouping`, `target-allocation`, `airborne-landing-site-selection`, `method-planning`, and `support-planning`.
+  - Each algorithm document includes positioning, input options, frontend/backend sources, complete current `structuredOutput` field groups, generation logic, real-algorithm replacement guidance, pseudocode, test cases, and acceptance criteria.
+  - The docs call out current compatibility risks found during analysis: `.txt` appears in planning supported file extensions but `normalizePlanningUpload()` currently does not parse `.txt`; some result-page table specs still reference legacy aliases such as `candidates`, `comparedPlans`, and `validationFindings` while current outputs use `rankedCandidates`, `methodComparison`, and `validation`.
+  - README now links the new planning algorithm design/test documentation set.
 - Verification:
-  - `curl -I http://localhost:5173/cesium/Assets/approximateTerrainHeights.json`
-    - observed result: `200 OK`, `Content-Type: application/json`
-  - `curl -I http://localhost:5173/cesium/Workers/createVerticesFromHeightmap.js`
-    - observed result: `200 OK`, `Content-Type: application/javascript`
-  - `curl -I http://localhost:5173/cesium/Widgets/widgets.css`
-    - observed result: `200 OK`, `Content-Type: text/css`
-  - `npm run build` in `apps/`
-    - completed successfully
-    - previous Cesium asset copy error no longer appeared
+  - Read required repo context in order: `AGENTS.md`, `agent.md`, `README.md`.
+  - Inspected planning runtime, frontend workflow/pages, API adapter, HTTP routes, task attachment handling, and existing server tests.
+  - Ran a black-box `evaluatePlanning()` sample for `air-assault-task` with CSV uploads after installing minimal Node globals for `pdfjs-dist` import compatibility; observed 6 execution steps, 4 output packages, and consolidated outputs for all 6 algorithm result groups.
 - Remaining risk:
-  - live browser click-through still was not available in this session because the in-app browser surface was unavailable, so visual confirmation depends on user refresh plus the static asset probes above
-
-Online map-service configuration and offline/online dual-mode map fallback completed on 2026-05-25:
-
-- Files:
-  - `apps/src/components/CesiumGlobe.vue`
-  - `apps/src/components/SituationWorkbench.vue`
-  - `apps/src/components/ResourceWorkbench.vue`
-  - `apps/src/components/MapServiceConfigPanel.vue`
-  - `apps/src/modules/mapServiceConfig.js`
-  - `apps/src/styles.css`
-  - `README.md`
-  - `agent.md`
-- Notes:
-  - both `专题态势子模块` and `信息资源子模块` now expose a shared `在线 API 配置` panel
-  - simplest path is now direct `Cesium ion Token` input; after saving, the frontend keeps offline-first selection and only uses Cesium online services when local resources are unavailable or online mode is explicitly selected
-  - online map configuration is browser-local and persisted in `localStorage` under `mission-map-service-config`
-  - saved config now supports `ionToken` in addition to custom imagery URL, optional annotation URL, online terrain URL, optional token, subdomains, and maximum level
-  - if `ionToken` is absent, the previous custom URL / TianDiTu fallback path still works as an advanced option
-  - basemap mode options are now `自动 / 离线 / 在线 API`; terrain mode options are now `平面 / 离线 DEM / 在线 DEM`
-  - saving online config keeps the current workbench offline-first: basemap stays `自动`, terrain stays `离线 DEM`, and runtime fallback chooses online services only when local resources are unavailable
-  - Cesium basemap auto mode now prefers offline tiles, then configured online imagery (including Cesium ion world imagery), then the grid fallback
-  - terrain mode now defaults through offline DEM first, then configured online DEM / Cesium World Terrain when available, and finally ellipsoid terrain
-- Verification:
-  - `npm run build` in `apps/`
-    - completed successfully after installing the missing local optional Rollup native package `@rollup/rollup-darwin-arm64`
-    - Vite still emits the existing large chunk warning
-    - build output still logs the pre-existing `vite-plugin-cesium` asset copy warning about `../../node_modules/cesium/Build/Cesium/Assets`
-  - source inspection confirmed both workbenches pass the saved config into `CesiumGlobe`
-- Remaining risk:
-  - in-app browser automation was unavailable for this session (`Browser is not available: iab`), so no live click-through / screenshot verification was completed
-  - production Cesium asset copying remains fragile in the current Vite plugin/path setup and should be revisited separately if packaged builds need those copied assets consistently
+  - No production build or full test suite was run because this was a documentation-only pass.
+  - The sample `evaluatePlanning()` command emitted a non-fatal `@napi-rs/canvas` native binding warning from the PDF preview dependency path; the planning response still completed.
 
 Tactical-Visualizer 2.0 enemy-threat external integration removal completed on 2026-05-17:
 
@@ -576,18 +474,18 @@ Workspace slimming cleanup completed on 2026-05-17:
   - `algorithms/tactical-visualizer2.0/ai_engine/generated_reports`
   - `algorithms/tactical-visualizer2.0/ai_engine/stage_inputs`
   - local log files and most Python `__pycache__` directories
-  - `apps/web/terrain/terrain1.zip`, which was an already-expanded source archive not used by the Cesium terrain loader
-  - `apps/web/terrain/.tmp`, a temporary expanded terrain staging directory
+  - `apps/web/public/terrain/terrain1.zip`, which was an already-expanded source archive not used by the Cesium terrain loader
+  - `apps/web/public/terrain/.tmp`, a temporary expanded terrain staging directory
 - Notes:
-  - `.gitignore` now covers Python caches, external Tactical-Visualizer local dependencies/builds/uploads/reports/demo DB, and terrain staging archives under `apps/web/terrain`
+  - `.gitignore` now covers Python caches, external Tactical-Visualizer local dependencies/builds/uploads/reports/demo DB, and terrain staging archives under `apps/web/public/terrain`
   - retained `apps/server/data/mission-demo.sqlite*` because it is the current local demo/runtime database
-  - retained the converted Cesium terrain runtime asset under the local offline terrain directory (`layer.json`, `meta.json`, level directories `0` through `14`, and `README.txt`), because the frontend reads those files for offline DEM
-  - current canonical offline terrain path is `apps/web/terrain`; legacy `apps/web/public/terrain` is only a compatibility fallback
+  - retained the converted Cesium terrain runtime asset under `apps/web/public/terrain` (`layer.json`, `meta.json`, level directories `0` through `14`, and `README.txt`), because the frontend reads those files for offline DEM
+  - final measured large retained payload is `apps/web/public/terrain` at about `8719.85 MB`; this is no longer duplicate archive/temp data
 - Verification:
   - final cleanup snapshot confirmed removed paths for `node_modules`, `apps/web/dist`, external Tactical-Visualizer `node_modules`, `dist`, `venv`, uploads, generated reports, stage inputs, and demo DB
   - `rg` found no references to `terrain1.zip` / `terrain1` outside the terrain asset directory before deleting the archive
   - final retained directory snapshot:
-    - offline terrain directory: about `8719.85 MB`, `3557957` files at the time of the cleanup snapshot
+    - `apps/web/public/terrain`: `8719.85 MB`, `3557957` files
     - `apps/server/data`: `60.75 MB`, `3` files
     - `algorithms/tactical-visualizer2.0/ai_engine/__pycache__`: `0.04 MB`, `4` files
 - Remaining risk:
@@ -871,9 +769,9 @@ Import-preview mojibake cleanup + large web artifact cleanup completed on 2026-0
     - `apps/web/dist-check-next`
     - `apps/web/dist-check-ui`
     - `apps/web/dist-auth-check`
-    - historical `apps/web/public/tiles`
-  - kept the local DEM and terrain runtime assets; the current canonical paths are `apps/web/dem` and `apps/web/terrain`
-  - updated `.gitignore` to ignore `dist-*`, `apps/web/dist-*`, and generated/sample local tile directories
+    - `apps/web/public/tiles`
+  - kept `apps/web/public/dem` and `apps/web/public/terrain`
+  - updated `.gitignore` to ignore `dist-*`, `apps/web/dist-*`, and generated/sample `apps/web/public/tiles`
 - Verification:
   - `node apps/server/src/import-preview.test.js`
     - observed result: `4` tests passed
@@ -881,7 +779,7 @@ Import-preview mojibake cleanup + large web artifact cleanup completed on 2026-0
   - direct `node --test apps/server/src/import-preview.test.js` still failed in the current sandbox with `spawn EPERM`; direct script execution of the same test file passed
 - Remaining risk:
   - full `cmd /c npm test --workspace @mission/server` was not rerun to completion after this pass because this environment has repeatedly failed Node's test-runner child-process spawn with `EPERM`
-  - `apps/web/tiles` is absent by default unless generated or supplied locally; run `npm run tiles:sample` or place real demo tiles under that ignored path when offline base-map tiles are needed
+  - `apps/web/public/tiles` is now absent by default; run `npm run tiles:sample` or place real demo tiles back under that ignored path when offline base-map tiles are needed
 
 Project naming cleanup completed on 2026-04-15:
 

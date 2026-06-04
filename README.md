@@ -16,25 +16,12 @@
 - 探测圈、命令线、区域标绘与导出
 - 基础登录鉴权与角色区分
 
-## 文档入口
-
-- `AGENTS.md`：agent 协作约束和必读顺序
-- `agent.md`：技术交接记忆，记录最近修改和验证结果
-- `README.md`：面向使用者的功能、启动和状态说明
-- `开发指南.md`：面向开发者的文件地图，说明各文件实现的功能和维护入口
-
 ## 技术栈
 
 - 前端：`Vue 3`、`Vite`、`Cesium`、`ECharts`
 - 后端：`Node.js`、`Express`
 - 数据：`SQLite`
 - 运行方式：本地开发 / 本地离线部署
-
-### Cesium 资源说明
-
-- 当前前端的 Cesium 静态资源由 `apps/web/vite.config.js` 中的 `vite-plugin-cesium` 从 `apps/web/node_modules/cesium/Build/Cesium` 提供
-- 如果地图区域只显示黑底、左下角小图标或 `Cesium World Imagery / Terrain` 文案，但球体本身不出现，优先检查 `/cesium/Assets/*` 与 `/cesium/Workers/*` 是否返回了真实文件而不是前端首页
-- 本仓库当前已经修正过一次 Cesium 资源路径，避免 `Assets / Workers / Widgets` 被错误回退到 `index.html`
 
 ## 当前功能
 
@@ -87,16 +74,8 @@
 - 二维地图 / 三维地球切换
 - 离线瓦片 / 在线底图切换
 - 平面 / 离线 DEM / 在线 DEM 切换
-- `专题态势子模块` 与 `信息资源子模块` 的空间舞台现在共享一套 `在线 API 配置` 面板：
-  - 最简用法是直接输入 `Cesium ion Token`
-  - 高级模式下也可继续输入在线影像 URL、注记 URL、在线 DEM URL、访问令牌、子域和最大层级
-  - 配置会保存在当前浏览器本地，两个地图工作台都会复用
-  - 保存后仍保持离线优先；仅当本地离线瓦片或 `apps/web/terrain` 离线地形缺失时，才回退到在线 API
-- 地图底图与地形都支持 `离线优先 + 在线回退`：
-  - 底图 `自动` 模式下优先使用离线瓦片，没有离线瓦片时再尝试在线影像
-  - 地形默认读取 `apps/web/terrain` 暴露出的 `/terrain/layer.json`；未检测到离线地形时会尝试在线 DEM，再回退到平面椭球
-  - 本地 Cesium terrain 的 `layer.json` 会在开发服务和生产服务中自动修正：系统会根据真实 `.terrain` 文件生成 Cesium 可用的 `available` 范围，并移除会让 Cesium 忽略该范围的 `metadataAvailability`；前端读取离线地形时会关闭瓦片内 metadata 解析，避免部分转换工具生成的 metadata 扩展导致根瓦片加载失败
-  - 三维地球启用离线 DEM 后会保持全局光照和地形深度测试关闭，避免离线影像出现大块明暗分界，也避免路线、标签和标绘图层被地形遮挡
+- 底图自动回退：当未检测到本地离线瓦片，且天地图影像瓦片因 token、网络或上游拦截不可用时，前端会自动回退到内置网格演示底图，避免三维球只显示黑色背景
+- 离线 DEM 模式下默认关闭 Cesium 时间光照，优先保证数据服务和专题态势工作台的可读性
 - 左键重叠目标辅助选择
 - 左键拖拽单位、命令线端点、区域顶点
 - 右键元素编辑 / 删除 / 定位 / 快速创建
@@ -213,30 +192,26 @@
   - `机降地域优化选择`
   - `作战方法自动规划`
   - `作战保障自动规划`
-- 上述 `6` 个算法当前均已有内置实现；规划模块当前没有登记中的外部算法工程，新建任务默认全部绑定到内置执行器
+- 上述 `6` 个算法当前均已有内置实现；其中 3 个算法额外登记了本地 Python 扩展实现，用户可在“流程编排 / 算法实现”下拉中切换：
+  - `敌情威胁自动分析`：`基于大模型分析算法`，来自 `algorithms/enemy-threat-analysis`
+  - `作战力量智能编组`：`智能编组算法`，来自 `algorithms/force-grouping`
+  - `机降地域优化选择`：`机降地域优化选择 Python 算法`，来自 `algorithms/airlanding_zone`
 - 旧任务中如果仍保存了已移除的外部规划绑定，前后端会在找不到对应变体时自动回退到该算法的内置实现，避免历史任务无法打开或执行
 - 当前内置 `2` 个任务模板：
   - `火力打击任务`
   - `机降突击任务`
-- 规划运行时仍保留外部算法工程登记扩展点，后续重新集成新算法时可在 `apps/server/src/planning-runtime.js` 中登记工程、支持算法、参数 schema 和默认参数
+- 规划运行时现在支持两类扩展执行：
+  - HTTP 外部算法网关仍按 `algorithm-gateway-v1` 契约保留
+  - 本地 Python runner 会在系统临时目录按 `runId / stepId` 隔离输入，把已勾选资源库数据、上传文件和上游结果落盘后调用 `algorithms/run-with-venv.mjs`；该启动器会在 `algorithms/.venv` 自动创建/复用 venv、同步 `requirements.txt` 依赖，并用该虚拟环境运行算法。可通过 `PLANNING_PYTHON_BIN` 或 `PLANNING_PYTHON_BOOTSTRAP_BIN` 指定创建 venv 时使用的基础 Python；只有显式设置 `PLANNING_PYTHON_USE_VENV=0` 时才会绕过自动 venv。
+- 本地 Python 算法运行参数在算法配置页和流程编排页可见；LLM 配置遵循页面参数优先、环境变量兜底，API key 输入框为 password，服务端结果归档会将 key 脱敏为 `configured`
 - `敌情威胁自动分析` 支持从资源库显式勾选数据源，也支持上传本地 `Word / PDF / Excel / CSV / TXT` 文件进行分析；未勾选资源库数据源时不会默认使用全部已有资源，若同时没有上传文件，执行前会提示补充输入
-- `敌情威胁自动分析` 的内置方法现包含三种选择：
-  - `知识融合分析`：保持原有 Node.js 内置规则融合实现
-  - `覆盖优先分析`：保持原有 Node.js 覆盖圈和防空链路优先实现
-  - `基于大模型分析算法`：显式调用 `apps/server/planning-python/theat_analyze/*.py` Python 管道执行目标抽取、热力图/威胁场计算和第二阶段态势研判
-- 只有选中 `基于大模型分析算法` 时，后端才会调用 Python 威胁分析管道；原有 `知识融合分析 / 覆盖优先分析` 不再被 Python 自动替换
-- 智能任务规划首页顶部提供 `大模型接口配置` 区域，可填写当前会话使用的 `API Key` 与 `Base URL`；配置按登录用户保存在当前浏览器本地，仅在当前任务选择 `基于大模型分析算法` 时随执行请求传给后端注入 Python 子进程
-- 规划执行工作区现新增双工作台：
-  - `大模型流式输出工作台`：终端式显示大模型流式输出和报错内容，连续拼接原始流式片段，不为每个片段额外插入换行，也不混入当前算法、进度或摘要说明
-  - `算法输出工作台`：显示各算法阶段输出、摘要和关键结果线索；执行完成后仍可从历史结果回看输出摘要
-- 当前正在运行的算法与整体进度显示在双工作台上方的运行状态条中，避免干扰终端式输出内容
-- Python 威胁分析集成会把所勾选资源库数据源、抽取结果、敌方情报、环境要素和本地上传文件整理成临时文档输入，再复用原始 Python `analyze.py / generate_assessment.py / threat_analyzer.py` 等文件，不额外重写算法主体
-- `敌情威胁自动分析` 单算法结果页仍保留通用三维威胁场展示能力：当内置算法或未来新算法在结构化结果中提供 `heatmapBase64 / heatmapGeojson / bounds / targetEntities / pointThreatEvaluation` 等字段时，三维球会叠加热力图、目标卡片、覆盖圈、部署区和采样统计；页面不再依赖任何已移除的外部算法工程
-- 规划上传文件链路现在正式支持 `.txt`：
-  - 服务端导入预览支持 `TXT`
-  - Python 威胁分析会优先复用原始 `.docx/.txt` 文件，其余 `PDF/Excel/CSV` 会使用后端已抽取的文本草稿参与分析
+- `敌情威胁自动分析` 当前使用内置规则融合实现，会结合已勾选资源库的预览、抽取条目、敌方情报、环境要素和本地上传文件，提取敌方作战企图、部署态势、火力覆盖、防空体系、侦察预警和反机降设施等结构化节点
+- `敌情威胁自动分析` 的大模型抽取结果会在 schema 校验前做安全归一化：例如模型把 `spatialContext.terrain / weather` 返回成字符串，或把 `equipment[].quantity` 返回成 `estimated / multiple / various` 等文本时，会自动转换为平台可校验的结构化字段；同时覆盖范围不再对所有目标兜底生成，指挥、机动、后勤、普通工事等点目标默认 `hasCoverage=false / radiusMeters=0`
+- `敌情威胁自动分析` 单算法结果页仍保留通用三维威胁场展示能力：当内置算法或未来新算法在结构化结果中提供 `heatmapBase64 / heatmapGeojson / bounds / targetEntities / pointThreatEvaluation` 等字段时，三维球会叠加热力图、目标卡片、覆盖圈、部署区和采样统计；其中热力图不做前端实时网格渲染，而是读取 Python 算法生成的透明 PNG 和 `visualization.imageOverlays` / `heatmap.bounds` 地理边界，以 Cesium 单幅影像层贴地加载到底图之上、单位实体之下，并受结果页“威胁场”开关联动；Python 热力图会按当前威胁场峰值做可视化归一化，再通过重采样、高斯柔化和软透明度衰减生成连续贴图，避免因全局分值偏低而出现“已加载但肉眼不可见”、放大后被地形遮挡、缩小时中间被硬阈值挖空或低分辨率网格块割裂；历史结果若仍携带旧版或无 `displayVersion` 的 `heatmapBase64`，前端会基于已有 `heatmap.grid` 一次性生成增强静态贴图作为兼容兜底；若 Python 结果未单独提供 `targetEntities`，结果页会从 `targetAssessments`、`fireCoverage`、`airDefenseSystem`、`reconEarlyWarning` 和 `antiAirborneFacilities` 中提取坐标生成可定位目标，并按单位类型选择可视化形式：火力、防空、侦察/雷达、电子对抗默认可生成覆盖圈，指挥、机动、后勤、普通工事默认只生成点/符号，显式 `visualizationType / coverageTypes / hasCoverage` 可覆盖默认规则；页面不再依赖任何已移除的外部算法工程
 - `作战力量智能编组` 会结合已勾选资源库对应的我方兵力、资源库文档、本地上传文件和敌情威胁结果，生成动态规则画像、群组蓝图和多方案编组结果
 - `作战力量智能编组` 现在会让 `expectedGroupCount` 真正参与求解，并输出实际群组数、规则权重、证据条目、遗传优化迭代信息和推荐解释
+- `作战力量智能编组` 单算法结果页现在会展示算法输出的全部候选方案，并以 `preferredSchemeId` 标记的最优解置顶和默认选中；点击不同方案卡片后，页面会切换对应评分、能力指标、约束状态、群组与单位构成
+- 每套编组方案会逐组显示“第 i 个编组由 XXX 单位构成”，并展开单位名称、类别、角色、兵力、战备状态、能力摘要和坐标等可用信息；历史归档若方案只有 `methodLabel`、没有 `name`，结果页也会使用可读方案名称回显
 - 规划执行结果现已提供证据溯源入口：关键结果可回看来源名称、来源类型、文件名、抽取时间和摘要
 - `作战力量智能编组` 对本地 `CSV/Excel` 兵力文件支持按行拆解文档候选单元，即使没有结构化我方兵力，也能直接生成基础编组方案
 - `作战力量智能编组` 已预留 `约束模型` 扩展接口，当前内置默认模型为 `基础编组约束`，会输出约束得分、约束满足状态和分方案约束评估结果
@@ -257,15 +232,17 @@
 - `作战保障自动规划` 会在库存、运输投送能力和保障节点容量三类约束下执行真实资源调度，不再按“需求乘固定系数”直接回填供给；结果页会显示资源池状态、瓶颈、分配说明和匹配分析
 - `作战保障自动规划` 会在缺少有效作战编组结果、作战方法结果，或机降任务缺少机降地域结果时直接报错，避免继续输出缺少上游支撑的默认保障方案
 - `机降地域优化选择` 会基于地形、威胁分布、目标锚点和直升机模型对候选机降点进行评分、排序、标注与流程联动分析
-- `机降地域优化选择` 的内置方法新增 `智能机降算法`：只有在算法库或流程编排页显式选中该方法时，后端才会调用 `apps/server/planning-python/airlanding_zone/` Python 算法；原有 `加权评分选址 / Pareto 多目标排序 / 约束筛选优化` 仍保持原 Node.js 实现
-- `智能机降算法` 默认直接使用系统离线 Cesium terrain 瓦片进行高程、坡度和起伏采样，不需要上传 GeoTIFF；默认探测 `apps/web/terrain`，并兼容历史 `apps/web/pubulic/terrain` 与 `apps/web/public/terrain`
-- `智能机降算法` 输出会被转换为前端既有接口字段（`rankedCandidates / preferredCandidate / visualization.entities` 等），因此候选机降区、优选多边形和接近航路可直接显示在规划结果地图上
+- `机降地域优化选择 Python 算法` 会默认读取 `apps/web/public/terrain` 的离线 Cesium terrain；若上游敌情 / 目标分配坐标不足，会生成演示目标边界兜底以保证流程可联调
+- 规划执行接口在保留 `POST /api/planning/evaluate` 的基础上，新增 `POST /api/planning/evaluate/stream`，以 `text/event-stream` 返回 `run-start / validation / step-start / progress / terminal / llm-chunk / step-complete / final / error / done` 事件
+- 规划执行页已增加执行监控面板：总进度条、当前步骤、步骤状态列表、终端日志区域和大模型片段区域会随流式接口实时更新；失败时保留已收到的终端日志和错误事件
 - 任务执行结果现在按 `服务端归档 + 3 类导出 + 本地快照` 组织输出：
   - 主归档：每次执行都会写入服务端 `task_runs + task_results`，同一任务支持多次执行并保留独立历史记录
   - 导出一：`HTML` 分析报告
   - 导出二：`GeoJSON` 空间成果包，可用于地图/三维态势二次展示
   - 导出三：`CSV` 多方案对比表，便于离线比选与汇报整理
-  - 本地快照：可选将当前结构化结果另存为浏览器本地 `JSON` 快照（按登录账号隔离）用于快速回看
+  - 本地快照：可选将当前结构化结果另存为浏览器本地快照（按登录账号隔离）用于快速回看，也可直接导出为 `JSON` 文件
+- `敌情威胁自动分析` 单算法结果页顶部现在提供 `导出分析文件` 控件：优先导出 Python 算法生成的 `DOCX` 研判报告；内置算法、关闭二次研判或历史结果没有 DOCX 时，自动回退为结构化 `JSON` 分析文件。
+- 单算法结果页的“生成文件与阶段产物”会识别已有 `DOCX / PNG / GeoJSON` 文件，并为每个生成文件和每项阶段产物单独提供 `导出文件` 控件；各算法的完整结构化输出也可独立导出为 `JSON`，历史归档无需重新执行即可使用。
 - 结果页仍会输出阶段产物、摘要、结构化规划结果和三维球可视化实体，并会额外展示规划方法对比、推荐航路表、检查点表、阶段时序以及三维威胁 / 环境约束层
 - 前端已增加规划模块懒加载路由的自动恢复：如果生产环境前端刚完成重建而浏览器仍持有旧页面，点击某个规划子页面时遇到过期 chunk，会自动整页刷新一次以恢复进入
 - 作战任务库已切换为“模板实例化 + 服务端持久化编辑”：模板选择、流程步骤、算法绑定、输入配置都会绑定到任务实例并保存到服务端；再次进入同一任务实例时可恢复上述状态
@@ -273,71 +250,10 @@
   - `GET /api/tasks` 只返回任务摘要，不再把 `planningTaskDefinition / planningBindings / planningAlgorithmInputs` 整包回传到任务列表
   - 进入具体任务详情或执行规划时，服务端会再把附件内容回填到对应算法输入，保持现有执行链路兼容
   - 旧任务里历史内嵌的上传文件会在服务端启动时自动迁移到附件表，避免任务主表继续携带大体积 `base64`
-- 主链路已增加前置校验与统一错误结构：`/api/planning/validate` 与 `/api/planning/evaluate` 会返回 `error.code / error.type / error.details`，并按“缺数据 / 缺上游 / 算法失败 / 权限不足”分类提示
+- 主链路已增加前置校验与统一错误结构：`/api/planning/validate`、`/api/planning/evaluate` 与 `/api/planning/evaluate/stream` 会返回或流式发送 `error.code / error.type / error.details`，并按“缺数据 / 缺上游 / 算法失败 / 权限不足”分类提示
 - 规划算法配置页、任务执行结果页和相关错误提示中的历史乱码已修复，当前规划模块界面文案统一为正常中文
-- 能力/行动/消耗/规划执行链路已统一接入外部算法网关：前端统一按“内置算法 / 外部算法服务”选择，后端统一记录算法来源、运行时、版本和执行状态
+- 能力/行动/消耗/规划执行链路已统一接入扩展算法契约：前端统一按“内置算法 / 扩展算法实现”选择，后端统一记录算法来源、运行时、版本和执行状态；规划模块还支持本地 Python runner
 - 已登录状态下访问不存在的 `/api/*` 路径，服务端现统一返回 JSON `404`，不再错误落入前端 `index.html`
-
-### 4.2 Python 威胁分析接入说明
-
-当前仓库已把你上传的 `theat_analyze` Python 算法收编到：
-
-- `apps/server/planning-python/theat_analyze/`
-
-启用方式：
-
-1. 安装 Python 依赖
-   - `pip install -r apps/server/planning-python/requirements.txt`
-2. 启动当前 Node 后端
-3. 在前端进入 `智能任务规划 -> 规划算法库 -> 敌情威胁自动分析`
-4. 在 `内置方法` 中选择 `基于大模型分析算法`
-5. 在智能任务规划首页顶部的 `大模型接口配置` 中填写当前模型网关的 `API Key` 与 `Base URL`
-6. 按 `作战任务库 -> 任务执行` 路径触发威胁分析，并在执行页双工作台查看大模型流式输出与算法输出
-
-当前模型配置：
-
-- Python 脚本不再固定写入 API Key 或 Base URL
-- 当前任务选择 `基于大模型分析算法` 时，前端填写的 `API Key / Base URL` 会随规划执行请求传给 Node 后端，并作为环境变量注入 `analyze.py` 与 `generate_assessment.py`
-- `analyze.py` 默认模型仍为 `qwen-flash`，可通过 `TV20_LLM_MODEL` 或 `THREAT_ANALYSIS_LLM_MODEL` 覆盖
-- `generate_assessment.py` 默认模型仍为 `qwen-plus`，可通过 `TV20_STAGE2_MODEL` 或 `THREAT_ASSESSMENT_LLM_MODEL` 覆盖
-- 如果未在前端填写，也可继续通过服务端环境变量提供 `TV20_OPENAI_API_KEY / TV20_OPENAI_BASE_URL` 或对应 `THREAT_*` 配置
-
-仍可选的运行控制：
-
-- `PLANNING_THREAT_PYTHON_BIN`
-- `PLANNING_THREAT_PYTHON_MODE=auto|required|off`
-
-说明：
-
-- `知识融合分析 / 覆盖优先分析` 始终使用 Node.js 内置规则实现
-- `基于大模型分析算法` 会强制调用 Python 管道；若 Python 依赖、脚本或模型接口不可用，本次威胁分析步骤会返回结构化失败信息，并在大模型流式输出工作台显示报错
-- `PLANNING_THREAT_PYTHON_MODE` 仍保留给后续兼容路径使用；当前前端显式选择大模型方法时，以该方法选择为准
-
-### 4.3 Python 智能机降算法接入说明
-
-当前仓库已把 `airlanding_zone` Python 算法接入到：
-
-- `apps/server/planning-python/airlanding_zone/`
-
-启用方式：
-
-1. 确保系统存在 Cesium terrain 离线地形目录，推荐为 `apps/web/terrain`；当前也兼容 `apps/web/pubulic/terrain`
-2. 进入 `智能任务规划 -> 规划算法库 -> 机降地域优化选择`，在 `内置方法` 中选择 `智能机降算法`
-3. 或进入 `作战任务库 -> 流程编排`，在机降地域优化步骤的 `选择内置方法` 中选择 `智能机降算法`
-4. 执行机降突击任务，在执行总览的终端式工作台查看 Python 算法过程输出，在单算法结果页查看地图标注
-
-运行控制：
-
-- `PLANNING_TERRAIN_ROOT`：可指定离线 terrain 根目录，目录内必须包含 `layer.json`
-- `PLANNING_TERRAIN_SAMPLE_ZOOM`：可指定 Python 地形采样层级，默认 `12`
-- `PLANNING_AIRLANDING_PYTHON_BIN`：可指定 Python 解释器
-- `PLANNING_AIRLANDING_PYTHON_TIMEOUT_MS`：可指定智能机降算法超时
-
-说明：
-
-- 当前不要求上传 GeoTIFF；Python 侧默认使用 `local_cesium_terrain` provider 读取本地 `.terrain` 瓦片
-- 若离线 terrain 不存在或与分析区域不重叠，该机降步骤会返回结构化失败信息，并在流式输出工作台显示错误
-- Python 输出的候选点、优选区、机降分组和 warnings 会保留在结构化结果中，同时转换为前端地图可显示的实体
 
 ### 4.1 规划约束模型扩展说明
 
@@ -415,15 +331,16 @@
 - 能力模块：`CAPABILITY_PYTHON_URL / CAPABILITY_CPP_URL / CAPABILITY_PYTHON_VERSION / CAPABILITY_CPP_VERSION / CAPABILITY_BUILTIN_VERSION`
 - 行动模块：`ACTION_PYTHON_URL / ACTION_CPP_URL / ACTION_PYTHON_VERSION / ACTION_CPP_VERSION / ACTION_BUILTIN_VERSION`
 - 消耗模块：`CONSUMPTION_PYTHON_URL / CONSUMPTION_CPP_URL / CONSUMPTION_PYTHON_VERSION / CONSUMPTION_CPP_VERSION / CONSUMPTION_BUILTIN_VERSION`
-- 规划模块：当前未登记外部工程，仅 `PLANNING_BUILTIN_VERSION` 直接影响内置执行器版本；后续重新接入外部规划工程时，再在规划运行时登记对应 URL 与版本环境变量
+- 规划模块：`PLANNING_BUILTIN_VERSION` 影响内置执行器版本；默认会通过 `algorithms/run-with-venv.mjs` 使用 `algorithms/.venv` 执行本地 Python 算法，`PLANNING_PYTHON_BIN` / `PLANNING_PYTHON_BOOTSTRAP_BIN` 可覆盖首次创建 venv 时的基础 Python；只有设置 `PLANNING_PYTHON_USE_VENV=0` 时，`PLANNING_PYTHON_BIN` 才会作为直接执行命令使用；当前已登记 `enemy-threat-analysis-local / force-grouping-local / airlanding-zone-local` 三个 active 本地 Python 变体，HTTP 外部工程仍可继续按 URL 与版本环境变量登记
 
 说明：
 
-- 当前默认仅内置引擎可直接执行；外部引擎在未配置 URL 时会返回结构化“未接入”错误，不会再出现无意义空报错。
+- 内置引擎与 active 本地 Python 引擎可直接执行；HTTP 外部引擎在未配置 URL 时会返回结构化“未接入”错误，不会再出现无意义空报错。
+- 本地 Python 算法不需要手动 `source algorithms/.venv/bin/activate`；第一次执行会自动创建 `algorithms/.venv` 并安装 `algorithms/requirements.txt`、`algorithms/enemy-threat-analysis/requirements.txt`、`algorithms/force-grouping/requirements.txt` 中的依赖。依赖文件变更后，下一次执行会自动重新同步。
 - `algorithm_call_logs` 当前用于服务端归档与排障；若要做可视化运维看板，可再补充查询接口。
 - 规划模块当前真实发送的 `module/moduleKey` 为 `intelligent-task-planning`；若外部服务想兼容旧称呼，可同时兼容 `planning-calculation`
-- 规划模块外部实现按 `algorithms` 工程名注册；当前登记列表为空，新建规划任务不会自动选择外部服务
-- 若后续新增工程，需要在 `apps/server/src/planning-runtime.js` 登记工程名、支持的规划算法、网关环境变量、参数 schema 和默认参数；旧任务中保存的已删除外部绑定会因找不到变体而回退到内置算法
+- 规划模块扩展实现按 `algorithms` 工程名注册；新建规划任务仍默认选择内置算法，用户可在流程编排中切换到本地 Python 变体
+- 若后续新增工程，需要在 `apps/server/src/planning-runtime.js` 登记工程名、支持的规划算法、网关或本地执行参数、参数 schema 和默认参数；旧任务中保存的已删除外部绑定会因找不到变体而回退到内置算法
 - 规划模块当前只会把用户显式勾选的资源库子集打包到 `payload.dataset`；未勾选任何数据源时，`selectedSources / selectedPreviews / selectedExtractions / selectedEnvironment / intelligence.red / intelligence.blue` 均为空，不会隐式使用全部已有资源。打包字段包含：
   - `selectedSources`
   - `selectedPreviews`
@@ -431,19 +348,20 @@
   - `selectedEnvironment`
   - `intelligence.red / intelligence.blue`
 
-### 4.2.1 规划外部算法状态
+### 4.2.1 规划扩展算法状态
 
-当前仓库已移除上一版规划 Python 适配服务和 `tactical-visualizer2.0` 敌情威胁分析集成：
+当前仓库已移除上一版规划 Python FastAPI 适配服务和 `tactical-visualizer2.0` 敌情威胁分析集成：
 
 - `apps/planning-python` 已删除
 - `dev:planning-python`、`dev:server:planning-python`、`dev:planning-python-stack` 相关 npm 脚本已删除
 - 根目录 `start-planning-python*.bat` 启动脚本已删除
-- 规划运行时的外部工程登记列表为空，`enemy-threat-analysis` 默认执行内置算法
 - 规划输出包不再生成 `敌情二次研判报告` DOCX
 
-保留能力：
+当前保留并新增的能力：
 
-- 外部算法网关基础契约仍可复用，未来重新集成新算法时可继续走 `algorithm-gateway-v1`
+- 外部算法网关基础契约仍可复用，未来重新集成 HTTP 算法服务时可继续走 `algorithm-gateway-v1`
+- `algorithms/enemy-threat-analysis`、`algorithms/force-grouping`、`algorithms/airlanding_zone` 已作为本地 Python 算法登记到规划模块，但不会覆盖各算法的内置默认实现
+- `POST /api/planning/evaluate/stream` 会把本地 Python stdout/stderr 映射为 `terminal`，把 enemy/force 的 LLM stdout 片段映射为 `llm-chunk`
 - `敌情威胁自动分析 三维结果` 面板仍能渲染通用威胁场字段，包括 `heatmapBase64`、`heatmapGeojson`、`bounds`、`targetEntities`、`pointThreatEvaluation`、`situationMap` 和 `heatmap.matrixSummary`
 - `GeoJSON` 空间成果包仍会收集通用 `heatmapGeojson` 威胁场采样要素，前提是当前或未来算法结果中实际提供该字段
 
@@ -477,6 +395,20 @@
 - 关键规划结果至少可追到 `数据源 / 文件名 / 来源类型 / 抽取时间`
 - 同一任务多次执行后，历史结果回看仍保留对应证据字段
 
+### 4.5 规划算法设计与测试文档
+
+智能任务规划模块现已补充 7 份面向真实算法升级的 Markdown 设计与测试文档，位于 `docs/intelligent-task-planning/`：
+
+- `00-module-overview.md`：模块架构、统一输入输出、接口链路、注册/切换机制、通用评分体系和升级路线图。
+- `01-enemy-threat-analysis-design-test.md`：敌情威胁自动分析设计与测试。
+- `02-force-grouping-design-test.md`：作战力量智能编组设计与测试。
+- `03-target-allocation-design-test.md`：作战目标自动分配设计与测试。
+- `04-airborne-landing-site-selection-design-test.md`：机降地域优化选择设计与测试。
+- `05-method-planning-design-test.md`：作战方法自动规划设计与测试。
+- `06-support-planning-design-test.md`：作战保障自动规划设计与测试。
+
+这些文档基于当前真实代码中的 `ALGORITHM_DEFINITIONS`、`BUILTIN_EXECUTORS`、`structuredOutput` 字段、前后端接口、现有测试和导出包格式整理。后续替换真实算法时，应先保持文档列出的平台字段兼容，再逐步重写各算法核心求解逻辑。
+
 ### 5. 权限系统
 
 - 支持注册 / 登录
@@ -488,7 +420,35 @@
 
 ## 快速开始
 
-### 方式零：Windows 一键启动脚本
+### 方式零：macOS 一键启动脚本
+
+项目根目录提供 `start-macos.command`，可在 Finder 中双击启动，也可在终端中带参数运行。默认启动完整开发栈：
+
+```bash
+./start-macos.command
+```
+
+常用模式：
+
+| 命令 | 对应命令 | 用途 |
+| --- | --- | --- |
+| `./start-macos.command` 或 `./start-macos.command dev` | `npm run dev` | 同时启动前端开发服务和后端开发服务 |
+| `./start-macos.command web` | `npm run dev:web` | 只启动前端开发服务 |
+| `./start-macos.command server` | `npm run dev:server` | 只启动后端开发服务 |
+| `./start-macos.command backend` | `npm run start` | 启动本地生产后台并托管前端构建产物 |
+| `./start-macos.command production` | `npm run build` 后 `npm run start` | 先完整构建，再启动本地生产服务 |
+| `./start-macos.command stop` | 关闭监听端口进程 | 清理默认项目端口 `5173` 和 `3100` |
+| `./start-macos.command --check` | 检查 Node/npm | 只检查启动前置条件 |
+
+说明：
+
+- 正常启动后，在终端窗口按 `Ctrl+C` 即可退出并关闭相关服务
+- 如果异常退出后端口仍被占用，可执行 `./start-macos.command stop`
+- `stop` 只处理正在监听指定端口的进程；也可手动指定端口，例如 `./start-macos.command stop 5173 3100`
+- 如后端端口不是默认值，可用 `PORT=3200 ./start-macos.command server` 或 `PORT=3200 ./start-macos.command stop`
+- 脚本会自动切到项目根目录、检查 `Node.js` 和 `npm`，并在缺少 `node_modules` 时执行 `npm install`
+
+### 方式零补充：Windows 一键启动脚本
 
 项目根目录提供了一组 Windows `.bat` 启动脚本，可直接双击使用：
 
@@ -500,48 +460,17 @@
 | `start-server-dev.bat` | `npm run dev:server` | 只启动后端开发服务 |
 | `start-production.bat` | `npm run build` 后 `npm run start` | 先完整构建，再启动本地生产服务 |
 
-当前 Windows 兼容性说明：
-
-- 可以迁移到 Windows 直接运行，当前启动链路不依赖 macOS/Linux 专属命令
-- 本轮已修正根目录前端启动命令与实际目录结构不一致的问题，`start-dev.bat` 和 `start-web-dev.bat` 现在会走可用的前端启动路径
-- 本轮已修正生产构建产物路径说明，当前前端构建输出实际位于 `apps/web/dist/client`
-- 若需要运行规划 Python 管道，Windows 机器仍需单独安装 Python 及 `apps/server/planning-python/requirements.txt` 中的依赖
-
-### 方式零点五：macOS 启动脚本
-
-项目根目录新增 `start-mac.sh`，可在 macOS 终端中直接使用：
-
-```bash
-chmod +x start-mac.sh
-./start-mac.sh dev
-```
-
-支持模式：
-
-- `./start-mac.sh dev`：同时启动前后端开发服务
-- `./start-mac.sh web`：只启动前端开发服务
-- `./start-mac.sh server`：只启动后端开发服务
-- `./start-mac.sh prod`：构建并启动本地生产服务
-- `./start-mac.sh check`：只检查 Node.js 和 npm 是否可用
-- `./start-mac.sh status`：查看当前受管端口占用状态
-- `./start-mac.sh stop`：关闭当前受管端口上的前后端监听进程
-- `./start-mac.sh stop web`：只关闭前端开发端口 `5173`
-- `./start-mac.sh stop server`：只关闭后端 / 本地生产端口 `3100`
-- `./start-mac.sh restart dev`：先释放端口，再重启整套开发服务
-
 通用行为：
 
 - 自动切到项目根目录
 - 检查 `Node.js` 和 `npm` 是否可用
 - 需要 Node 依赖的脚本会在缺少 `node_modules` 时先执行 `npm install`
-- 启动前会先检查默认端口是否已被占用，避免直接撞端口
-- 可在另一个终端执行 `./start-mac.sh status` 查看 `5173 / 3100` 的监听状态
-- 可在另一个终端执行 `./start-mac.sh stop` 直接释放受管端口；若进程未响应，会继续尝试强制结束
-- 仍然支持在启动窗口内按 `Ctrl+C` 停止当前前台服务
+- 停止服务时，在启动窗口按 `Ctrl+C`
 
 常用访问地址：
 
 - 前端开发地址：`http://localhost:5173`
+- 前端开发服务会显式绑定 IPv4 host，因此 `http://127.0.0.1:5173` 也可访问
 - 后端 / 本地生产地址：`http://localhost:3100`
 
 每个脚本都支持检查模式，例如：
@@ -574,6 +503,7 @@ npm run dev
 启动后：
 
 - 前端开发地址：`http://localhost:5173`
+- 也可使用：`http://127.0.0.1:5173`
 - 后端服务地址：`http://localhost:3100`
 
 说明：
@@ -592,7 +522,7 @@ npm run start
 
 说明：
 
-- `npm run start` 会在缺少前端构建产物时自动构建前端，然后启动后端并托管构建产物
+- `npm run start` 会在缺少前端构建产物时自动构建 `@mission/web`，然后启动后端并托管构建产物
 - 若你需要强制重建前端，可在启动前设置 `MISSION_FORCE_WEB_BUILD=1`
 - 访问地址通常为：`http://localhost:3100`
 
@@ -606,12 +536,11 @@ npm run start
 4. 创建或打开一个任务，再按需跳转到对应业务工作区
 5. 进入“数据服务”页，检查资源接入和专题态势
 6. 在“专题态势”中切换二维 / 三维视图
-7. 如果本机没有离线瓦片或离线 DEM，可在右侧 `在线 API 配置` 中直接填写 `Cesium ion Token` 并保存
-8. 从左侧素材区拖放单位、探测圈、命令线、区域到地图
-9. 右键地图空白处快速创建要素
-10. 在右侧“地图测量”中体验距离测量与面积测量
-11. 右键已有要素进行编辑、定位、删除
-12. 尝试导出 `PNG / PDF / KML`
+7. 从左侧素材区拖放单位、探测圈、命令线、区域到地图
+8. 右键地图空白处快速创建要素
+9. 在右侧“地图测量”中体验距离测量与面积测量
+10. 右键已有要素进行编辑、定位、删除
+11. 尝试导出 `PNG / PDF / KML`
 
 ## 地图测量说明
 
@@ -650,43 +579,26 @@ npm run start
 - 二维模式主要表现地面投影、轮廓线与平面态势关系
 - 三维模式主要表现空间方向、俯仰角与体积探测效果
 
-## 在线地图配置说明
-
-如果本机没有下载离线瓦片或离线 DEM，可直接在前端输入 `Cesium ion Token`：
-
-1. 登录后进入 `数据信息服务`
-2. 进入 `专题态势子模块`，或留在默认的 `信息资源子模块`
-3. 在右侧找到 `在线 API 配置`
-4. 填写 `Cesium ion Token`
-5. 点击 `保存在线配置`
-
-说明：
-
-- 保存后，前端不会强制切到在线地图；底图保持 `自动`，地形保持 `离线 DEM`，由运行时按“本地离线资源 -> 在线 API -> 网格/平面兜底”的顺序选择
-- 这些配置会保存到当前浏览器本地存储，刷新页面后仍会保留
-- `信息资源子模块` 的 `环境与情报主舞台` 与 `专题态势子模块` 会共用同一份在线地图配置
-- 如果你不想使用 Cesium ion，仍可以展开高级选项，继续填写自定义影像 URL / 在线 DEM URL
-
 ## 离线底图目录
 
 将离线瓦片放入：
 
 ```text
-apps/web/tiles/{z}/{x}/{y}.png
-apps/web/tiles/{z}/{x}/{y}.jpg
-apps/web/tiles/{z}/{x}/{y}.jpeg
-apps/web/tiles/{z}/{x}/{y}.webp
+apps/web/public/tiles/{z}/{x}/{y}.png
+apps/web/public/tiles/{z}/{x}/{y}.jpg
+apps/web/public/tiles/{z}/{x}/{y}.jpeg
+apps/web/public/tiles/{z}/{x}/{y}.webp
 ```
 
 示例：
 
 ```text
-apps/web/tiles/0/0/0.jpg
-apps/web/tiles/1/0/0.jpg
-apps/web/tiles/1/1/0.jpg
+apps/web/public/tiles/0/0/0.jpg
+apps/web/public/tiles/1/0/0.jpg
+apps/web/public/tiles/1/1/0.jpg
 ```
 
-如果目录中存在 `apps/web/tiles/tilemapresource.xml`，前端会优先读取其中元数据，并自动识别：
+如果目录中存在 `apps/web/public/tiles/tilemapresource.xml`，前端会优先读取其中元数据，并自动识别：
 
 - 瓦片扩展名
 - 层级范围
@@ -701,11 +613,9 @@ apps/web/tiles/1/1/0.jpg
 请将转换后的地形目录放到以下任一位置：
 
 ```text
-apps/web/terrain/
-apps/web/dem/
+apps/web/public/terrain/
+apps/web/public/dem/
 ```
-
-兼容说明：历史路径 `apps/web/public/terrain`、`apps/web/public/dem` 和 `apps/web/public/tiles` 仍可被服务端或开发服务器兼容读取；如果本地目录曾误写为 `apps/web/pubulic/...`，当前启动链路也会兼容读取。当前推荐使用 `apps/web/terrain`、`apps/web/dem` 和 `apps/web/tiles`。
 
 目录中至少需要包含：
 
@@ -716,8 +626,8 @@ layer.json
 推荐结构示例：
 
 ```text
-apps/web/terrain/layer.json
-apps/web/terrain/0/0/0.terrain
+apps/web/public/terrain/layer.json
+apps/web/public/terrain/0/0/0.terrain
 ```
 
 前端会自动探测：
@@ -727,36 +637,24 @@ apps/web/terrain/0/0/0.terrain
 
 维护说明：
 
-- `apps/web/terrain/0` 至 `apps/web/terrain/14`、`layer.json`、`meta.json` 和 `README.txt` 是当前离线 DEM 运行资产，若需要保留离线地形功能，不要删除。
-- 若离线 terrain 原始 `layer.json` 的 `available` 与实际瓦片不一致，或包含 `metadataAvailability`，启动后的 `/terrain/layer.json` / `/dem/layer.json` 会动态返回修正版；响应头 `X-Mission-Terrain-Layer: repaired` 表示当前已启用该兼容修复。
-- 离线 terrain provider 会显式关闭 `requestMetadata`，因为当前本地瓦片已通过修正版 `layer.json` 提供顶层可用性；继续解析瓦片内部 metadata 可能导致 Cesium 根瓦片加载异常，表现为离线 DEM 黑屏。
-- 地形渲染完成后，前端会显式保持 `enableLighting=false` 和 `depthTestAgainstTerrain=false`；前者避免离线地图被太阳光照终止线压暗，后者保证态势标绘、命令线、标签和规划结果不会被 DEM 表面遮住。
-- 智能任务规划中的 `智能机降算法` 也会读取同一套 Cesium terrain 数据用于地形采样；它不读取原始 `.dem/.tif` 栅格，也不要求在前端上传 GeoTIFF。
-- `apps/web/terrain/.tmp/` 是地形转换或解压过程的临时目录，`apps/web/terrain/**/*.zip` 是转换完成后的原始压缩包副本；它们不被前端运行时读取，已加入忽略规则，可作为瘦身对象清理。
+- `apps/web/public/terrain/0` 至 `apps/web/public/terrain/14`、`layer.json`、`meta.json` 和 `README.txt` 是当前离线 DEM 运行资产，若需要保留离线地形功能，不要删除。
+- `apps/web/public/terrain/.tmp/` 是地形转换或解压过程的临时目录，`apps/web/public/terrain/**/*.zip` 是转换完成后的原始压缩包副本；它们不被前端运行时读取，已加入忽略规则，可作为瘦身对象清理。
 
-### 2. 在线影像 / 在线 DEM
+### 2. 在线 DEM / 天地图配置
 
-前端当前同时支持：
-
-- 在页面内通过 `在线 API 配置` 面板直接输入 `Cesium ion Token`
-- 在高级选项中继续输入在线影像与在线 DEM 地址
-- 通过环境变量提供默认值，供首次打开页面时自动填充
-
-如果你希望通过环境变量提供默认值，可在 `apps/.env.local` 中配置：
+在 `apps/web/.env.local` 中配置：
 
 ```bash
-VITE_CESIUM_ION_TOKEN=你的CesiumIonToken
 VITE_TDT_TOKEN=你的天地图令牌
 VITE_TDT_TERRAIN_URL=Cesium兼容地形服务地址
 ```
 
 说明：
 
-- `VITE_CESIUM_ION_TOKEN` 会作为默认的 Cesium ion token；进入在线回退或显式在线模式时，前端会优先使用 Cesium World Imagery 与 Cesium World Terrain
-- `VITE_TDT_TOKEN` 会作为默认访问令牌注入前端；若未填写自定义影像 URL，前端会默认尝试天地图影像模板
+- `VITE_TDT_TOKEN` 用于天地图底图访问
 - `VITE_TDT_TERRAIN_URL` 应指向 Cesium 兼容的地形服务地址或 `layer.json`
-- 底图 `自动` 模式下，系统会优先尝试离线瓦片；若离线瓦片不存在，则尝试在线影像；在线影像也不可用时回退到网格演示底图
-- `离线 DEM` 模式下，系统会优先读取 `apps/web/terrain`；若本地离线地形不存在，则尝试在线 DEM；在线 DEM 也不可用时回退到平面椭球地形
+- 若在线 DEM 不可用，系统会自动回退到离线 DEM；若离线 DEM 也不存在，则回退到平面椭球地形
+- 若天地图影像瓦片请求返回 `418`、`403`、超时或图片加载失败，系统会自动回退到底图网格。此时右上角状态会提示天地图瓦片不可用；需要真实影像底图时，请更换可用 token、检查网络/WAF 限制，或放入本地离线瓦片目录。
 
 ## 示例瓦片脚本
 
@@ -766,22 +664,22 @@ VITE_TDT_TERRAIN_URL=Cesium兼容地形服务地址
 npm run tiles:sample
 ```
 
-该命令会在 `apps/web/tiles` 下生成一套示例瓦片。
+该命令会在 `apps/web/public/tiles` 下生成一套示例瓦片。
 
 如果你已经替换成自己的真实演示瓦片数据，则无需再执行该命令。
 
-说明：`apps/web/tiles` 属于本地生成 / 外部放置的大体量瓦片目录，当前已加入忽略规则；仓库默认不再保留历史验证用瓦片产物。需要离线底图时请重新运行示例脚本或放入自己的演示瓦片。
+说明：`apps/web/public/tiles` 属于本地生成 / 外部放置的大体量瓦片目录，当前已加入忽略规则；仓库默认不再保留历史验证用瓦片产物。需要离线底图时请重新运行示例脚本或放入自己的演示瓦片。
 
 ## 项目结构
 
 ```text
 AGENTS.md   Agent 协作约束
-开发指南.md 开发侧文件地图
 apps/
   server/   Node API + SQLite 示例服务
-  web/      Vue + Cesium 前端工作区；本地地形 / 离线瓦片大目录仍单独忽略
+  web/      Vue + Cesium 前端界面
 agent.md    Agent 持久记忆
 scripts/    启动与示例数据脚本
+start-macos.command macOS 一键启动/停止脚本
 start-*.bat Windows 一键启动脚本
 README.md   使用说明
 TODO.md     后续优化建议
@@ -791,12 +689,13 @@ TODO.md     后续优化建议
 
 - 前端生产构建输出目录为 `apps/web/dist/client`
 - `scripts/start-production.mjs` 默认复用已有 `apps/web/dist/client/index.html`
+- `start-macos.command` 默认启动开发栈，支持 `dev / web / server / backend / production / stop / --check`
 - `start-backend.bat` 默认调用 `npm run start`；`start-production.bat` 会先执行完整 `npm run build` 再启动
 - 根目录 `start-*.bat` 脚本首次运行若未安装 Node 依赖，会先自动执行 `npm install`
 - 若需强制重建前端，可设置 `MISSION_FORCE_WEB_BUILD=1`
 - 规划模块核心运行时代码位于 `apps/server/src/planning-runtime.js`
-- Git 同步策略：`node_modules/`、`apps/web/node_modules/`、`apps/web/dist/`、`apps/server/data/`、Python `generated_reports/`、`.env.*`、`.vscode/*`，以及 `apps/web/terrain|dem|tiles|public|pubulic` 等本地大体量地图资源目录已加入忽略规则；`apps/.env.example` 和 `apps/web/src/data/**` 明确保留为可同步源码 / 示例配置
-- `apps/web/terrain`、`apps/web/dem` 和 `apps/web/tiles` 当前作为本地地形、DEM、离线瓦片放置区使用，不参与 Git 同步；需要离线底图时请在本地重新生成或自行放置
+- 仓库只提交源码、测试、设计文档、示例配置和必要示例文件；`.env.example` 中只能保留占位符，真实 API key、token 和本地 `.env.*` 配置不会提交
+- `node_modules`、前端构建目录、服务端运行数据库、运行时导入数据、临时文件、算法虚拟环境、算法输出结果、源码压缩包以及本地瓦片 / DEM / terrain 资产均已加入 `.gitignore`，不要把这些可再生成或大体量本地文件当作源码维护
 
 ## Agent 协作约束
 
@@ -805,10 +704,8 @@ TODO.md     后续优化建议
   1. `AGENTS.md`
   2. `agent.md`
   3. `README.md`
-  4. `开发指南.md`
-- 任何 agent 在修改代码后，都必须同步更新 `agent.md` 和 `README.md`；如果涉及文件职责、入口、目录结构或开发流程，也必须同步更新 `开发指南.md`
+- 任何 agent 在修改代码后，都必须同步更新 `agent.md` 和 `README.md`
 - `agent.md` 用于技术交接记忆，`README.md` 用于对外说明当前真实行为
-- `开发指南.md` 用于说明具体文件实现什么功能、有什么作用，以及常见修改应从哪里入手
 
 ## 代码审查快照
 
@@ -836,7 +733,7 @@ TODO.md     后续优化建议
 18. 从任务中心详情跳转到规划执行、能力评估、行动计算、消耗计算时，前端现已显式同步所选 `taskId`；规划页会加载对应任务实例，能力计算三页会绑定同一任务上下文，不再沿用本地上一次打开的其他任务编号。
 19. 数据导入预览运行时文案已完成针对 `apps/server/src/import-preview.js` 的清理，Excel/CSV/Word/PDF 预览标题、摘要、抽取草稿和错误提示不再返回历史乱码；新增 `apps/server/src/import-preview.test.js` 做回归保护。
 20. 本地大体量验证产物已清理：`apps/web/dist-check-*`、`apps/web/dist-auth-check` 和历史 `apps/web/public/tiles` 已从工作区移除，并通过 `.gitignore` 防止再次混入源码维护范围。
-21. 本地瘦身清理已进一步移除可再生成产物：根目录 `node_modules`、`apps/web/dist`，以及离线地形目录下已展开后的 `terrain1.zip` 压缩包副本和 `.tmp` 临时地形目录；当前正式离线 DEM 运行目录为 `apps/web/terrain`。
+21. 本地瘦身清理已进一步移除可再生成产物：根目录 `node_modules`、`apps/web/dist`，以及 `apps/web/public/terrain` 下已展开后的 `terrain1.zip` 压缩包副本和 `.tmp` 临时地形目录；正式离线 DEM 运行目录仍保留。
 22. 已移除上一版 `tactical-visualizer2.0` 敌情威胁分析外部集成：规划 Python 适配服务、相关启动脚本、默认外部绑定、专属运行参数和 DOCX 二次研判导出均已删除；三维威胁场通用渲染能力继续保留。
 
 ### 本次 review 的正向结论
@@ -862,7 +759,6 @@ TODO.md     后续优化建议
 - [docs/t02-localstorage-migration-inventory.md](/d:/mission/docs/t02-localstorage-migration-inventory.md)：`localStorage` 盘点与迁移清单，明确“必须服务端化”与“允许前端保留”边界，并给出兼容迁移策略。
 - [docs/t03-task-center-data-model.md](/d:/mission/docs/t03-task-center-data-model.md)：总任务中心数据模型说明。
 - [docs/t03-task-center-schema-draft.sql](/d:/mission/docs/t03-task-center-schema-draft.sql)：首版数据表 SQL 草案（`tasks / task_templates / task_versions / task_runs / task_results / task_approvals / task_attachments / audit_logs`）。
-- [docs/开发技术文档.md](/d:/mission/docs/开发技术文档.md)：规划模块 6 个内置算法的开发摘要，整理了输入、输出、上下游依赖和大致实现思路。
 
 本轮基线结论摘要：
 

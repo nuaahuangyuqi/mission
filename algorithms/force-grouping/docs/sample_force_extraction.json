@@ -1,0 +1,319 @@
+{
+  "schemaVersion": "force-extraction-v1",
+  "extractionMeta": {
+    "generatedAt": "2026-05-31T20:00:00Z",
+    "modelName": "mock-force-extractor",
+    "overallConfidence": 0.86
+  },
+  "inputSummary": {
+    "fileCount": 2,
+    "summary": "样例文档包含火力、突击、侦察、防空、保障、机动、指挥和工兵支援单位。"
+  },
+  "forceUnits": [
+    {
+      "id": "unit-001",
+      "name": "蓝方远程火力分队",
+      "category": "fire",
+      "role": "support_fire",
+      "strength": 82,
+      "capabilities": {
+        "firepower": 88,
+        "protection": 58,
+        "recon": 35,
+        "mobility": 35,
+        "support": 42,
+        "communication": 62,
+        "survivability": 58
+      },
+      "readiness": {
+        "status": "available",
+        "readinessScore": 84,
+        "availability": 1.0
+      },
+      "equipment": [
+        {
+          "name": "远程火力平台",
+          "type": "fire",
+          "quantity": 6,
+          "effectiveness": 86
+        }
+      ],
+      "location": [118.08, 32.02, 0],
+      "constraints": {
+        "cannotSeparate": false,
+        "mustWith": [],
+        "cannotWith": [],
+        "taskRestrictions": []
+      },
+      "evidence": [
+        {
+          "source": "sample_force_report.docx",
+          "text": "蓝方远程火力分队装备远程火力平台6套，战备状态良好，行进速度按35km/h估计。",
+          "confidence": 0.88
+        }
+      ],
+      "derivedFromText": true
+    },
+    {
+      "id": "unit-002",
+      "name": "蓝方突击分队一",
+      "category": "strike",
+      "role": "main_strike",
+      "strength": 76,
+      "capabilities": {
+        "firepower": 78,
+        "protection": 66,
+        "recon": 42,
+        "mobility": 45,
+        "support": 38,
+        "communication": 60,
+        "survivability": 64
+      },
+      "readiness": {
+        "status": "available",
+        "readinessScore": 82,
+        "availability": 1.0
+      },
+      "equipment": [],
+      "location": [118.10, 31.98, 0],
+      "constraints": {
+        "cannotSeparate": false,
+        "mustWith": [],
+        "cannotWith": [],
+        "taskRestrictions": []
+      },
+      "evidence": [
+        {
+          "source": "sample_force_report.docx",
+          "text": "突击分队一担任主攻突击任务，行进速度约45km/h。",
+          "confidence": 0.82
+        }
+      ],
+      "derivedFromText": true
+    },
+    {
+      "id": "unit-003",
+      "name": "蓝方侦察引导组",
+      "category": "recon",
+      "role": "recon",
+      "strength": 34,
+      "capabilities": {
+        "firepower": 36,
+        "protection": 48,
+        "recon": 86,
+        "mobility": 55,
+        "support": 34,
+        "communication": 82,
+        "survivability": 60
+      },
+      "readiness": {
+        "status": "available",
+        "readinessScore": 80,
+        "availability": 1.0
+      },
+      "equipment": [],
+      "location": [118.03, 32.00, 0],
+      "constraints": {
+        "cannotSeparate": false,
+        "mustWith": [],
+        "cannotWith": [],
+        "taskRestrictions": []
+      },
+      "evidence": [
+        {
+          "source": "sample_force_report.docx",
+          "text": "侦察引导组具备无人侦察和目标指示能力，轻装行进速度约55km/h。",
+          "confidence": 0.86
+        }
+      ],
+      "derivedFromText": true
+    },
+    {
+      "id": "unit-004",
+      "name": "蓝方防空掩护组",
+      "category": "air-defense",
+      "role": "air_defense",
+      "strength": 42,
+      "capabilities": {
+        "firepower": 62,
+        "protection": 82,
+        "recon": 58,
+        "mobility": 30,
+        "support": 42,
+        "communication": 70,
+        "survivability": 76
+      },
+      "readiness": {
+        "status": "available",
+        "readinessScore": 83,
+        "availability": 1.0
+      },
+      "equipment": [],
+      "location": [118.12, 32.01, 0],
+      "constraints": {
+        "cannotSeparate": false,
+        "mustWith": [],
+        "cannotWith": [],
+        "taskRestrictions": []
+      },
+      "evidence": [
+        {
+          "source": "sample_force_report.docx",
+          "text": "防空掩护组负责要点防空和掩护，行进速度约30km/h。",
+          "confidence": 0.83
+        }
+      ],
+      "derivedFromText": true
+    },
+    {
+      "id": "unit-005",
+      "name": "蓝方综合保障分队",
+      "category": "support",
+      "role": "support",
+      "strength": 68,
+      "capabilities": {
+        "firepower": 30,
+        "protection": 52,
+        "recon": 28,
+        "mobility": 35,
+        "support": 88,
+        "communication": 62,
+        "survivability": 56
+      },
+      "readiness": {
+        "status": "available",
+        "readinessScore": 78,
+        "availability": 1.0
+      },
+      "equipment": [],
+      "location": [118.06, 31.96, 0],
+      "constraints": {
+        "cannotSeparate": false,
+        "mustWith": [],
+        "cannotWith": [],
+        "taskRestrictions": []
+      },
+      "evidence": [
+        {
+          "source": "sample_force_report.docx",
+          "text": "综合保障分队负责弹药、油料、维修补给，行进速度约35km/h。",
+          "confidence": 0.84
+        }
+      ],
+      "derivedFromText": true
+    },
+    {
+      "id": "unit-006",
+      "name": "蓝方机动运输分队",
+      "category": "transport",
+      "role": "mobility",
+      "strength": 60,
+      "capabilities": {
+        "firepower": 28,
+        "protection": 46,
+        "recon": 30,
+        "mobility": 65,
+        "support": 74,
+        "communication": 55,
+        "survivability": 52
+      },
+      "readiness": {
+        "status": "available",
+        "readinessScore": 79,
+        "availability": 1.0
+      },
+      "equipment": [],
+      "location": [118.00, 31.95, 0],
+      "constraints": {
+        "cannotSeparate": false,
+        "mustWith": [],
+        "cannotWith": [],
+        "taskRestrictions": []
+      },
+      "evidence": [
+        {
+          "source": "sample_force_report.docx",
+          "text": "机动运输分队具备快速机动投送能力，行进速度约65km/h。",
+          "confidence": 0.8
+        }
+      ],
+      "derivedFromText": true
+    },
+    {
+      "id": "unit-007",
+      "name": "蓝方指挥通信组",
+      "category": "command",
+      "role": "command",
+      "strength": 24,
+      "capabilities": {
+        "firepower": 26,
+        "protection": 48,
+        "recon": 64,
+        "mobility": 40,
+        "support": 50,
+        "communication": 90,
+        "survivability": 54
+      },
+      "readiness": {
+        "status": "available",
+        "readinessScore": 81,
+        "availability": 1.0
+      },
+      "equipment": [],
+      "location": [118.05, 31.99, 0],
+      "constraints": {
+        "cannotSeparate": false,
+        "mustWith": [],
+        "cannotWith": [],
+        "taskRestrictions": []
+      },
+      "evidence": [
+        {
+          "source": "sample_force_report.docx",
+          "text": "指挥通信组建立指挥通信链路，行进速度约40km/h。",
+          "confidence": 0.82
+        }
+      ],
+      "derivedFromText": true
+    },
+    {
+      "id": "unit-008",
+      "name": "蓝方工兵支援组",
+      "category": "engineering",
+      "role": "support",
+      "strength": 38,
+      "capabilities": {
+        "firepower": 40,
+        "protection": 64,
+        "recon": 32,
+        "mobility": 25,
+        "support": 78,
+        "communication": 50,
+        "survivability": 66
+      },
+      "readiness": {
+        "status": "partial",
+        "readinessScore": 68,
+        "availability": 0.72
+      },
+      "equipment": [],
+      "location": [118.09, 31.94, 0],
+      "constraints": {
+        "cannotSeparate": false,
+        "mustWith": [],
+        "cannotWith": [],
+        "taskRestrictions": []
+      },
+      "evidence": [
+        {
+          "source": "sample_force_report.docx",
+          "text": "工兵支援组可执行开辟通路和障碍处置，行进速度约25km/h。",
+          "confidence": 0.78
+        }
+      ],
+      "derivedFromText": true
+    }
+  ],
+  "globalConstraints": [],
+  "warnings": []
+}

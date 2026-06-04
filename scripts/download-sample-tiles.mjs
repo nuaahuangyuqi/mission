@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-const outputRoot = path.resolve('apps/web/tiles');
+const outputRoot = path.resolve('apps/web/public/tiles');
 const center = { lon: 120.18, lat: 30.28 };
 const minZoom = 0;
 const maxZoom = 8;

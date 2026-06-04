@@ -1,8 +1,136 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { __planningRuntimeTestHooks, evaluatePlanning } from './planning-runtime.js';
+import {
+  __planningRuntimeTestHooks,
+  evaluatePlanning,
+  getPlanningTemplate,
+  validatePlanning,
+} from './planning-runtime.js';
 
 const { buildSupportPlan, normalizeSupportPlanningOptions } = __planningRuntimeTestHooks;
+
+test('planning template registers three active local Python algorithm variants', () => {
+  const template = getPlanningTemplate();
+  const expectedVariants = {
+    'enemy-threat-analysis': 'enemy-threat-analysis:enemy-threat-analysis-local',
+    'force-grouping': 'force-grouping:force-grouping-local',
+    'airborne-landing-site-selection': 'airborne-landing-site-selection:airlanding-zone-local',
+  };
+
+  for (const [algorithmId, variantId] of Object.entries(expectedVariants)) {
+    const algorithm = template.algorithms.find((item) => item.id === algorithmId);
+    const variant = algorithm?.variants.find((item) => item.id === variantId);
+    assert.ok(variant, `${variantId} should be registered`);
+    assert.equal(variant.type, 'external-model');
+    assert.equal(variant.executionMode, 'local-python');
+    assert.equal(variant.status, 'active');
+    assert.ok(variant.parameterSchema.length > 0);
+  }
+});
+
+test('planning validation accepts local Python variants in a mixed task flow', async () => {
+  const validation = await validatePlanning({
+    taskDefinition: {
+      id: 'local-python-flow-validation',
+      name: '本地 Python 算法接入校验',
+      category: '机降任务',
+      steps: [
+        {
+          id: 'step-threat-analysis',
+          order: 1,
+          name: '敌情威胁自动分析',
+          algorithmId: 'enemy-threat-analysis',
+          objective: 'review',
+          consumes: ['敌情数据源', '本地文件'],
+          produces: ['威胁模型'],
+        },
+        {
+          id: 'step-force-grouping',
+          order: 2,
+          name: '作战力量智能编组',
+          algorithmId: 'force-grouping',
+          objective: 'review',
+          consumes: ['威胁模型', '我方兵力'],
+          produces: ['编组方案'],
+        },
+        {
+          id: 'step-target-allocation',
+          order: 3,
+          name: '作战目标自动分配',
+          algorithmId: 'target-allocation',
+          objective: 'review',
+          consumes: ['威胁模型', '编组方案'],
+          produces: ['目标分配'],
+        },
+        {
+          id: 'step-airlanding',
+          order: 4,
+          name: '机降地域优化选择',
+          algorithmId: 'airborne-landing-site-selection',
+          objective: 'review',
+          consumes: ['威胁模型', '目标分配'],
+          produces: ['机降地域'],
+        },
+      ],
+    },
+    bindings: {
+      'step-threat-analysis': 'enemy-threat-analysis:enemy-threat-analysis-local',
+      'step-force-grouping': 'force-grouping:force-grouping-local',
+      'step-target-allocation': 'target-allocation:builtin',
+      'step-airlanding': 'airborne-landing-site-selection:airlanding-zone-local',
+    },
+    algorithmInputs: {
+      'enemy-threat-analysis': {
+        selectedSourceIds: [],
+        uploadedFiles: [{ fileName: 'enemy.txt', fileContentBase64: '5pWM5oOF5oOF5oql' }],
+        options: {
+          runtimeOptions: {
+            'enemy-threat-analysis-local': {
+              llmApiKey: 'test-key',
+              llmStream: true,
+            },
+          },
+        },
+      },
+      'force-grouping': {
+        selectedSourceIds: [],
+        uploadedFiles: [{ fileName: 'force.txt', fileContentBase64: '5oiR5pa55YW15Yqb' }],
+        options: {
+          runtimeOptions: {
+            'force-grouping-local': {
+              llmApiKey: 'test-key',
+              expectedGroupCount: 4,
+            },
+          },
+        },
+      },
+      'target-allocation': {
+        builtinMethodKey: 'multi-objective',
+        options: {},
+      },
+      'airborne-landing-site-selection': {
+        options: {
+          runtimeOptions: {
+            'airlanding-zone-local': {
+              candidateCount: 5,
+            },
+          },
+        },
+      },
+    },
+  });
+
+  assert.equal(validation.ok, true);
+  assert.deepEqual(
+    validation.checks.map((item) => item.bindingId),
+    [
+      'enemy-threat-analysis:enemy-threat-analysis-local',
+      'force-grouping:force-grouping-local',
+      'target-allocation:builtin',
+      'airborne-landing-site-selection:airlanding-zone-local',
+    ],
+  );
+});
 
 function createSupportContext() {
   return {
@@ -246,81 +374,4 @@ test('enemy threat analysis requires an explicit selected source or uploaded fil
     }, { db }),
     /请至少勾选一个资源库数据源或上传本地文件/,
   );
-});
-
-test('planning execution preserves earlier step results when a later step fails', async () => {
-  const previousMode = process.env.PLANNING_THREAT_PYTHON_MODE;
-  process.env.PLANNING_THREAT_PYTHON_MODE = 'off';
-
-  try {
-    const response = await evaluatePlanning({
-      assessmentName: '阶段解耦回归',
-      taskDefinition: {
-        id: 'partial-execution-review',
-        name: '阶段解耦回归',
-        category: 'review',
-        finalDeliverables: ['阶段成果', '阶段汇总', '建议'],
-        steps: [
-          {
-            id: 'step-threat-analysis',
-            order: 1,
-            name: '敌情威胁自动分析',
-            algorithmId: 'enemy-threat-analysis',
-            objective: 'review',
-            consumes: ['敌情数据源', '本地文件'],
-            produces: ['威胁模型'],
-          },
-          {
-            id: 'step-force-grouping',
-            order: 2,
-            name: '作战力量智能编组',
-            algorithmId: 'force-grouping',
-            objective: 'review',
-            consumes: ['威胁模型', '本地文件'],
-            produces: ['编组方案'],
-          },
-        ],
-      },
-      bindings: {
-        'step-threat-analysis': 'enemy-threat-analysis:builtin',
-        'step-force-grouping': 'force-grouping:builtin',
-      },
-      algorithmInputs: {
-        'enemy-threat-analysis': {
-          builtinMethodKey: 'knowledge-fusion',
-          selectedSourceIds: [],
-          uploadedFiles: [{
-            id: 'threat-text-1',
-            fileName: 'threat-input.txt',
-            fileExtension: '.txt',
-            fileContentBase64: Buffer.from('防空阵地坐标 23.2885, 114.0078。', 'utf8').toString('base64'),
-          }],
-          options: {},
-        },
-        'force-grouping': {
-          builtinMethodKey: 'hybrid-balanced',
-          selectedSourceIds: [],
-          uploadedFiles: [{
-            id: 'bad-upload-1',
-            fileName: 'unsupported.json',
-            fileExtension: '.json',
-            fileContentBase64: Buffer.from('{"bad":true}', 'utf8').toString('base64'),
-          }],
-          options: {},
-        },
-      },
-    });
-
-    assert.equal(response.execution.steps.length, 2);
-    assert.equal(response.execution.steps[0].structuredOutput?.implementationStatus, 'implemented');
-    assert.equal(response.execution.steps[1].structuredOutput?.implementationStatus, 'failed');
-    assert.match(response.execution.steps[1].summary, /执行失败/);
-    assert.equal(response.execution.summary.implementedSteps, 1);
-    assert.equal(response.execution.summary.failedSteps, 1);
-    assert.equal(response.result.consolidatedOutputs.threatAnalysis?.implementationStatus, 'implemented');
-    assert.equal(response.result.consolidatedOutputs.forceGrouping?.implementationStatus, 'failed');
-  } finally {
-    if (previousMode === undefined) delete process.env.PLANNING_THREAT_PYTHON_MODE;
-    else process.env.PLANNING_THREAT_PYTHON_MODE = previousMode;
-  }
 });

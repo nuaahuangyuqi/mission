@@ -57,21 +57,6 @@ test('word text preview returns readable document payload without binary extract
   assertNoMojibake(preview);
 });
 
-test('text import preview returns readable document payload and extraction drafts', async () => {
-  const preview = await normalizeImportedPreview('text', {
-    fileName: 'threat-notes.txt',
-    fileExtension: '.txt',
-    textContent: '第一段敌情。\n\n第二段部署态势。',
-  });
-
-  assert.equal(preview.previewType, 'document');
-  assert.equal(preview.payload.title, 'threat-notes.txt');
-  assert.equal(preview.payload.description, '文本内容已提取，可直接浏览段落内容。');
-  assert.deepEqual(preview.payload.paragraphs, ['第一段敌情。', '第二段部署态势。']);
-  assert.equal(preview.extractionDrafts[0].sourceType, 'text-document');
-  assertNoMojibake(preview);
-});
-
 test('unsupported import extensions return readable validation errors', async () => {
   await assert.rejects(
     () => normalizeImportedPreview('excel', {
@@ -87,13 +72,5 @@ test('unsupported import extensions return readable validation errors', async ()
       fileExtension: '.txt',
     }),
     /当前仅支持导入 \.pdf 文件。/,
-  );
-
-  await assert.rejects(
-    () => normalizeImportedPreview('text', {
-      fileName: 'bad.md',
-      fileExtension: '.md',
-    }),
-    /当前仅支持导入 \.txt 文本文件。/,
   );
 });

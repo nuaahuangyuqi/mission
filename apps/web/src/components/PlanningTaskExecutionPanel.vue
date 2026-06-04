@@ -197,6 +197,9 @@ async function handleReplayRun(runId) {
           <button class="button button-secondary" v-if="state.results" @click="handleSaveSnapshot">
             保存结果快照
           </button>
+          <button class="button button-secondary" :disabled="!outputPackages.storageSnapshot" @click="handleDownloadPackage('storageSnapshot')">
+            导出结果快照
+          </button>
           <button class="button button-secondary" :disabled="!outputPackages.reportExport" @click="handleDownloadPackage('reportExport')">
             导出分析报告
           </button>

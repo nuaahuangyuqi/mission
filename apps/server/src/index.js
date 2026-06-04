@@ -8,7 +8,6 @@ import { evaluateAction, getActionTemplate } from './action.js';
 import { evaluateCapability, getCapabilityTemplate } from './capability.js';
 import { evaluateConsumption, getConsumptionTemplate } from './consumption.js';
 import { evaluatePlanning, getPlanningTemplate, validatePlanning } from './planning.js';
-import { buildTerrainLayerJson } from './local-terrain-layer.js';
 import {
   buildKnowledgeGraph,
   createDatabase,
@@ -33,11 +32,7 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const webDist = path.resolve(__dirname, '../../web/dist/client');
-const webAssets = path.resolve(__dirname, '../../web');
-const webPublicDirs = [
-  path.resolve(__dirname, '../../web/public'),
-  path.resolve(__dirname, '../../web/pubulic'),
-];
+const webPublic = path.resolve(__dirname, '../../web/public');
 const webIndex = path.join(webDist, 'index.html');
 
 const app = express();
@@ -48,61 +43,6 @@ const SESSION_COOKIE_NAME = 'mission_session';
 const SESSION_COOKIE_PATH = '/';
 const SESSION_COOKIE_SAME_SITE = 'Lax';
 const EXPIRED_COOKIE_DATE = 'Thu, 01 Jan 1970 00:00:00 GMT';
-
-function setLocalAssetHeaders(res, filePath) {
-  const extension = path.extname(filePath).toLowerCase();
-  if (extension === '.terrain') {
-    res.setHeader('Content-Type', 'application/vnd.quantized-mesh');
-  }
-  res.setHeader('Cache-Control', 'no-cache');
-}
-
-function mountLocalAssetDir(routePath, relativeDir) {
-  const candidateDirs = [
-    path.join(webAssets, relativeDir),
-    ...webPublicDirs.map((dir) => path.join(dir, relativeDir)),
-  ];
-  const mountedDirs = new Set();
-  for (const candidateDir of candidateDirs) {
-    if (!fs.existsSync(candidateDir) || mountedDirs.has(candidateDir)) {
-      continue;
-    }
-    mountedDirs.add(candidateDir);
-    if (routePath === '/terrain' || routePath === '/dem') {
-      app.use(routePath, (req, res, next) => {
-        const requestPath = decodeURIComponent(new URL(req.url || '/', 'http://localhost').pathname);
-        if (requestPath !== '/layer.json') {
-          next();
-          return;
-        }
-
-        try {
-          const payload = buildTerrainLayerJson(candidateDir);
-          if (!payload?.json || (payload.repaired && payload.stats.tiles <= 0)) {
-            next();
-            return;
-          }
-
-          res.setHeader('Cache-Control', 'no-cache');
-          res.setHeader('Content-Type', 'application/json; charset=utf-8');
-          res.setHeader('X-Mission-Terrain-Layer', payload.repaired ? 'repaired' : 'original');
-          if (payload.repaired) {
-            res.setHeader('X-Mission-Terrain-Ranges', String(payload.stats.ranges));
-          }
-          if (req.method === 'HEAD') {
-            res.end();
-            return;
-          }
-          res.end(JSON.stringify(payload.json));
-        } catch (error) {
-          console.warn(`[mission-server] Failed to repair terrain layer metadata for ${candidateDir}:`, error);
-          next();
-        }
-      });
-    }
-    app.use(routePath, express.static(candidateDir, { setHeaders: setLocalAssetHeaders }));
-  }
-}
 
 app.use(cors({ origin: true, credentials: true }));
 app.use(express.json({ limit: '25mb' }));
@@ -503,12 +443,26 @@ function sendPlanningError(res, error, fallbackMessage = '规划执行失败') {
   });
 }
 
-function writePlanningStreamEvent(res, event = {}) {
-  if (res.writableEnded) return;
-  res.write(`${JSON.stringify({
-    emittedAt: nowIso(),
-    ...event,
-  })}\n`);
+function setupPlanningEventStream(res) {
+  res.status(200);
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-cache, no-transform');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');
+  if (typeof res.flushHeaders === 'function') {
+    res.flushHeaders();
+  }
+}
+
+function writePlanningEvent(res, type, payload = {}) {
+  if (res.destroyed || res.writableEnded) return;
+  const data = JSON.stringify({
+    ...safeObject(payload),
+    type,
+    timestamp: payload?.timestamp || nowIso(),
+  }).replace(/\u2028|\u2029/g, '');
+  res.write(`event: ${type}\n`);
+  res.write(`data: ${data}\n\n`);
 }
 
 function createTaskRun(taskId, status = 'running', summary = {}, {
@@ -749,7 +703,6 @@ function buildPlanningPayloadFromTask(task, payload = {}) {
     taskDefinition: normalized.planningTaskDefinition,
     bindings: normalized.planningBindings,
     algorithmInputs: normalized.planningAlgorithmInputs,
-    llmConfig: payload?.llmConfig && typeof payload.llmConfig === 'object' ? payload.llmConfig : {},
     taskCenterId: Number.isFinite(Number(payload?.taskCenterId)) ? Number(payload.taskCenterId) : null,
     taskRunId: Number.isFinite(Number(payload?.taskRunId)) ? Number(payload.taskRunId) : null,
   };
@@ -1821,39 +1774,25 @@ app.post('/api/planning/evaluate', async (req, res) => {
 });
 
 app.post('/api/planning/evaluate/stream', async (req, res) => {
+  setupPlanningEventStream(res);
+
   const body = req.body || {};
   const taskCenterId = Number(body.taskCenterId);
   const hasTaskCenterId = Number.isInteger(taskCenterId) && taskCenterId > 0;
   let task = null;
   let run = null;
-  let clientClosed = false;
-
-  res.on('close', () => {
-    clientClosed = true;
-  });
-
-  res.status(200);
-  res.setHeader('Content-Type', 'application/x-ndjson; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-cache, no-transform');
-  res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no');
-  res.flushHeaders?.();
-
-  const sendEvent = (event = {}) => {
-    if (clientClosed || res.writableEnded) return;
-    writePlanningStreamEvent(res, event);
+  let payload = body;
+  const events = {
+    emit(type, eventPayload) {
+      writePlanningEvent(res, type, eventPayload);
+    },
   };
 
   try {
-    let payload = body;
-    sendEvent({
-      type: 'status',
-      phase: 'stream:start',
-      channel: 'process',
-      level: 'info',
-      title: '规划执行准备',
-      message: '已建立流式执行通道，正在读取任务配置。',
-      progress: 0,
+    writePlanningEvent(res, 'run-start', {
+      taskCenterId: hasTaskCenterId ? taskCenterId : null,
+      assessmentName: body.assessmentName || '',
+      phase: 'initializing',
     });
 
     if (hasTaskCenterId) {
@@ -1881,77 +1820,56 @@ app.post('/api/planning/evaluate/stream', async (req, res) => {
       run = createTaskRun(taskCenterId, 'running', {
         assessmentName: payload.assessmentName,
         generatedAt: nowIso(),
-        phase: 'streaming',
+        phase: 'validating',
       });
       payload.taskCenterId = taskCenterId;
       payload.taskRunId = run?.id || null;
-      sendEvent({
-        type: 'status',
-        phase: 'run:created',
-        channel: 'process',
-        level: 'success',
-        title: '执行记录已创建',
-        message: `执行记录 #${run?.id || '--'} 已进入运行中。`,
-        progress: 2,
+      writePlanningEvent(res, 'run-start', {
+        taskCenterId,
         runId: run?.id || null,
-      });
-      await validatePlanning(payload, { db });
-      sendEvent({
-        type: 'status',
-        phase: 'validation:complete',
-        channel: 'process',
-        level: 'success',
-        title: '前置校验完成',
-        message: '任务实例、算法绑定和输入材料已通过校验。',
-        progress: 6,
-        runId: run?.id || null,
+        assessmentName: payload.assessmentName,
+        phase: 'created',
       });
     }
 
-    const response = await evaluatePlanning(payload, {
-      db,
-      onProgress: (event) => sendEvent({
-        type: 'progress',
-        ...event,
-      }),
+    writePlanningEvent(res, 'validation', {
+      runId: run?.id || null,
+      taskCenterId: task?.id || null,
+      status: 'running',
+      message: '规划前置校验开始。',
+    });
+    const validation = await validatePlanning(payload, { db });
+    writePlanningEvent(res, 'validation', {
+      runId: run?.id || null,
+      taskCenterId: task?.id || null,
+      status: 'succeeded',
+      summary: validation.summary,
+      checks: validation.checks,
+      message: '规划前置校验通过。',
     });
 
+    const response = await evaluatePlanning(payload, { db, events });
     if (run && task) {
       finalizeTaskRun(run.id, 'succeeded', buildPlanningRunSummary(response));
       saveTaskResult(task.id, run.id, response);
     }
 
-    const resultPayload = {
+    writePlanningEvent(res, 'final', {
       ...response,
       runId: run?.id || null,
       taskCenterId: task?.id || null,
-    };
-
-    sendEvent({
-      type: 'result',
-      phase: 'result:ready',
-      channel: 'output',
-      level: 'success',
-      title: '规划结果已归档',
-      message: '本次规划执行已完成，结构化结果和导出包已生成。',
-      progress: 100,
-      result: resultPayload,
     });
-    sendEvent({
-      type: 'done',
-      phase: 'stream:done',
-      channel: 'process',
-      level: 'success',
-      title: '流式执行结束',
-      message: '执行工作台已收到全部过程与结果事件。',
-      progress: 100,
+    writePlanningEvent(res, 'done', {
+      runId: run?.id || null,
+      taskCenterId: task?.id || null,
+      status: 'succeeded',
     });
     res.end();
   } catch (error) {
     const normalizedError = normalizePlanningError(error, '智能任务规划计算失败');
     if (run && task) {
       finalizeTaskRun(run.id, 'failed', {
-        assessmentName: body.assessmentName || task.planningAssessmentName || task.name,
+        assessmentName: payload.assessmentName || body.assessmentName || task.planningAssessmentName || task.name,
         generatedAt: nowIso(),
         phase: 'failed',
         message: normalizedError.message,
@@ -1961,16 +1879,19 @@ app.post('/api/planning/evaluate/stream', async (req, res) => {
         errorMessage: normalizedError.message,
       });
     }
-    sendEvent({
-      type: 'error',
-      phase: 'stream:error',
-      channel: 'process',
-      level: 'error',
-      title: '规划执行失败',
-      message: normalizedError.message,
-      progress: 100,
-      error: normalizedError,
+    writePlanningEvent(res, 'error', {
       runId: run?.id || null,
+      taskCenterId: task?.id || null,
+      code: normalizedError.code,
+      errorType: normalizedError.type,
+      status: normalizedError.status,
+      message: normalizedError.message,
+      details: normalizedError.details,
+    });
+    writePlanningEvent(res, 'done', {
+      runId: run?.id || null,
+      taskCenterId: task?.id || null,
+      status: 'failed',
     });
     res.end();
   }
@@ -2626,13 +2547,8 @@ app.use('/api', (_req, res) => {
 });
 
 if (fs.existsSync(webIndex)) {
-  mountLocalAssetDir('/terrain', 'terrain');
-  mountLocalAssetDir('/dem', 'dem');
-  mountLocalAssetDir('/tiles', 'tiles');
-  for (const webPublic of webPublicDirs) {
-    if (fs.existsSync(webPublic)) {
-      app.use(express.static(webPublic));
-    }
+  if (fs.existsSync(webPublic)) {
+    app.use(express.static(webPublic));
   }
   app.use(express.static(webDist));
   app.use((_req, res) => {

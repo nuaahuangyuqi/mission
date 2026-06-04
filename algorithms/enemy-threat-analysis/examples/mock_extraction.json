@@ -1,0 +1,175 @@
+{
+  "schemaVersion": "threat-extraction-v1",
+  "extractionMeta": {
+    "extractionId": "extract-demo-001",
+    "generatedAt": "2026-05-31T20:00:00Z",
+    "modelName": "mock-extractor",
+    "language": "zh-CN",
+    "sourceFileCount": 1,
+    "overallConfidence": 0.82
+  },
+  "inputSummary": {
+    "files": [
+      {
+        "fileId": "file-1",
+        "fileName": "sample_enemy_report.txt",
+        "fileType": ".txt",
+        "summary": "样例报告描述火力、防空、侦察和反机降节点。"
+      }
+    ],
+    "extractionScope": {
+      "hasEnemyUnits": true,
+      "hasCoordinates": true,
+      "hasEquipment": true,
+      "hasIntentions": true,
+      "hasEnvironment": false
+    }
+  },
+  "globalSituation": {
+    "enemyIntentions": [
+      {
+        "id": "intent-1",
+        "type": "fire_suppression",
+        "name": "火力压制准备",
+        "description": "敌方可能依托远程火力对关键区域实施压制。",
+        "confidence": 0.78,
+        "evidenceIds": ["ev-1"]
+      }
+    ],
+    "deploymentPosture": "defensive_with_counterattack_potential",
+    "mainThreatDirection": "northwest",
+    "situationSummary": "敌方以防空、火力和侦察节点形成区域拒止能力。"
+  },
+  "targets": [
+    {
+      "id": "target-001",
+      "name": "北侧远程火力群",
+      "category": "fire_unit",
+      "camp": "red",
+      "status": "active",
+      "location": {
+        "type": "point",
+        "coordinates": [118.12, 32.04, 0],
+        "coordinateConfidence": 0.86,
+        "locationDescription": "北侧丘陵地带"
+      },
+      "mobility": {
+        "isMobile": true,
+        "mobilityLevel": 0.7,
+        "estimatedSpeedLevel": "medium",
+        "relocationProbability": 0.45
+      },
+      "capabilities": {
+        "firepower": 0.88,
+        "airDefense": 0.12,
+        "reconnaissance": 0.25,
+        "commandControl": 0.2,
+        "mobility": 0.65,
+        "protection": 0.55,
+        "logistics": 0.3,
+        "electronicWarfare": 0.1
+      },
+      "coverage": {
+        "hasCoverage": true,
+        "coverageTypes": ["fire"],
+        "radiusMeters": 42000,
+        "minRadiusMeters": 5000,
+        "maxRadiusMeters": 42000,
+        "coverageConfidence": 0.74
+      },
+      "importance": {
+        "missionRelevance": 0.82,
+        "systemCentrality": 0.55,
+        "replaceability": 0.45,
+        "supportDependency": 0.36
+      },
+      "evidence": [
+        {
+          "evidenceId": "ev-1",
+          "sourceFileId": "file-1",
+          "sourceFileName": "sample_enemy_report.txt",
+          "pageOrSection": "样例",
+          "text": "北侧存在远程火力群并可覆盖主要通道。",
+          "confidence": 0.78
+        }
+      ],
+      "confidence": {
+        "classificationConfidence": 0.84,
+        "capabilityConfidence": 0.76,
+        "locationConfidence": 0.86,
+        "overallConfidence": 0.81
+      }
+    },
+    {
+      "id": "target-002",
+      "name": "东侧防空阵地",
+      "category": "air_defense",
+      "camp": "red",
+      "status": "active",
+      "location": {
+        "type": "point",
+        "coordinates": [118.31, 31.96, 0],
+        "coordinateConfidence": 0.8
+      },
+      "capabilities": {
+        "firepower": 0.35,
+        "airDefense": 0.9,
+        "reconnaissance": 0.55,
+        "commandControl": 0.35,
+        "mobility": 0.4,
+        "protection": 0.55,
+        "logistics": 0.2,
+        "electronicWarfare": 0.15
+      },
+      "coverage": {
+        "hasCoverage": true,
+        "coverageTypes": ["air_defense"],
+        "radiusMeters": 35000,
+        "coverageConfidence": 0.72
+      },
+      "importance": {
+        "missionRelevance": 0.86,
+        "systemCentrality": 0.7,
+        "replaceability": 0.3,
+        "supportDependency": 0.4
+      },
+      "evidence": [
+        {
+          "evidenceId": "ev-2",
+          "sourceFileId": "file-1",
+          "sourceFileName": "sample_enemy_report.txt",
+          "text": "东侧道路节点附近存在防空阵地。",
+          "confidence": 0.75
+        }
+      ],
+      "confidence": {
+        "overallConfidence": 0.78
+      }
+    }
+  ],
+  "relations": [
+    {
+      "id": "rel-001",
+      "type": "protects",
+      "sourceTargetId": "target-002",
+      "targetTargetId": "target-001",
+      "description": "防空节点可能为火力群提供区域掩护。",
+      "confidence": 0.66
+    }
+  ],
+  "spatialContext": {
+    "areaOfInterest": {
+      "name": "任务区域",
+      "bounds": {
+        "minLon": 117.8,
+        "minLat": 31.7,
+        "maxLon": 118.5,
+        "maxLat": 32.3
+      }
+    },
+    "terrain": [],
+    "weather": [],
+    "civilianOrRestrictedAreas": []
+  },
+  "warnings": []
+}

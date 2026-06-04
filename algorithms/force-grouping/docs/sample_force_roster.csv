@@ -1,0 +1,9 @@
+unit_id,name,category,role,strength,firepower,protection,recon,mobility,support,communication,survivability,readiness,location_lon,location_lat,evidence
+unit-001,蓝方远程火力分队,fire,support_fire,82,88,58,35,35,42,62,58,available,118.08,32.02,装备远程火力平台6套，战备状态良好，行进速度按35km/h估计。
+unit-002,蓝方突击分队一,strike,main_strike,76,78,66,42,45,38,60,64,available,118.10,31.98,担任主攻突击任务，行进速度约45km/h。
+unit-003,蓝方侦察引导组,recon,recon,34,36,48,86,55,34,82,60,available,118.03,32.00,具备无人侦察和目标指示能力，轻装行进速度约55km/h。
+unit-004,蓝方防空掩护组,air-defense,air_defense,42,62,82,58,30,42,70,76,available,118.12,32.01,负责要点防空和掩护，行进速度约30km/h。
+unit-005,蓝方综合保障分队,support,support,68,30,52,28,35,88,62,56,available,118.06,31.96,负责弹药、油料、维修补给，行进速度约35km/h。
+unit-006,蓝方机动运输分队,transport,mobility,60,28,46,30,65,74,55,52,available,118.00,31.95,具备快速机动投送能力，行进速度约65km/h。
+unit-007,蓝方指挥通信组,command,command,24,26,48,64,40,50,90,54,available,118.05,31.99,建立指挥通信链路，行进速度约40km/h。
+unit-008,蓝方工兵支援组,engineering,support,38,40,64,32,25,78,50,66,partial,118.09,31.94,可执行开辟通路和障碍处置，行进速度约25km/h。

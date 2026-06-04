@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "force-grouping"
+version = "0.1.0"
+description = "LLM-extraction-based intelligent force grouping algorithm"
+requires-python = ">=3.10"
+dependencies = [
+  "pydantic>=2.0",
+  "python-docx>=1.0",
+  "pypdf>=4.0",
+  "openpyxl>=3.1",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+include = ["force_grouping*"]
+

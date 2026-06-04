@@ -1,0 +1,63 @@
+{
+  "ok": true,
+  "implementationStatus": "implemented",
+  "threatLevel": "高",
+  "threatScore": 82.4,
+  "enemyIntentions": [
+    {
+      "id": "intent-1",
+      "type": "fire_suppression",
+      "name": "火力压制准备",
+      "description": "敌方可能依托远程火力对主要通道实施压制。",
+      "confidence": 0.78,
+      "evidenceIds": ["ev-1"]
+    }
+  ],
+  "fireCoverage": [
+    {
+      "id": "fire-1",
+      "name": "北侧远程火力群",
+      "threatScore": 86,
+      "radius": 42000
+    }
+  ],
+  "airDefenseSystem": [
+    {
+      "id": "ad-1",
+      "name": "东侧防空节点",
+      "threatScore": 76,
+      "radius": 28000
+    }
+  ],
+  "reconEarlyWarning": [
+    {
+      "id": "recon-1",
+      "name": "前沿侦察预警站",
+      "threatScore": 68
+    }
+  ],
+  "antiAirborneFacilities": [
+    {
+      "id": "anti-1",
+      "name": "疑似反机降障碍区",
+      "threatScore": 62
+    }
+  ],
+  "targetAssessments": [
+    {
+      "id": "target-001",
+      "name": "北侧远程火力群",
+      "category": "fire_unit",
+      "threatScore": 86,
+      "valueScore": 78
+    }
+  ],
+  "scoreBreakdown": {
+    "firePressure": 84,
+    "airDefensePressure": 76,
+    "reconPressure": 68,
+    "mobilityPressure": 55,
+    "evidenceConfidence": 81
+  }
+}
+

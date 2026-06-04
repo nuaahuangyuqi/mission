@@ -1,81 +1,102 @@
 # Dependencies
 node_modules/
-apps/node_modules/
-apps/server/node_modules/
+**/node_modules/
 
-# Frontend/server build outputs
+# Build, coverage, and tool caches
 dist/
 dist-*/
+**/dist/
+**/dist-*/
 build/
+**/build/
 coverage/
-apps/dist/
-apps/dist-*/
-apps/server/dist/
-apps/server/build/
+**/coverage/
+.vite/
+**/.vite/
+.vite-temp/
+**/.vite-temp/
+.cache/
+**/.cache/
+.parcel-cache/
+**/.parcel-cache/
+test-results/
+**/test-results/
+playwright-report/
+**/playwright-report/
 
-# Source fixtures used by the frontend must stay trackable even if a global
-# Git ignore file contains broad "data/" rules.
-!apps/src/data/
-!apps/src/data/**
-!apps/web/src/data/
-!apps/web/src/data/**
-
-# Frontend workspace local outputs and large local map assets
-apps/web/node_modules/
-apps/web/dist/
-apps/web/dist-*/
-apps/web/terrain/
-apps/web/dem/
-apps/web/tiles/
-apps/web/public/
-apps/web/pubulic/
-
-# Local environment and secrets
+# Local environment files and credentials
 .env
 .env.*
 !.env.example
+!**/.env.example
 !.env.*.example
+!**/.env.*.example
+*.pem
+*.key
+*.p12
+*.pfx
 
-# Runtime databases and generated local data
+# Runtime databases, imported data, uploads, and temporary files
 apps/server/data/
+data-service-sources/
+generated-input-docs/
+tmp/
+temp/
+uploads/
+**/uploads/
 *.sqlite
 *.sqlite-*
 *.db
 *.db-*
-
-# Python caches, virtualenvs, and generated reports
-__pycache__/
-*.py[cod]
-.pytest_cache/
-.mypy_cache/
-.ruff_cache/
-.venv/
-venv/
-env/
-apps/server/planning-python/theat_analyze/generated_reports/
-
-# Vite/Cesium/cache artifacts
-.vite/
-.vite-temp/
-.cache/
-.parcel-cache/
-apps/node_modules/.vite/
-apps/node_modules/.vite-temp/
-
-# Logs and process files
 *.log
 logs/
 *.pid
-*.seed
 *.pid.lock
+*.seed
 
-# OS/editor local files
+# Local map and terrain assets
+apps/web/public/tiles/
+apps/web/public/terrain/
+apps/web/public/dem/
+apps/web/tiles/
+apps/web/terrain/
+apps/web/dem/
+
+# Python virtual environments, caches, and generated algorithm outputs
+.venv/
+**/.venv/
+venv/
+**/venv/
+env/
+**/env/
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+**/.pytest_cache/
+.mypy_cache/
+**/.mypy_cache/
+.ruff_cache/
+**/.ruff_cache/
+algorithms/**/outputs/
+algorithms/**/artifacts/
+algorithms/**/generated_reports/
+algorithms/**/docs/rendered_*/
+algorithms/**/result*.json
+algorithms/**/*.zip
+
+# OS and editor files
 .DS_Store
+**/.DS_Store
 Thumbs.db
+Desktop.ini
+*.swp
+*.swo
+*~
+.idea/
 .vscode/*
 !.vscode/extensions.json
 !.vscode/settings.example.json
 
-# Codex/plugin local caches, while keeping project skill files eligible for sync
-.codex/cache/
-.codex/tmp/
+# Local agent/plugin caches
+.codex/

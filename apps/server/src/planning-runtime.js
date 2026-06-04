@@ -1,4 +1,8 @@
-﻿import path from 'node:path';
+﻿import { spawn } from 'node:child_process';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   mapEnvironment,
   mapExtraction,
@@ -13,8 +17,14 @@ import {
   recordAlgorithmCall,
 } from './algorithm-gateway.js';
 import { normalizeImportedPreview } from './import-preview.js';
-import { runAirlandingPythonPipeline } from './planning-airlanding-python.js';
-import { runThreatPythonPipeline } from './planning-threat-python.js';
+
+const PLANNING_RUNTIME_DIR = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(PLANNING_RUNTIME_DIR, '../../..');
+const PLANNING_PYTHON_BIN = String(process.env.PLANNING_PYTHON_BIN || '').trim();
+const PLANNING_PYTHON_USE_VENV = !['0', 'false', 'no'].includes(
+  String(process.env.PLANNING_PYTHON_USE_VENV || '1').trim().toLowerCase(),
+);
+const PLANNING_PYTHON_VENV_RUNNER = path.join(REPO_ROOT, 'algorithms', 'run-with-venv.mjs');
 
 function cloneData(value) {
   return JSON.parse(JSON.stringify(value));
@@ -26,18 +36,6 @@ function safeArray(value) {
 
 function safeObject(value) {
   return value && typeof value === 'object' && !Array.isArray(value) ? value : {};
-}
-
-function emitPlanningProgress(onProgress, event = {}) {
-  if (typeof onProgress !== 'function') return;
-  try {
-    onProgress({
-      emittedAt: new Date().toISOString(),
-      ...event,
-    });
-  } catch {
-    // Progress reporting is best-effort and must not affect execution results.
-  }
 }
 
 function round(value, digits = 2) {
@@ -174,8 +172,6 @@ function haversineDistanceKm(left = [], right = []) {
 }
 
 const LOCAL_FILE_EXTENSIONS = ['.doc', '.docx', '.pdf', '.xls', '.xlsx', '.csv', '.txt'];
-const THREAT_LLM_METHOD_KEY = 'llm-analysis';
-const LANDING_INTELLIGENT_METHOD_KEY = 'intelligent-airlanding';
 
 const THREAT_METHODS = [
   {
@@ -187,11 +183,6 @@ const THREAT_METHODS = [
     key: 'coverage-priority',
     label: '覆盖优先分析',
     description: '突出敌火力覆盖圈、防空拦截链和重点威胁区域。',
-  },
-  {
-    key: THREAT_LLM_METHOD_KEY,
-    label: '基于大模型分析算法',
-    description: '调用 apps/server/planning-python/theat_analyze 中的 Python 大模型管道执行目标抽取、威胁场计算和敌情研判。',
   },
 ];
 
@@ -400,7 +391,7 @@ function createDefaultSupportOptions() {
   };
 }
 
-const CLASSIC_LANDING_SITE_METHODS = [
+const LANDING_SITE_METHODS = [
   {
     key: 'weighted-score',
     label: '加权评分选址',
@@ -415,15 +406,6 @@ const CLASSIC_LANDING_SITE_METHODS = [
     key: 'constraint-screening',
     label: '约束筛选优化',
     description: '先剔除高威胁和超航程候选点，再对剩余机降地域进行优化。',
-  },
-];
-
-const LANDING_SITE_METHODS = [
-  ...CLASSIC_LANDING_SITE_METHODS,
-  {
-    key: LANDING_INTELLIGENT_METHOD_KEY,
-    label: '智能机降算法',
-    description: '调用 apps/server/planning-python/airlanding_zone 中的 Python 算法，基于系统离线 terrain 瓦片、威胁场和机降需求生成可上图的机降地域。',
   },
 ];
 
@@ -1255,7 +1237,152 @@ const DEPLOYMENT_DIRECTION_DEFINITIONS = [
   { key: 'corridor', label: '通道', keywords: ['走廊', '通道', '谷地', '低空通道', '轴线'], offset: [0.12, -0.1] },
 ];
 
-const PLANNING_EXTERNAL_ALGORITHM_PROJECTS = [];
+const PLANNING_EXTERNAL_ALGORITHM_PROJECTS = [
+  {
+    key: 'enemy-threat-analysis-local',
+    type: 'external-model',
+    runtime: 'python-local',
+    executionMode: 'local-python',
+    packageName: 'enemy_threat_analysis',
+    cliModule: 'enemy_threat_analysis.cli',
+    projectName: '基于大模型分析算法',
+    projectPath: 'algorithms/enemy-threat-analysis',
+    description: '调用 algorithms/enemy-threat-analysis 本地 Python CLI，融合资源库、上传材料和大模型抽取结果输出敌情威胁分析。',
+    version: '0.1.0',
+    defaultStatus: 'active',
+    legacyKeys: ['enemy-threat-analysis-python', 'local-enemy-threat-analysis'],
+    supportedAlgorithmIds: ['enemy-threat-analysis'],
+    projectAlgorithms: [{ id: 'enemy-threat-analysis', name: '敌情威胁自动分析' }],
+    parameterSchema: [
+      {
+        key: 'analysisFocus',
+        label: '分析重点',
+        type: 'select',
+        defaultValue: 'comprehensive',
+        options: [
+          { value: 'comprehensive', label: '综合态势' },
+          { value: 'air-defense', label: '防空体系' },
+          { value: 'firepower', label: '火力覆盖' },
+          { value: 'anti-airborne', label: '反机降' },
+        ],
+      },
+      {
+        key: 'heatmapDensity',
+        label: '热力图密度',
+        type: 'select',
+        defaultValue: 'medium',
+        options: [
+          { value: 'low', label: '低' },
+          { value: 'medium', label: '中' },
+          { value: 'high', label: '高' },
+        ],
+      },
+      {
+        key: 'impactBias',
+        label: '影响偏置',
+        type: 'select',
+        defaultValue: 'balanced',
+        options: [
+          { value: 'balanced', label: '均衡' },
+          { value: 'firepower', label: '火力优先' },
+          { value: 'mobility', label: '机动优先' },
+        ],
+      },
+      { key: 'skipAssessment', label: '跳过评估报告', type: 'boolean', defaultValue: false },
+      { key: 'llmApiKey', label: 'API Key', type: 'password', section: 'llm', defaultValue: '' },
+      { key: 'llmBaseUrl', label: 'Base URL', type: 'text', section: 'llm', defaultValue: '' },
+      { key: 'llmModel', label: '模型名称', type: 'text', section: 'llm', defaultValue: '' },
+      { key: 'llmTimeout', label: '超时秒数', type: 'number', section: 'llm', defaultValue: 120, min: 10, max: 900 },
+      { key: 'llmStream', label: '流式输出', type: 'boolean', section: 'llm', defaultValue: true },
+    ],
+    defaultOptions: {
+      analysisFocus: 'comprehensive',
+      heatmapDensity: 'medium',
+      impactBias: 'balanced',
+      skipAssessment: false,
+      llmApiKey: '',
+      llmBaseUrl: '',
+      llmModel: '',
+      llmTimeout: 120,
+      llmStream: true,
+    },
+  },
+  {
+    key: 'force-grouping-local',
+    type: 'external-model',
+    runtime: 'python-local',
+    executionMode: 'local-python',
+    packageName: 'force_grouping',
+    cliModule: 'force_grouping.cli',
+    projectName: '智能编组算法',
+    projectPath: 'algorithms/force-grouping',
+    description: '调用 algorithms/force-grouping 本地 Python CLI，在内置编组算法之外提供大模型辅助的作战力量智能编组实现。',
+    version: '0.1.0',
+    defaultStatus: 'active',
+    legacyKeys: ['force-grouping-python', 'local-force-grouping'],
+    supportedAlgorithmIds: ['force-grouping'],
+    projectAlgorithms: [{ id: 'force-grouping', name: '作战力量智能编组' }],
+    parameterSchema: [
+      { key: 'schemeProfileKey', label: '方案画像', type: 'text', defaultValue: 'balanced' },
+      { key: 'ruleLibraryKey', label: '规则库', type: 'text', defaultValue: 'fire-strike-rules' },
+      {
+        key: 'comparisonFocus',
+        label: '比选重点',
+        type: 'select',
+        defaultValue: 'balanced',
+        options: [
+          { value: 'balanced', label: '均衡' },
+          { value: 'firepower', label: '火力优先' },
+          { value: 'mobility', label: '机动优先' },
+          { value: 'survivability', label: '生存优先' },
+        ],
+      },
+      { key: 'expectedGroupCount', label: '期望编组数量', type: 'number', defaultValue: 4, min: 1, max: 12 },
+      { key: 'useLlmExplanation', label: '启用大模型解释', type: 'boolean', defaultValue: true },
+      { key: 'llmApiKey', label: 'API Key', type: 'password', section: 'llm', defaultValue: '' },
+      { key: 'llmBaseUrl', label: 'Base URL', type: 'text', section: 'llm', defaultValue: '' },
+      { key: 'llmModel', label: '模型名称', type: 'text', section: 'llm', defaultValue: '' },
+      { key: 'llmTimeout', label: '超时秒数', type: 'number', section: 'llm', defaultValue: 120, min: 10, max: 900 },
+      { key: 'llmStream', label: '流式输出', type: 'boolean', section: 'llm', defaultValue: true },
+    ],
+    defaultOptions: {
+      schemeProfileKey: 'balanced',
+      ruleLibraryKey: 'fire-strike-rules',
+      comparisonFocus: 'balanced',
+      expectedGroupCount: 4,
+      useLlmExplanation: true,
+      llmApiKey: '',
+      llmBaseUrl: '',
+      llmModel: '',
+      llmTimeout: 120,
+      llmStream: true,
+    },
+  },
+  {
+    key: 'airlanding-zone-local',
+    type: 'external-model',
+    runtime: 'python-local',
+    executionMode: 'local-python',
+    entrypoint: 'main.py',
+    localAlgorithmKey: 'airlanding_zone',
+    projectName: '机降地域优化选择 Python 算法',
+    projectPath: 'algorithms/airlanding_zone',
+    description: '调用 algorithms/airlanding_zone/main.py，从上游敌情、目标分配和本地 terrain 数据生成候选机降地域并映射为平台结果结构。',
+    version: '0.1.0',
+    defaultStatus: 'active',
+    legacyKeys: ['airlanding-zone-python', 'local-airlanding-zone'],
+    supportedAlgorithmIds: ['airborne-landing-site-selection'],
+    projectAlgorithms: [{ id: 'airborne-landing-site-selection', name: '机降地域优化选择' }],
+    parameterSchema: [
+      { key: 'candidateCount', label: '候选地域数量', type: 'number', defaultValue: 5, min: 1, max: 20 },
+      { key: 'terrainRoot', label: '地形数据目录', type: 'text', defaultValue: 'apps/web/public/terrain' },
+    ],
+    defaultOptions: {
+      candidateCount: 5,
+      terrainRoot: 'apps/web/public/terrain',
+    },
+  },
+];
 
 function buildRuntimeCatalog() {
   return buildStandardEngineCatalog({
@@ -1276,9 +1403,20 @@ function buildRuntimeCatalog() {
       endpointEnv: project.endpointEnv,
       versionEnv: project.versionEnv,
       timeoutEnv: project.timeoutEnv,
+      defaultStatus: project.defaultStatus,
+      executionMode: project.executionMode,
+      packageName: project.packageName,
+      cliModule: project.cliModule,
+      entrypoint: project.entrypoint,
+      localAlgorithmKey: project.localAlgorithmKey,
+      version: project.version,
       label: project.projectName,
-      activeDescription: `已配置 ${project.projectPath} 外部算法工程，可通过统一规划网关执行。`,
-      plannedDescription: `${project.projectPath} 外部算法工程已登记，配置 ${project.endpointEnv} 后可接入执行。`,
+      activeDescription: project.executionMode === 'local-python'
+        ? project.description
+        : `已配置 ${project.projectPath} 外部算法工程，可通过统一规划网关执行。`,
+      plannedDescription: project.executionMode === 'local-python'
+        ? project.description
+        : `${project.projectPath} 外部算法工程已登记，配置 ${project.endpointEnv} 后可接入执行。`,
       legacyKeys: project.legacyKeys,
       projectName: project.projectName,
       projectPath: project.projectPath,
@@ -1405,8 +1543,8 @@ const ALGORITHM_DEFINITIONS = [
     id: 'airborne-landing-site-selection',
     name: '机降地域优化选择',
     category: '机降选址',
-    description: '基于系统离线 terrain 地形、敌方威胁分布、目标分配和直升机性能推导机降地域候选点，完成多目标评分、排序与三维展示。',
-    expectedInputs: ['敌情威胁结果', '目标分配结果', '系统离线 terrain 地形', '直升机性能偏好'],
+    description: '基于地形、敌方威胁分布、目标分配和直升机性能推导机降地域候选点，完成多目标评分、排序与三维展示。',
+    expectedInputs: ['敌情威胁结果', '目标分配结果', '环境要素', '直升机性能偏好'],
     expectedOutputs: ['候选机降点排序', '机降地域评分', '地图标注与联动分析'],
     implementationStatus: 'implemented',
     supportedInputModes: ['upstream-result'],
@@ -1420,10 +1558,6 @@ const ALGORITHM_DEFINITIONS = [
         sitePreference: 'balanced',
         helicopterModel: 'medium-lift',
         candidateCount: 5,
-        landingCount: 5,
-        landingAreaSizeSqKm: 0.1,
-        landingDistanceKm: 50,
-        terrainRoot: '',
       },
     },
   },
@@ -1468,6 +1602,11 @@ function buildAlgorithmVariants(algorithmId, runtimes, implementationStatus) {
     endpoint: runtime.endpoint || '',
     projectName: runtime.projectName || '',
     projectPath: runtime.projectPath || '',
+    executionMode: runtime.executionMode || '',
+    packageName: runtime.packageName || '',
+    cliModule: runtime.cliModule || '',
+    entrypoint: runtime.entrypoint || '',
+    localAlgorithmKey: runtime.localAlgorithmKey || '',
     projectAlgorithms: cloneData(runtime.projectAlgorithms || []),
     parameterSchema: cloneData(resolveRuntimeParameterSchema(runtime, algorithmId)),
     defaultOptions: cloneData(resolveRuntimeDefaultOptions(runtime, algorithmId)),
@@ -2016,7 +2155,6 @@ function resolveImportedFileType(fileName = '', fileExtension = '') {
   if (['.doc', '.docx'].includes(extension)) return 'word';
   if (extension === '.pdf') return 'pdf';
   if (['.xls', '.xlsx', '.csv'].includes(extension)) return 'excel';
-  if (extension === '.txt') return 'text';
   return '';
 }
 
@@ -2070,7 +2208,7 @@ async function normalizePlanningUpload(file = {}) {
       code: 'PLANNING_MISSING_DATA',
       type: 'missing_data',
       status: 400,
-      message: `当前仅支持上传 Word、PDF、Excel、CSV 或 TXT 文件，无法解析 ${fileName || '未命名文件'}。`,
+      message: `当前仅支持上传 Word、PDF、Excel 或 CSV 文件，无法解析 ${fileName || '未命名文件'}。`,
       details: {
         fileName: fileName || '未命名文件',
       },
@@ -2159,6 +2297,845 @@ function buildExternalDatasetPayload(dataset = {}, selectedSourceIds = []) {
       blue: cloneData(blueIntelligence),
     },
   };
+}
+
+function emitPlanningEvent(events, type, payload = {}) {
+  if (!events) return;
+  const eventPayload = {
+    ...safeObject(payload),
+    type,
+    timestamp: new Date().toISOString(),
+  };
+  try {
+    if (typeof events === 'function') {
+      events(type, eventPayload);
+    } else if (typeof events.emit === 'function') {
+      events.emit(type, eventPayload);
+    }
+  } catch {
+    // Streaming progress must never break the planning run itself.
+  }
+}
+
+function normalizeBooleanOption(value, fallback = false) {
+  if (value === undefined || value === null || value === '') return fallback;
+  if (typeof value === 'boolean') return value;
+  return ['1', 'true', 'yes', 'on'].includes(String(value).trim().toLowerCase());
+}
+
+function safeRuntimeText(value = '') {
+  return String(value ?? '').trim();
+}
+
+const SENSITIVE_OPTION_KEYS = new Set([
+  'apiKey',
+  'api_key',
+  'authorization',
+  'llmApiKey',
+  'llm_api_key',
+  'openaiApiKey',
+  'token',
+]);
+
+function redactSensitiveOptions(value) {
+  if (Array.isArray(value)) {
+    return value.map((item) => redactSensitiveOptions(item));
+  }
+  if (!value || typeof value !== 'object') {
+    return value;
+  }
+  return Object.fromEntries(Object.entries(value).map(([key, item]) => {
+    if (SENSITIVE_OPTION_KEYS.has(key)) {
+      return [key, item ? 'configured' : ''];
+    }
+    return [key, redactSensitiveOptions(item)];
+  }));
+}
+
+function resolveRuntimeOptions(input = {}, variant = {}) {
+  const options = safeObject(input.options);
+  const runtimeOptions = safeObject(options.runtimeOptions);
+  const directOptions = { ...options };
+  delete directOptions.runtimeOptions;
+  return {
+    ...safeObject(variant.defaultOptions),
+    ...directOptions,
+    ...safeObject(runtimeOptions[variant.runtimeKey]),
+  };
+}
+
+function resolveProjectRoot(variant = {}) {
+  const projectPath = safeRuntimeText(variant.projectPath);
+  return path.isAbsolute(projectPath) ? projectPath : path.join(REPO_ROOT, projectPath);
+}
+
+function safeFileNamePart(value = '', fallback = 'input') {
+  const normalized = String(value || fallback)
+    .normalize('NFKD')
+    .replace(/[^\w.-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 120);
+  return normalized || fallback;
+}
+
+async function writeJsonFile(filePath, payload) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, JSON.stringify(payload, null, 2), 'utf-8');
+  return filePath;
+}
+
+async function writeTextFile(filePath, text) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, String(text || ''), 'utf-8');
+  return filePath;
+}
+
+function appendPythonPath(env, projectRoot) {
+  const pythonPath = [projectRoot, env.PYTHONPATH].filter(Boolean).join(path.delimiter);
+  return {
+    ...env,
+    PYTHONPATH: pythonPath,
+    PYTHONIOENCODING: 'utf-8',
+  };
+}
+
+function applyLlmRuntimeEnv(env, prefix, runtimeOptions = {}) {
+  const apiKey = safeRuntimeText(runtimeOptions.llmApiKey);
+  const baseUrl = safeRuntimeText(runtimeOptions.llmBaseUrl);
+  const model = safeRuntimeText(runtimeOptions.llmModel);
+  const timeout = safeRuntimeText(runtimeOptions.llmTimeout);
+  const stream = normalizeBooleanOption(runtimeOptions.llmStream, false);
+
+  if (apiKey) env[`${prefix}_API_KEY`] = apiKey;
+  if (baseUrl) env[`${prefix}_BASE_URL`] = baseUrl;
+  if (model) env[`${prefix}_MODEL`] = model;
+  if (timeout) env[`${prefix}_TIMEOUT`] = timeout;
+  env[`${prefix}_STREAM`] = stream ? '1' : '0';
+  env[`${prefix}_STREAM_STDOUT`] = stream ? '1' : '0';
+  env.LLM_STREAM = stream ? '1' : '0';
+  env.LLM_STREAM_STDOUT = stream ? '1' : '0';
+  if (timeout) env.LLM_TIMEOUT = timeout;
+  return env;
+}
+
+function splitLines(text = '') {
+  return String(text || '')
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter(Boolean);
+}
+
+function tailText(text = '', limit = 1600) {
+  const source = String(text || '');
+  if (source.length <= limit) return source;
+  return source.slice(source.length - limit);
+}
+
+function runPythonProcess({
+  args = [],
+  cwd = REPO_ROOT,
+  env = {},
+  events = null,
+  step = {},
+  algorithm = {},
+  variant = {},
+  stdoutAsLlm = false,
+  terminalPrefix = '',
+} = {}) {
+  return new Promise((resolve, reject) => {
+    const startedAt = Date.now();
+    let stdout = '';
+    let stderr = '';
+    const pythonCommand = PLANNING_PYTHON_USE_VENV ? process.execPath : (PLANNING_PYTHON_BIN || 'python3');
+    const pythonArgs = PLANNING_PYTHON_USE_VENV ? [PLANNING_PYTHON_VENV_RUNNER, ...args] : args;
+    const pythonEnv = PLANNING_PYTHON_USE_VENV && PLANNING_PYTHON_BIN
+      ? { PLANNING_PYTHON_BOOTSTRAP_BIN: PLANNING_PYTHON_BIN }
+      : {};
+    emitPlanningEvent(events, 'terminal', {
+      stepId: step.id,
+      stepName: step.name,
+      algorithmId: algorithm.id,
+      stream: 'terminal',
+      message: `${terminalPrefix || variant.name || algorithm.name} 启动: ${pythonCommand} ${pythonArgs.join(' ')}`,
+    });
+
+    const child = spawn(pythonCommand, pythonArgs, {
+      cwd,
+      env: { ...process.env, ...pythonEnv, ...env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    child.stdout.on('data', (chunk) => {
+      const text = chunk.toString('utf-8');
+      stdout += text;
+      if (stdoutAsLlm) {
+        emitPlanningEvent(events, 'llm-chunk', {
+          stepId: step.id,
+          stepName: step.name,
+          algorithmId: algorithm.id,
+          bindingId: variant.id,
+          content: text,
+        });
+      } else {
+        for (const line of splitLines(text)) {
+          emitPlanningEvent(events, 'terminal', {
+            stepId: step.id,
+            stepName: step.name,
+            algorithmId: algorithm.id,
+            bindingId: variant.id,
+            stream: 'stdout',
+            message: line,
+          });
+        }
+      }
+    });
+
+    child.stderr.on('data', (chunk) => {
+      const text = chunk.toString('utf-8');
+      stderr += text;
+      for (const line of splitLines(text)) {
+        emitPlanningEvent(events, 'terminal', {
+          stepId: step.id,
+          stepName: step.name,
+          algorithmId: algorithm.id,
+          bindingId: variant.id,
+          stream: 'stderr',
+          message: line,
+        });
+      }
+    });
+
+    child.on('error', (error) => {
+      reject(createPlanningRuntimeError({
+        code: 'PLANNING_ALGORITHM_FAILED',
+        type: 'algorithm_failed',
+        status: 502,
+        message: `${variant.name || algorithm.name} Python 进程启动失败：${error.message}`,
+        details: {
+          stepId: step.id,
+          algorithmId: algorithm.id,
+          bindingId: variant.id,
+          stderr: tailText(stderr),
+          stdout: tailText(stdout),
+        },
+      }));
+    });
+
+    child.on('close', (code) => {
+      const durationMs = Date.now() - startedAt;
+      if (code === 0) {
+        resolve({ stdout, stderr, durationMs });
+        return;
+      }
+      reject(createPlanningRuntimeError({
+        code: 'PLANNING_ALGORITHM_FAILED',
+        type: 'algorithm_failed',
+        status: 502,
+        message: `${variant.name || algorithm.name} Python 执行失败，退出码 ${code}。`,
+        details: {
+          stepId: step.id,
+          algorithmId: algorithm.id,
+          bindingId: variant.id,
+          exitCode: code,
+          stderr: tailText(stderr),
+          stdout: tailText(stdout),
+        },
+      }));
+    });
+  });
+}
+
+function buildDatasetContextText(datasetPayload = {}, algorithmName = '') {
+  const lines = [
+    `算法输入上下文：${algorithmName || '智能任务规划'}`,
+    `资源摘要：${JSON.stringify(datasetPayload.summary || {})}`,
+  ];
+
+  for (const source of safeArray(datasetPayload.selectedSources)) {
+    lines.push(`\n[数据源] ${source.name || source.title || `#${source.id}`}`);
+    if (source.description) lines.push(String(source.description));
+    if (source.sourceType || source.type) lines.push(`类型：${source.sourceType || source.type}`);
+  }
+
+  for (const preview of safeArray(datasetPayload.selectedPreviews)) {
+    lines.push(`\n[数据源预览] sourceId=${preview.sourceId || ''}`);
+    lines.push(previewPayloadToText(preview));
+  }
+
+  for (const extraction of safeArray(datasetPayload.selectedExtractions)) {
+    lines.push(`\n[抽取条目] ${extraction.title || extraction.sourceName || `#${extraction.id}`}`);
+    lines.push(String(extraction.summary || extraction.text || ''));
+  }
+
+  for (const record of safeArray(datasetPayload.intelligence?.red)) {
+    lines.push(`\n[红方情报] ${record.title || record.name || `#${record.id}`}`);
+    lines.push(String(record.description || record.content || record.summary || ''));
+    if (record.longitude && record.latitude) lines.push(`坐标：${record.longitude}, ${record.latitude}`);
+  }
+
+  for (const record of safeArray(datasetPayload.intelligence?.blue)) {
+    lines.push(`\n[蓝方情报] ${record.title || record.name || `#${record.id}`}`);
+    lines.push(String(record.description || record.content || record.summary || ''));
+    if (record.longitude && record.latitude) lines.push(`坐标：${record.longitude}, ${record.latitude}`);
+  }
+
+  for (const item of safeArray(datasetPayload.selectedEnvironment)) {
+    lines.push(`\n[环境要素] ${item.name || item.title || `#${item.id}`}`);
+    lines.push(String(item.description || item.summary || item.value || ''));
+  }
+
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+async function materializeUploadedInputFiles(input = {}, baseDir = '', algorithmName = '') {
+  const files = [];
+  const uploadDir = path.join(baseDir, 'uploaded-files');
+  await fs.mkdir(uploadDir, { recursive: true });
+
+  for (const [index, file] of safeArray(input.uploadedFiles).entries()) {
+    const fileName = String(file.fileName || file.name || `uploaded-${index + 1}.txt`).trim();
+    const extension = String(file.fileExtension || path.extname(fileName) || '.txt').trim() || '.txt';
+    const baseName = safeFileNamePart(path.basename(fileName, path.extname(fileName)), `uploaded-${index + 1}`);
+    const targetPath = path.join(uploadDir, `${String(index + 1).padStart(2, '0')}-${baseName}${extension}`);
+
+    if (file.fileContentBase64) {
+      await fs.writeFile(targetPath, Buffer.from(String(file.fileContentBase64), 'base64'));
+      files.push(targetPath);
+      continue;
+    }
+
+    const extractionText = safeArray(file.extractionDrafts)
+      .map((item) => [item.title, item.summary, item.text].filter(Boolean).join('\n'))
+      .filter(Boolean)
+      .join('\n\n');
+    const fallbackText = extractionText || previewPayloadToText(file.preview || file.payload || {}) || `${algorithmName} 上传文件：${fileName}`;
+    const textPath = targetPath.endsWith('.txt') ? targetPath : `${targetPath}.txt`;
+    await writeTextFile(textPath, fallbackText);
+    files.push(textPath);
+  }
+
+  return files;
+}
+
+async function materializePlanningContextFiles({
+  input = {},
+  dataset = {},
+  baseDir = '',
+  algorithmName = '',
+} = {}) {
+  const files = await materializeUploadedInputFiles(input, baseDir, algorithmName);
+  const datasetPayload = buildExternalDatasetPayload(dataset, input.selectedSourceIds);
+  const hasSelectedDataset = Object.values(datasetPayload.summary || {}).some((value) => Number(value || 0) > 0);
+  if (hasSelectedDataset) {
+    const contextDir = path.join(baseDir, 'resource-context');
+    const contextJson = path.join(contextDir, 'resource-context.json');
+    const contextText = path.join(contextDir, 'resource-context.txt');
+    await writeJsonFile(contextJson, datasetPayload);
+    await writeTextFile(contextText, buildDatasetContextText(datasetPayload, algorithmName));
+    files.push(contextText, contextJson);
+  }
+  return {
+    files,
+    datasetPayload,
+  };
+}
+
+function normalizeGeoPoint(value = null) {
+  if (Array.isArray(value) && value.length >= 2) {
+    const lng = Number(value[0]);
+    const lat = Number(value[1]);
+    if (Number.isFinite(lng) && Number.isFinite(lat) && Math.abs(lng) <= 180 && Math.abs(lat) <= 90) {
+      return { lng, lat };
+    }
+    return null;
+  }
+
+  if (!value || typeof value !== 'object') return null;
+  const directLng = value.lng ?? value.lon ?? value.longitude;
+  const directLat = value.lat ?? value.latitude;
+  if (directLng !== undefined && directLat !== undefined) {
+    const lng = Number(directLng);
+    const lat = Number(directLat);
+    if (Number.isFinite(lng) && Number.isFinite(lat) && Math.abs(lng) <= 180 && Math.abs(lat) <= 90) {
+      return { lng, lat };
+    }
+  }
+
+  return normalizeGeoPoint(value.center)
+    || normalizeGeoPoint(value.location)
+    || normalizeGeoPoint(value.coordinate)
+    || normalizeGeoPoint(value.coordinates)
+    || null;
+}
+
+function normalizeAirlandingTarget(raw = {}, index = 0, source = 'upstream') {
+  const point = normalizeGeoPoint(raw);
+  if (!point) return null;
+  return {
+    target_id: String(raw.target_id || raw.targetId || raw.id || `${source}-${index + 1}`),
+    id: String(raw.id || raw.targetId || raw.target_id || `${source}-${index + 1}`),
+    name: String(raw.name || raw.title || raw.label || `目标 ${index + 1}`),
+    category: String(raw.category || raw.type || raw.targetType || source),
+    lng: round(point.lng, 6),
+    lat: round(point.lat, 6),
+    threat_value: round(Number(raw.threat_value ?? raw.threatValue ?? raw.threatScore ?? raw.score ?? 65) / 100, 4),
+    raw_coordinates: `${round(point.lat, 6)}, ${round(point.lng, 6)}`,
+    source,
+  };
+}
+
+function dedupeAirlandingTargets(targets = []) {
+  const seen = new Set();
+  const result = [];
+  for (const target of safeArray(targets)) {
+    const key = `${round(target.lng, 4)}:${round(target.lat, 4)}:${target.name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(target);
+  }
+  return result;
+}
+
+function collectAirlandingTargets(context = {}, dataset = {}) {
+  const threatOutput = safeObject(context.stageOutputs?.['enemy-threat-analysis']);
+  const targetAllocation = safeObject(context.stageOutputs?.['target-allocation']);
+  const sources = [
+    ...safeArray(threatOutput.targetAssessments).map((item) => ({ item, source: 'threat-target' })),
+    ...safeArray(threatOutput.fireCoverage).map((item) => ({ item, source: 'fire-coverage' })),
+    ...safeArray(threatOutput.airDefenseSystem).map((item) => ({ item, source: 'air-defense' })),
+    ...safeArray(threatOutput.reconEarlyWarning).map((item) => ({ item, source: 'recon-warning' })),
+    ...safeArray(threatOutput.antiAirborneFacilities).map((item) => ({ item, source: 'anti-airborne' })),
+    ...safeArray(targetAllocation.preferredPlan?.assignments).map((item) => ({ item: item.target || item, source: 'target-allocation' })),
+    ...safeArray(targetAllocation.targets).map((item) => ({ item, source: 'target-allocation' })),
+    ...safeArray(dataset.intelligence).filter((item) => item.camp === 'red').map((item) => ({ item, source: 'red-intelligence' })),
+  ];
+
+  const targets = dedupeAirlandingTargets(sources
+    .map(({ item, source }, index) => normalizeAirlandingTarget(item, index, source))
+    .filter(Boolean));
+
+  if (targets.length) {
+    return targets;
+  }
+
+  return [
+    { target_id: 'fallback-objective', id: 'fallback-objective', name: '演示目标区', category: 'objective', lng: 120.18, lat: 30.28, threat_value: 0.62, raw_coordinates: '30.28, 120.18', source: 'fallback' },
+    { target_id: 'fallback-threat-east', id: 'fallback-threat-east', name: '东侧防空节点', category: 'air-defense', lng: 120.24, lat: 30.32, threat_value: 0.72, raw_coordinates: '30.32, 120.24', source: 'fallback' },
+    { target_id: 'fallback-threat-south', id: 'fallback-threat-south', name: '南侧火力节点', category: 'fire-coverage', lng: 120.13, lat: 30.22, threat_value: 0.58, raw_coordinates: '30.22, 120.13', source: 'fallback' },
+  ];
+}
+
+function buildBoundsFromAirlandingTargets(targets = [], padding = 0.18) {
+  const points = safeArray(targets).filter((item) => Number.isFinite(Number(item.lng)) && Number.isFinite(Number(item.lat)));
+  if (!points.length) {
+    return { west: 120.0, south: 30.08, east: 120.38, north: 30.46 };
+  }
+  const lngs = points.map((item) => Number(item.lng));
+  const lats = points.map((item) => Number(item.lat));
+  return {
+    west: round(Math.min(...lngs) - padding, 6),
+    south: round(Math.min(...lats) - padding * 0.72, 6),
+    east: round(Math.max(...lngs) + padding, 6),
+    north: round(Math.max(...lats) + padding * 0.72, 6),
+  };
+}
+
+function resolveTerrainRoot(runtimeOptions = {}) {
+  const configured = safeRuntimeText(runtimeOptions.terrainRoot || process.env.PLANNING_TERRAIN_ROOT || process.env.AIRLANDING_TERRAIN_ROOT || 'apps/web/public/terrain');
+  return path.isAbsolute(configured) ? configured : path.resolve(REPO_ROOT, configured);
+}
+
+function buildAirlandingRequirements(runtimeOptions = {}, input = {}) {
+  const count = clamp(Math.round(Number(runtimeOptions.candidateCount || input.options?.candidateCount || 5)), 1, 20);
+  const requirements = { num: count };
+  for (let index = 0; index < count; index += 1) {
+    requirements[`landing_${index}`] = {
+      area_size: 0.1,
+      area_distance: 50,
+    };
+  }
+  return requirements;
+}
+
+async function executeLocalEnemyThreatAnalysis(variant, task, step, algorithm, context, payload, input, tempDir, events) {
+  const runtimeOptions = resolveRuntimeOptions(input, variant);
+  const projectRoot = resolveProjectRoot(variant);
+  const { files } = await materializePlanningContextFiles({
+    input,
+    dataset: payload.dataset || {},
+    baseDir: tempDir,
+    algorithmName: algorithm.name,
+  });
+  if (!files.length) {
+    throw createPlanningRuntimeError({
+      code: 'PLANNING_MISSING_DATA',
+      type: 'missing_data',
+      status: 400,
+      message: '基于大模型分析算法缺少资源库数据或上传文件。',
+      details: { stepId: step.id, algorithmId: algorithm.id, bindingId: variant.id },
+    });
+  }
+
+  const outputPath = path.join(tempDir, 'outputs', 'enemy-threat-analysis.json');
+  const artifactDir = path.join(tempDir, 'artifacts', 'enemy-threat-analysis');
+  const args = [
+    '-m',
+    variant.cliModule || 'enemy_threat_analysis.cli',
+    '--files',
+    ...files,
+    '--analysis-focus',
+    safeRuntimeText(runtimeOptions.analysisFocus || 'comprehensive'),
+    '--heatmap-density',
+    safeRuntimeText(runtimeOptions.heatmapDensity || 'medium'),
+    '--impact-bias',
+    safeRuntimeText(runtimeOptions.impactBias || 'balanced'),
+    '--output',
+    outputPath,
+    '--artifact-dir',
+    artifactDir,
+  ];
+  if (normalizeBooleanOption(runtimeOptions.skipAssessment, false)) {
+    args.push('--skip-assessment');
+  }
+
+  const env = applyLlmRuntimeEnv(
+    appendPythonPath({}, projectRoot),
+    'ENEMY_THREAT_LLM',
+    runtimeOptions,
+  );
+  await runPythonProcess({
+    args,
+    cwd: REPO_ROOT,
+    env,
+    events,
+    step,
+    algorithm,
+    variant,
+    stdoutAsLlm: normalizeBooleanOption(runtimeOptions.llmStream, true),
+    terminalPrefix: '敌情威胁 Python 算法',
+  });
+
+  const structuredOutput = JSON.parse(await fs.readFile(outputPath, 'utf-8'));
+  if (structuredOutput?.ok === false) {
+    throw createPlanningRuntimeError({
+      code: String(structuredOutput.error?.code || 'PLANNING_ALGORITHM_FAILED'),
+      type: String(structuredOutput.error?.type || 'algorithm_failed'),
+      status: 502,
+      message: String(structuredOutput.error?.message || '基于大模型分析算法执行失败。'),
+      details: { stepId: step.id, algorithmId: algorithm.id, bindingId: variant.id },
+    });
+  }
+
+  const targetCount = safeArray(structuredOutput.targetAssessments).length;
+  return {
+    summary: `基于大模型分析算法完成敌情威胁分析，识别目标 ${targetCount} 个，威胁评分 ${structuredOutput.threatScore ?? '--'}。`,
+    outputPreview: [
+      `威胁等级：${structuredOutput.threatLevel || '--'} / ${structuredOutput.threatScore ?? '--'} 分`,
+      `火力覆盖 ${safeArray(structuredOutput.fireCoverage).length} 项，防空节点 ${safeArray(structuredOutput.airDefenseSystem).length} 项`,
+      `热力图要素 ${safeArray(structuredOutput.heatmapGeojson?.features).length} 个`,
+    ],
+    artifacts: [
+      createArtifact('敌情威胁结构化结果', 'Python 算法输出的敌情目标、火力、防空、侦察和反机降结构。'),
+      createArtifact('威胁热力图与三维标注', '输出 heatmapBase64 / heatmapGeojson，可在单算法结果页叠加展示。'),
+      createArtifact('大模型抽取过程日志', '执行页已显示 stdout/stderr 与流式片段。'),
+    ],
+    structuredOutput,
+  };
+}
+
+async function executeLocalForceGrouping(variant, task, step, algorithm, context, payload, input, tempDir, events) {
+  const runtimeOptions = resolveRuntimeOptions(input, variant);
+  const projectRoot = resolveProjectRoot(variant);
+  const { files } = await materializePlanningContextFiles({
+    input,
+    dataset: payload.dataset || {},
+    baseDir: tempDir,
+    algorithmName: algorithm.name,
+  });
+  if (!files.length) {
+    throw createPlanningRuntimeError({
+      code: 'PLANNING_MISSING_DATA',
+      type: 'missing_data',
+      status: 400,
+      message: '智能编组算法缺少我方资源库数据或上传文件。',
+      details: { stepId: step.id, algorithmId: algorithm.id, bindingId: variant.id },
+    });
+  }
+
+  const upstreamThreat = safeObject(context.stageOutputs?.['enemy-threat-analysis']);
+  const upstreamPath = await writeJsonFile(path.join(tempDir, 'inputs', 'upstream-threat.json'), upstreamThreat);
+  const outputPath = path.join(tempDir, 'outputs', 'force-grouping.json');
+  const args = [
+    '-m',
+    variant.cliModule || 'force_grouping.cli',
+    '--files',
+    ...files,
+    '--upstream-threat',
+    upstreamPath,
+    '--scheme-profile',
+    safeRuntimeText(runtimeOptions.schemeProfileKey || 'scheme-balanced-intelligent'),
+    '--rule-library',
+    safeRuntimeText(runtimeOptions.ruleLibraryKey || 'fire-strike-rules'),
+    '--comparison-focus',
+    safeRuntimeText(runtimeOptions.comparisonFocus || 'balanced'),
+    '--expected-group-count',
+    String(clamp(Math.round(Number(runtimeOptions.expectedGroupCount || 4)), 1, 12)),
+    '--output',
+    outputPath,
+  ];
+  if (!normalizeBooleanOption(runtimeOptions.useLlmExplanation, true)) {
+    args.push('--no-llm-explanation');
+  }
+
+  const env = applyLlmRuntimeEnv(
+    appendPythonPath({}, projectRoot),
+    'FORCE_GROUPING_LLM',
+    runtimeOptions,
+  );
+  await runPythonProcess({
+    args,
+    cwd: REPO_ROOT,
+    env,
+    events,
+    step,
+    algorithm,
+    variant,
+    stdoutAsLlm: normalizeBooleanOption(runtimeOptions.llmStream, true),
+    terminalPrefix: '作战力量智能编组 Python 算法',
+  });
+
+  const structuredOutput = JSON.parse(await fs.readFile(outputPath, 'utf-8'));
+  if (structuredOutput?.ok === false) {
+    throw createPlanningRuntimeError({
+      code: String(structuredOutput.error?.code || 'PLANNING_ALGORITHM_FAILED'),
+      type: String(structuredOutput.error?.type || 'algorithm_failed'),
+      status: 502,
+      message: String(structuredOutput.error?.message || '智能编组算法执行失败。'),
+      details: {
+        stepId: step.id,
+        algorithmId: algorithm.id,
+        bindingId: variant.id,
+        error: structuredOutput.error || {},
+      },
+    });
+  }
+
+  const preferred = structuredOutput.preferredScheme || {};
+  const preferredLabel = preferred.name || preferred.methodLabel || '待确认方案';
+  return {
+    summary: `智能编组算法完成 ${safeArray(structuredOutput.schemes).length} 套方案比选，推荐 ${preferredLabel}。`,
+    outputPreview: [
+      `推荐方案：${preferredLabel} / ${preferred.score ?? '--'} 分`,
+      `编组数量：${safeArray(preferred.groups).length || preferred.actualGroupCount || '--'}`,
+      `约束状态：${structuredOutput.constraintSummary?.overallStatus || '--'}`,
+    ],
+    artifacts: [
+      createArtifact('作战力量编组方案', 'Python 算法输出的分组方案、平台能力和推荐解释。'),
+      createArtifact('方案比选与约束评估', '输出 schemes / comparison / constraintSummary 等比选结果。'),
+      createArtifact('大模型编组抽取日志', '执行页已显示 stdout/stderr 与流式片段。'),
+    ],
+    structuredOutput,
+  };
+}
+
+function buildAirlandingInputPayload(context = {}, input = {}, dataset = {}, runtimeOptions = {}) {
+  const targets = collectAirlandingTargets(context, dataset);
+  const bounds = buildBoundsFromAirlandingTargets(targets);
+  const terrainRoot = resolveTerrainRoot(runtimeOptions);
+  return {
+    report_id: `planning-${Date.now()}`,
+    terrain_root: terrainRoot,
+    targets,
+    bounds,
+    landing_requirements: buildAirlandingRequirements(runtimeOptions, input),
+    upstream: {
+      threatAnalysisAvailable: Boolean(context.stageOutputs?.['enemy-threat-analysis']),
+      targetAllocationAvailable: Boolean(context.stageOutputs?.['target-allocation']),
+    },
+  };
+}
+
+function normalizeAirlandingCandidate(raw = {}, index = 0) {
+  const centerPoint = normalizeGeoPoint(raw.center || raw);
+  const center = centerPoint
+    ? [round(centerPoint.lng, 6), round(centerPoint.lat, 6), round(Number(raw.elevation_m || raw.refined_mean_elevation_m || 0), 1)]
+    : [120.18, 30.28, 0];
+  const zone = safeArray(raw.polygon).map((point) => {
+    const normalized = normalizeGeoPoint(point);
+    return normalized ? [round(normalized.lng, 6), round(normalized.lat, 6), center[2]] : null;
+  }).filter(Boolean);
+  const score = round(clamp(Number(raw.composite_score || 0) * 100, 0, 100), 1);
+  const terrainScore = round(clamp(Number(raw.terrain_score || raw.refined_terrain_score || 0) * 100, 0, 100), 1);
+  const safety = round(clamp((1 - Number(raw.threat_value || 0)) * 100, 0, 100), 1);
+  const distanceScore = round(clamp(Number(raw.distance_score || 0) * 100, 0, 100), 1);
+  const concealment = round(clamp(terrainScore * 0.65 + safety * 0.35, 0, 100), 1);
+  const helicopterFit = round(clamp(72 + terrainScore * 0.18 - Math.max(0, Number(raw.slope_deg || raw.refined_max_slope_deg || 0) - 7) * 1.6, 0, 100), 1);
+  return {
+    id: String(raw.zone_id || raw.candidate_id || raw.landing_id || `python-lz-${index + 1}`),
+    name: String(raw.zone_id || raw.candidate_id || `Python 候选地域 ${index + 1}`),
+    source: 'airlanding_zone',
+    center,
+    zone: zone.length >= 3 ? zone : buildLandingZonePolygon(center, 1.4),
+    rank: index + 1,
+    score,
+    baseScore: score,
+    qualified: !raw.refined_rejected && safety >= 42 && terrainScore >= 28,
+    concealment,
+    safety,
+    assemblyEfficiency: distanceScore,
+    helicopterFit,
+    ingressDistanceKm: round(Number(raw.area_distance_km || 0), 1),
+    assaultDistanceKm: round(Number(raw.nearest_threat_distance_km || 0), 1),
+    totalDistanceKm: round(Number(raw.area_distance_km || 0) + Number(raw.nearest_threat_distance_km || 0), 1),
+    threatExposure: round(clamp(Number(raw.threat_value || 0) * 100, 0, 100), 1),
+    metrics: {
+      areaSizeSqkm: round(Number(raw.area_size_sqkm || raw.polygon_area_sqkm || 0), 3),
+      terrainClass: raw.terrain_class || 'unknown',
+      slopeDeg: round(Number(raw.slope_deg || raw.refined_max_slope_deg || 0), 2),
+      reliefM: round(Number(raw.relief_m || raw.refined_relief_m || 0), 2),
+      elevationM: round(Number(raw.elevation_m || raw.refined_mean_elevation_m || 0), 1),
+      nearestThreatId: raw.nearest_threat_id || '',
+      nearestThreatDistanceKm: round(Number(raw.nearest_threat_distance_km || 0), 2),
+    },
+    rawCandidate: cloneData(raw),
+  };
+}
+
+function adaptAirlandingOutput(raw = {}, context = {}, input = {}, dataset = {}, runtimeOptions = {}) {
+  const helicopterProfile = buildHelicopterProfile(input.options?.helicopterModel || 'medium-lift');
+  const fallbackAnchor = resolveFallbackAnchor(dataset);
+  const targetAllocation = safeObject(context.stageOutputs?.['target-allocation']);
+  const threatOutput = safeObject(context.stageOutputs?.['enemy-threat-analysis']);
+  const stagingAnchor = buildGroupAnchors(safeObject(context.stageOutputs?.['force-grouping']), dataset)[0]?.anchor || fallbackAnchor;
+  const objectiveAnchor = buildObjectiveAnchors(targetAllocation, threatOutput, fallbackAnchor)[0]?.coordinates || fallbackAnchor;
+  const selectedIds = new Set(safeArray(raw.zones).map((item) => String(item.candidate_id || item.zone_id || item.landing_id || '')));
+  const rawCandidates = (safeArray(raw.candidates).length ? raw.candidates : safeArray(raw.zones))
+    .map((candidate) => ({
+      ...candidate,
+      selected: candidate.selected || selectedIds.has(String(candidate.candidate_id || candidate.zone_id || candidate.landing_id || '')),
+    }));
+  const rankedCandidates = sortByScore(rawCandidates.map(normalizeAirlandingCandidate), 'score')
+    .map((candidate, index) => ({ ...candidate, rank: index + 1 }));
+  const preferredCandidate = rankedCandidates.find((item) => item.rawCandidate?.selected) || rankedCandidates[0] || null;
+  const methodComparison = [
+    {
+      methodKey: 'airlanding-zone-python',
+      methodLabel: '机降地域优化选择 Python 算法',
+      bestCandidateName: preferredCandidate?.name || '--',
+      score: preferredCandidate?.score || 0,
+      averageScore: round(average(rankedCandidates.map((item) => item.score)), 1),
+      qualifiedCount: rankedCandidates.filter((item) => item.qualified).length,
+    },
+  ];
+
+  return {
+    implementationStatus: 'implemented',
+    builtinMethodKey: 'airlanding-zone-python',
+    builtinMethodLabel: '机降地域优化选择 Python 算法',
+    helicopterProfile,
+    stagingAnchor,
+    objectiveAnchor,
+    methodComparison,
+    rankedCandidates,
+    preferredCandidateId: preferredCandidate?.id || '',
+    preferredCandidate,
+    landingGroups: safeArray(raw.landing_groups),
+    landingRequirements: cloneData(raw.landing_requirements || {}),
+    demSource: cloneData(raw.dem_source || {}),
+    warnings: cloneData(raw.warnings || []),
+    rawAirlandingOutput: cloneData(raw),
+    linkageAnalysis: buildLandingLinkageAnalysis(preferredCandidate || {}, targetAllocation, helicopterProfile),
+    visualization: buildLandingVisualization(rankedCandidates, preferredCandidate, stagingAnchor, objectiveAnchor, helicopterProfile),
+    runtimeOptions: {
+      candidateCount: runtimeOptions.candidateCount,
+      terrainRoot: runtimeOptions.terrainRoot || 'apps/web/public/terrain',
+    },
+  };
+}
+
+async function executeLocalAirlandingZone(variant, task, step, algorithm, context, payload, input, tempDir, events) {
+  const runtimeOptions = resolveRuntimeOptions(input, variant);
+  const projectRoot = resolveProjectRoot(variant);
+  const inputPayload = buildAirlandingInputPayload(context, input, payload.dataset || {}, runtimeOptions);
+  const inputPath = await writeJsonFile(path.join(tempDir, 'inputs', 'airlanding-zone-input.json'), inputPayload);
+  const env = appendPythonPath({
+    PLANNING_TERRAIN_ROOT: inputPayload.terrain_root,
+    AIRLANDING_TERRAIN_ROOT: inputPayload.terrain_root,
+  }, projectRoot);
+
+  const processResult = await runPythonProcess({
+    args: [path.join(projectRoot, variant.entrypoint || 'main.py'), inputPath],
+    cwd: projectRoot,
+    env,
+    events,
+    step,
+    algorithm,
+    variant,
+    stdoutAsLlm: false,
+    terminalPrefix: '机降地域优化选择 Python 算法',
+  });
+  const trimmedStdout = String(processResult.stdout || '').trim();
+  const jsonStart = trimmedStdout.indexOf('{');
+  const rawOutput = jsonStart >= 0 ? JSON.parse(trimmedStdout.slice(jsonStart)) : {};
+  if (rawOutput.error) {
+    throw createPlanningRuntimeError({
+      code: 'PLANNING_ALGORITHM_FAILED',
+      type: 'algorithm_failed',
+      status: 502,
+      message: String(rawOutput.error || '机降地域优化选择 Python 算法执行失败。'),
+      details: { stepId: step.id, algorithmId: algorithm.id, bindingId: variant.id },
+    });
+  }
+
+  const structuredOutput = adaptAirlandingOutput(rawOutput, context, input, payload.dataset || {}, runtimeOptions);
+  return {
+    summary: `机降地域优化选择 Python 算法完成 ${safeArray(rawOutput.candidates).length} 个候选点筛选，推荐 ${structuredOutput.preferredCandidate?.name || '待确认地域'}。`,
+    outputPreview: [
+      `候选点 ${safeArray(rawOutput.candidates).length} 个，选中地域 ${safeArray(rawOutput.zones).length} 个`,
+      `推荐地域：${structuredOutput.preferredCandidate?.name || '--'} / ${structuredOutput.preferredCandidate?.score ?? '--'} 分`,
+      `Terrain：${rawOutput.dem_source?.terrain_root || inputPayload.terrain_root}`,
+    ],
+    artifacts: [
+      createArtifact('机降地域 Python 候选结果', '保留 airlanding_zone 原始 candidates / zones / landing_groups 输出。'),
+      createArtifact('平台机降地域排序结果', '映射为 rankedCandidates / preferredCandidate / methodComparison。'),
+      createArtifact('机降地域三维标注', '复用平台 visualization 结构输出候选点、优选地域和接近航路。'),
+    ],
+    structuredOutput,
+  };
+}
+
+async function executeLocalPythonStep(variant, task, step, algorithm, context, payload, input, events) {
+  const runKey = safeFileNamePart(`${payload.taskRunId || Date.now()}-${step.id || algorithm.id}`, 'planning-run');
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), `mission-planning-${runKey}-`));
+  emitPlanningEvent(events, 'terminal', {
+    stepId: step.id,
+    stepName: step.name,
+    algorithmId: algorithm.id,
+    bindingId: variant.id,
+    stream: 'terminal',
+    message: `临时工作目录已创建：${tempDir}`,
+  });
+
+  try {
+    if (algorithm.id === 'enemy-threat-analysis') {
+      return await executeLocalEnemyThreatAnalysis(variant, task, step, algorithm, context, payload, input, tempDir, events);
+    }
+    if (algorithm.id === 'force-grouping') {
+      return await executeLocalForceGrouping(variant, task, step, algorithm, context, payload, input, tempDir, events);
+    }
+    if (algorithm.id === 'airborne-landing-site-selection') {
+      return await executeLocalAirlandingZone(variant, task, step, algorithm, context, payload, input, tempDir, events);
+    }
+    throw createPlanningRuntimeError({
+      code: 'PLANNING_MISSING_DATA',
+      type: 'missing_data',
+      status: 400,
+      message: `${algorithm.name} 未登记本地 Python 执行器。`,
+      details: { stepId: step.id, algorithmId: algorithm.id, bindingId: variant.id },
+    });
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
 }
 
 function buildEvidenceCorpus(parts = []) {
@@ -3215,436 +4192,7 @@ function buildThreatImpactAnalysisV2(
   ];
 }
 
-function resolvePythonThreatCoordinates(target = {}) {
-  const longitude = Number(target.lng);
-  const latitude = Number(target.lat);
-  if (!Number.isFinite(longitude) || !Number.isFinite(latitude)) {
-    return null;
-  }
-  return [round(longitude, 4), round(latitude, 4), 0];
-}
-
-function pythonThreatTargetFactor(target = {}, field = '') {
-  return Number(safeObject(target.factors)?.[field] || 0);
-}
-
-function buildPythonThreatTargetEntities(pipeline = {}) {
-  return safeArray(pipeline.targets)
-    .map((target, index) => {
-      const coordinates = resolvePythonThreatCoordinates(target);
-      if (!coordinates) return null;
-      return {
-        id: `threat-target-${target.target_id || index + 1}`,
-        target_id: String(target.target_id || `T-${index + 1}`),
-        target_category: String(target.target_category || '综合目标'),
-        target_name: String(target.target_name || target.target_category || `目标 ${index + 1}`),
-        description: String(target.description || '').trim(),
-        raw_coordinates: String(target.raw_coordinates || '').trim(),
-        coordinates,
-        threat_index: Number(target.threat_index || 0),
-        confidence: Number(target.confidence || 0),
-        factors: cloneData(safeObject(target.factors)),
-        equip_params: cloneData(safeObject(target.equip_params)),
-        threat_breakdown: cloneData(safeObject(target.threat_breakdown)),
-      };
-    })
-    .filter(Boolean);
-}
-
-function buildPythonThreatFireCoverage(pipeline = {}) {
-  return safeArray(pipeline.fire_coverage_areas)
-    .map((item, index) => {
-      const longitude = Number(item.lng);
-      const latitude = Number(item.lat);
-      const radiusKm = Number(item.radius_km || 0);
-      if (!Number.isFinite(longitude) || !Number.isFinite(latitude) || radiusKm <= 0) return null;
-      return {
-        id: `python-fire-${item.target_id || index + 1}`,
-        targetId: String(item.target_id || ''),
-        targetCategory: String(item.target_category || ''),
-        name: String(item.target_name || item.target_id || `火力覆盖 ${index + 1}`),
-        center: [round(longitude, 4), round(latitude, 4), 0],
-        location: [round(longitude, 4), round(latitude, 4), 0],
-        radiusMeters: Math.round(radiusKm * 1000),
-        coverageKm: round(radiusKm, 1),
-        threatValue: round(Number(item.threat_index || 0) * 100, 1),
-        strength: round(Number(item.threat_index || 0), 4),
-        headingAngle: Number(item.heading_angle ?? -1),
-        coverageType: String(item.coverage_type || 'circle'),
-        source: 'Python 威胁分析',
-      };
-    })
-    .filter(Boolean);
-}
-
-function buildPythonThreatCategoryNodes(targetEntities = [], categoryKey = '') {
-  const definitions = {
-    airDefenseSystem: {
-      label: '防空节点',
-      unitSubtype: 'airDefense',
-      color: '#ef4444',
-      scoreField: 'air_defense_score',
-      predicate: (target) => includesAny(target.target_category, ['防空', '导弹', '高炮']) || pythonThreatTargetFactor(target, 'air_defense_score') >= 6,
-    },
-    reconEarlyWarning: {
-      label: '侦察预警',
-      unitSubtype: 'radar',
-      color: '#facc15',
-      scoreField: 'recon_warning_score',
-      predicate: (target) => includesAny(target.target_category, ['侦察', '预警', '雷达']) || pythonThreatTargetFactor(target, 'recon_warning_score') >= 6,
-    },
-    antiAirborneFacilities: {
-      label: '反机降设施',
-      unitSubtype: 'engineer',
-      color: '#f59e0b',
-      scoreField: 'anti_airlanding_score',
-      predicate: (target) => includesAny(target.target_category, ['反机降', '步兵', '工兵']) || pythonThreatTargetFactor(target, 'anti_airlanding_score') >= 6,
-    },
-  };
-  const definition = definitions[categoryKey];
-  if (!definition) return [];
-
-  return targetEntities
-    .filter((target) => definition.predicate(target))
-    .sort((left, right) => pythonThreatTargetFactor(right, definition.scoreField) - pythonThreatTargetFactor(left, definition.scoreField))
-    .slice(0, 10)
-    .map((target, index) => ({
-      id: `python-${categoryKey}-${index + 1}`,
-      targetId: target.target_id,
-      target_id: target.target_id,
-      target_category: target.target_category,
-      name: target.target_name,
-      location: target.coordinates,
-      coverageKm: round(Math.max(pythonThreatTargetFactor(target, 'lethality_range_km'), 1), 1),
-      strength: round(pythonThreatTargetFactor(target, definition.scoreField) * 10, 1),
-      confidence: target.confidence,
-      source: 'Python 威胁分析',
-      meta: {
-        unitSubtype: definition.unitSubtype,
-        color: definition.color,
-      },
-    }));
-}
-
-function buildPythonThreatDeploymentSectors(targetEntities = [], postureText = '') {
-  const coordinates = targetEntities.map((item) => item.coordinates).filter((item) => Array.isArray(item) && item.length >= 2);
-  if (!coordinates.length || !String(postureText || '').trim()) return [];
-  return [{
-    id: 'python-deployment-sector-1',
-    name: '敌方部署态势区',
-    polygon: buildBoundingPolygon(coordinates, 0.08),
-    unitCount: targetEntities.length,
-    averageStrength: round(average(targetEntities.map((item) => Number(item.threat_index || 0) * 100)), 1),
-    posture: '综合部署',
-    source: 'Python 二次研判',
-    detail: String(postureText || '').trim(),
-  }];
-}
-
-function buildPythonThreatVisualization(
-  targetEntities = [],
-  fireCoverage = [],
-  airDefenseSystem = [],
-  reconEarlyWarning = [],
-  antiAirborneFacilities = [],
-  deploymentSectors = [],
-) {
-  const pointEntities = targetEntities.slice(0, 20).map((target) => ({
-    id: `threat-target-${target.target_id}`,
-    name: target.target_name,
-    type: 'unit',
-    camp: 'red',
-    layerKey: 'units',
-    color: '#f97316',
-    geometryType: 'point',
-    coordinates: target.coordinates,
-    radius: null,
-    annotation: `${target.target_category} / 威胁 ${round(Number(target.threat_index || 0) * 100, 0)}`,
-    visible: true,
-    meta: {
-      unitSubtype: includesAny(target.target_category, ['防空']) ? 'airDefense' : includesAny(target.target_category, ['侦察', '雷达', '预警']) ? 'radar' : 'unit',
-      targetId: target.target_id,
-      targetCategory: target.target_category,
-    },
-  }));
-
-  const coverageEntities = fireCoverage.map((item) => ({
-    id: `threat-coverage-${item.targetId || item.id}`,
-    name: item.name,
-    type: 'detection',
-    camp: 'red',
-    layerKey: 'detection',
-    color: '#fb7185',
-    geometryType: 'circle',
-    coordinates: item.center,
-    radius: item.radiusMeters,
-    annotation: `覆盖半径 ${item.coverageKm} km / 威胁 ${item.threatValue}`,
-    visible: true,
-    meta: {
-      sensorType: 'radar',
-      detectionHeadingStart: 0,
-      detectionHeadingEnd: 360,
-      detectionPitchStart: 0,
-      detectionPitchEnd: 180,
-      targetId: item.targetId,
-    },
-  }));
-
-  const categoryEntities = [
-    ...airDefenseSystem.map((item) => ({
-      id: `threat-air-defense-${item.targetId || item.id}`,
-      name: item.name,
-      type: 'unit',
-      camp: 'red',
-      layerKey: 'units',
-      color: '#ef4444',
-      geometryType: 'point',
-      coordinates: item.location,
-      radius: null,
-      annotation: `防空覆盖 ${item.coverageKm} km / 强度 ${item.strength}`,
-      visible: true,
-      meta: { unitSubtype: 'airDefense', targetId: item.targetId },
-    })),
-    ...reconEarlyWarning.map((item) => ({
-      id: `threat-recon-${item.targetId || item.id}`,
-      name: item.name,
-      type: 'unit',
-      camp: 'red',
-      layerKey: 'units',
-      color: '#facc15',
-      geometryType: 'point',
-      coordinates: item.location,
-      radius: null,
-      annotation: `预警覆盖 ${item.coverageKm} km / 置信 ${item.confidence}`,
-      visible: true,
-      meta: { unitSubtype: 'radar', targetId: item.targetId },
-    })),
-    ...antiAirborneFacilities.map((item) => ({
-      id: `threat-anti-airborne-${item.targetId || item.id}`,
-      name: item.name,
-      type: 'unit',
-      camp: 'red',
-      layerKey: 'units',
-      color: '#f59e0b',
-      geometryType: 'point',
-      coordinates: item.location,
-      radius: null,
-      annotation: `反机降设施 / 置信 ${item.confidence}`,
-      visible: true,
-      meta: { unitSubtype: 'engineer', targetId: item.targetId },
-    })),
-    ...deploymentSectors.map((item) => ({
-      id: `threat-sector-${item.id}`,
-      name: item.name,
-      type: 'zone',
-      camp: 'neutral',
-      layerKey: 'symbols',
-      color: '#f59e0b',
-      geometryType: 'polygon',
-      coordinates: item.polygon,
-      radius: null,
-      annotation: `${item.unitCount} 个节点 / 平均强度 ${item.averageStrength}`,
-      visible: true,
-      meta: {},
-    })),
-  ];
-
-  return {
-    entities: [...pointEntities, ...coverageEntities, ...categoryEntities],
-    environment: [],
-  };
-}
-
-function buildPythonThreatAnalysisOutput({
-  rawResult,
-  input,
-  algorithm,
-  sourceBundle,
-  uploadedFiles,
-  redIntelligence,
-  evidenceEntries,
-}) {
-  const pipeline = safeObject(rawResult?.pipeline);
-  const assessmentResponse = safeObject(rawResult?.assessment);
-  const assessment = safeObject(assessmentResponse.assessment);
-  const operationalIntent = String(
-    assessmentResponse.operational_intent
-    || assessment.operational_intent
-    || '',
-  ).trim();
-  const deploymentPosture = String(
-    assessmentResponse.deployment_posture
-    || assessment.deployment_posture
-    || '',
-  ).trim();
-  const threatSummary = String(assessment.threat_summary || '').trim();
-  const keyEvidence = safeArray(assessment.key_evidence).map((item) => String(item || '').trim()).filter(Boolean);
-
-  const targetEntities = buildPythonThreatTargetEntities(pipeline);
-  const fireCoverage = buildPythonThreatFireCoverage(pipeline);
-  const airDefenseSystem = buildPythonThreatCategoryNodes(targetEntities, 'airDefenseSystem');
-  const reconEarlyWarning = buildPythonThreatCategoryNodes(targetEntities, 'reconEarlyWarning');
-  const antiAirborneFacilities = buildPythonThreatCategoryNodes(targetEntities, 'antiAirborneFacilities');
-  const deploymentSectors = buildPythonThreatDeploymentSectors(targetEntities, deploymentPosture);
-  const threatScore = round(clamp(Number(pipeline.total_score || 0), 0, 100), 1);
-  const threatLevel = resolveThreatLevel(threatScore);
-  const identifiedThreatNodeCount = fireCoverage.length + airDefenseSystem.length + reconEarlyWarning.length + antiAirborneFacilities.length;
-  const bounds = safeObject(pipeline.bounds);
-  const centerLongitude = Number.isFinite(Number(bounds.west)) && Number.isFinite(Number(bounds.east))
-    ? round((Number(bounds.west) + Number(bounds.east)) / 2, 6)
-    : null;
-  const centerLatitude = Number.isFinite(Number(bounds.south)) && Number.isFinite(Number(bounds.north))
-    ? round((Number(bounds.south) + Number(bounds.north)) / 2, 6)
-    : null;
-  const methodLabel = findMethodLabel(algorithm.builtinMethods, input.builtinMethodKey);
-  const visualization = buildPythonThreatVisualization(
-    targetEntities,
-    fireCoverage,
-    airDefenseSystem,
-    reconEarlyWarning,
-    antiAirborneFacilities,
-    deploymentSectors,
-  );
-
-  return {
-    summary: `已基于 Python 威胁分析管道完成敌情威胁分析，融合 ${sourceBundle.selectedSources.length} 个数据源与 ${uploadedFiles.length} 份上传材料。`,
-    outputPreview: [
-      `敌情威胁等级：${threatLevel}（评分 ${threatScore}）`,
-      `识别目标 ${targetEntities.length} 个、火力覆盖圈 ${fireCoverage.length} 个、防空节点 ${airDefenseSystem.length} 个`,
-      operationalIntent ? `敌方作战企图研判：${toShortText(operationalIntent, 120)}` : '二次研判未返回明确的敌方作战企图摘要',
-    ],
-    artifacts: [
-      createArtifact('Python 敌情威胁模型', '复用上传的 Python threat-analysis 管道输出结构化目标、威胁场与二次研判结果。'),
-      createArtifact('威胁热力图 PNG', '输出 base64 热力图和边界范围，可直接叠加到 Cesium 三维球。'),
-      createArtifact('敌情二次研判报告', rawResult?.docxBase64 ? '已生成 DOCX 二次研判报告，可在结构化结果中读取。' : '本次未生成可用 DOCX，仍保留了文本化二次研判结果。'),
-    ],
-    structuredOutput: {
-      implementationStatus: 'implemented',
-      builtinMethodKey: input.builtinMethodKey,
-      builtinMethodLabel: methodLabel,
-      appliedOptions: cloneData(input.options || {}),
-      inputSummary: {
-        selectedSourceCount: sourceBundle.selectedSources.length,
-        selectedExtractionCount: sourceBundle.selectedExtractions.length,
-        uploadedFileCount: uploadedFiles.length,
-        redIntelligenceCount: redIntelligence.length,
-        environmentCount: sourceBundle.selectedEnvironment.length,
-        evidenceCount: evidenceEntries.length,
-        evidenceEntryCount: evidenceEntries.length,
-        inputDocumentCount: safeArray(rawResult?.documentPaths).length,
-      },
-      selectedSources: sourceBundle.selectedSources.map((item) => ({
-        id: item.id,
-        name: item.name,
-        type: item.type,
-      })),
-      importedFiles: uploadedFiles.map((item) => ({
-        id: item.id,
-        fileName: item.fileName,
-        fileExtension: item.fileExtension,
-        summary: item.summary,
-      })),
-      evidenceTrace: buildEvidenceTraceEntries(evidenceEntries, 60),
-      threatLevel,
-      threatScore,
-      enemyUnitCount: targetEntities.length,
-      identifiedThreatNodeCount,
-      enemyIntentions: operationalIntent ? [{
-        id: 'python-intent-1',
-        name: '敌方作战企图研判',
-        level: threatLevel,
-        confidence: Number(assessment.intent_confidence || 0.55),
-        detail: operationalIntent,
-      }] : [],
-      deploymentSectors,
-      fireCoverage,
-      airDefenseSystem,
-      reconEarlyWarning,
-      antiAirborneFacilities,
-      impactAnalysis: threatSummary ? [{
-        id: 'python-impact-1',
-        title: '威胁摘要',
-        level: threatLevel,
-        detail: threatSummary,
-      }] : [],
-      algorithmModel: {
-        name: 'theat_analyze',
-        version: `pipeline-v${Number(pipeline.pipeline_version || 2)}`,
-        runtime: 'python-subprocess',
-        llmModel: String(rawResult?.integrationMeta?.llmModel || ''),
-        llmBaseUrl: String(rawResult?.integrationMeta?.llmBaseUrl || ''),
-        llmApiKey: 'configured',
-        projectRoot: String(rawResult?.integrationMeta?.projectRoot || ''),
-      },
-      processTrace: safeArray(rawResult?.processEvents).map((event) => ({
-        emittedAt: String(event.emittedAt || ''),
-        phase: String(event.phase || ''),
-        channel: String(event.channel || 'process'),
-        level: String(event.level || 'info'),
-        title: String(event.title || ''),
-        message: String(event.message || ''),
-        data: cloneData(event.data || {}),
-      })),
-      llmStreamOutput: safeArray(rawResult?.processEvents)
-        .filter((event) => event.channel === 'terminal' || String(event.phase || '').includes(':stream'))
-        .map((event) => String(event.message || ''))
-        .filter(Boolean),
-      sourceCompatibility: {
-        source: 'python-subprocess',
-        inputDocumentCount: safeArray(rawResult?.documentPaths).length,
-        docxAvailable: Boolean(rawResult?.docxBase64),
-      },
-      targetEntities,
-      threatIndices: safeArray(pipeline.threat_indices).map((value, index) => ({
-        targetId: targetEntities[index]?.target_id || `T-${index + 1}`,
-        value: Number(value || 0),
-      })),
-      situationMap: {
-        enemy_force_type: String(pipeline.enemy_force_type || '未知'),
-        enemy_force_type_confidence: Number(pipeline.enemy_force_type_confidence || 0),
-        enemy_force_type_basis: String(pipeline.enemy_force_type_basis || ''),
-        extraction_source: 'python-threat-analysis',
-        evidence_count: evidenceEntries.length,
-        summary: threatSummary || operationalIntent || deploymentPosture,
-        targets: targetEntities,
-      },
-      heatmap: {
-        mode: 'spatial-decay-field',
-        resolution: 500,
-        bounds: cloneData(bounds),
-        projection: {
-          mode: 'utm',
-          epsg: Number(pipeline.utm_epsg || 0),
-        },
-        base64Png: String(pipeline.heatmap_base64 || ''),
-        matrixSummary: {
-          resolution: 500,
-          sourceCount: targetEntities.length,
-        },
-      },
-      heatmapBase64: String(pipeline.heatmap_base64 || ''),
-      heatmapGeojson: null,
-      bounds: cloneData(bounds),
-      pointThreatEvaluation: centerLongitude !== null && centerLatitude !== null ? {
-        longitude: centerLongitude,
-        latitude: centerLatitude,
-        sourceCount: 0,
-      } : {},
-      assessmentReport: {
-        operationalIntent,
-        deploymentPosture,
-        threatSummary,
-        keyEvidence,
-        docxFileName: String(rawResult?.docxFileName || ''),
-        docxBase64: String(rawResult?.docxBase64 || ''),
-      },
-      visualization,
-    },
-  };
-}
-
-async function runBuiltinThreatAnalysis(context, step, algorithm, input, dataset, runtime = {}) {
-  const onProgress = runtime.onProgress;
+async function runBuiltinThreatAnalysis(context, step, algorithm, input, dataset) {
   const sourceBundle = buildSourceBundle(dataset, input.selectedSourceIds);
   const uploadedFiles = await normalizeUploadedFiles(input.uploadedFiles);
   const redIntelligence = buildSelectedIntelligence(dataset, 'red', sourceBundle.sourceIdSet);
@@ -3669,73 +4217,6 @@ async function runBuiltinThreatAnalysis(context, step, algorithm, input, dataset
     sourceBundle.selectedEnvironment,
     anchorPack,
   );
-
-  emitPlanningProgress(onProgress, {
-    phase: 'threat-input:ready',
-    channel: 'process',
-    level: 'info',
-    title: '威胁分析输入就绪',
-    message: `已整理 ${sourceBundle.selectedSources.length} 个数据源、${uploadedFiles.length} 份上传文件和 ${redIntelligence.length} 条敌情情报。`,
-    data: {
-      selectedSourceCount: sourceBundle.selectedSources.length,
-      uploadedFileCount: uploadedFiles.length,
-      redIntelligenceCount: redIntelligence.length,
-      methodKey: input.builtinMethodKey,
-    },
-  });
-
-  if (input.builtinMethodKey === THREAT_LLM_METHOD_KEY) {
-    emitPlanningProgress(onProgress, {
-      phase: 'threat-llm:start',
-      channel: 'process',
-      level: 'info',
-      title: '基于大模型分析算法',
-      message: '正在调用 apps/server/planning-python/theat_analyze Python 管道。',
-    });
-
-    const pythonThreatResult = await runThreatPythonPipeline({
-      taskName: context?.task?.name || '',
-      sourceBundle,
-      redIntelligence,
-      rawUploadedFiles: input.uploadedFiles,
-      uploadedFiles,
-      forceRequired: true,
-      onProgress,
-      llmConfig: runtime.llmConfig,
-    });
-
-    if (!pythonThreatResult) {
-      throw createPlanningRuntimeError({
-        code: 'PLANNING_THREAT_LLM_UNAVAILABLE',
-        type: 'algorithm_failed',
-        status: 500,
-        message: '基于大模型分析算法未返回可用结果，请检查 Python 依赖、模型接口和输入材料。',
-        details: {
-          methodKey: input.builtinMethodKey,
-          pythonProjectPath: 'apps/server/planning-python/theat_analyze',
-        },
-      });
-    }
-
-    return buildPythonThreatAnalysisOutput({
-      rawResult: pythonThreatResult,
-      input,
-      algorithm,
-      sourceBundle,
-      uploadedFiles,
-      redIntelligence,
-      evidenceEntries,
-    });
-  }
-
-  emitPlanningProgress(onProgress, {
-    phase: 'threat-builtin:start',
-    channel: 'process',
-    level: 'info',
-    title: methodLabel,
-    message: '正在执行 Node.js 内置威胁分析规则模型。',
-  });
-
   const focusProfile = getAnalysisFocusProfile(appliedOptions.analysisFocus);
 
   const enemyIntentions = buildThreatIntentions(
@@ -3845,21 +4326,6 @@ async function runBuiltinThreatAnalysis(context, step, algorithm, input, dataset
     enemyIntentions,
     appliedOptions,
   );
-
-  emitPlanningProgress(onProgress, {
-    phase: 'threat-builtin:complete',
-    channel: 'output',
-    level: 'success',
-    title: methodLabel,
-    message: `敌情威胁等级 ${threatLevel}，评分 ${threatScore}，识别威胁节点 ${identifiedThreatNodeCount} 个。`,
-    data: {
-      threatLevel,
-      threatScore,
-      identifiedThreatNodeCount,
-      fireCoverageCount: fireCoverage.length,
-      airDefenseCount: airDefenseSystem.length,
-    },
-  });
 
   return {
     summary: `已基于 ${findMethodLabel(algorithm.builtinMethods, input.builtinMethodKey)} 完成敌情威胁分析，融合 ${redIntelligence.length} 条敌方情报记录与 ${uploadedFiles.length} 份上传材料。`,
@@ -7666,328 +8132,7 @@ function buildLandingLinkageAnalysis(preferredCandidate = {}, targetAllocation =
   ];
 }
 
-function scoreRatioToPercent(value = 0, digits = 1) {
-  const numericValue = Number(value || 0);
-  const percent = Math.abs(numericValue) <= 1 ? numericValue * 100 : numericValue;
-  return round(clamp(percent, 0, 100), digits);
-}
-
-function resolveAirlandingThreatCategory(node = {}) {
-  if (node.type === 'air-defense') return '防空阵地';
-  if (node.type === 'fire-coverage') return '火力节点';
-  if (node.type === 'recon-warning') return '雷达预警';
-  if (node.type === 'anti-airborne') return '步兵阵地';
-  if (node.type === 'deployment-sector') return '预备队';
-  return '综合目标';
-}
-
-function buildAirlandingThreatFactors(target = {}, node = {}) {
-  const factorSource = safeObject(target.factors);
-  const threatIndex = Number(target.threat_index || node.weight || 0.6);
-  const radiusKm = Number(node.radiusKm || target.radius_km || safeObject(target.equip_params).radius_km || 12);
-  const category = String(target.target_category || resolveAirlandingThreatCategory(node));
-  const airDefenseBoost = includesAny(category, ['防空', '导弹', '高炮']) ? 8 : 2;
-  const reconBoost = includesAny(category, ['雷达', '预警', '侦察']) ? 8 : 2;
-  const antiAirlandingBoost = includesAny(category, ['反机降', '步兵', '预备队']) ? 8 : 3;
-
-  return {
-    lethality_range_km: Number(factorSource.lethality_range_km || Math.max(radiusKm, 4)),
-    ew_erp_mw: Number(factorSource.ew_erp_mw || 0),
-    survivability_score: clamp(Number(factorSource.survivability_score || 4 + threatIndex * 4), 1, 10),
-    target_value: clamp(Number(factorSource.target_value || 4 + threatIndex * 4), 1, 10),
-    air_defense_score: clamp(Number(factorSource.air_defense_score || airDefenseBoost), 1, 10),
-    recon_warning_score: clamp(Number(factorSource.recon_warning_score || reconBoost), 1, 10),
-    anti_airlanding_score: clamp(Number(factorSource.anti_airlanding_score || antiAirlandingBoost), 1, 10),
-  };
-}
-
-function buildAirlandingPythonTargets(threatOutput = {}) {
-  const pythonTargets = safeArray(threatOutput.targetEntities)
-    .map((target, index) => {
-      const coordinates = normalizeCoordinate(target.coordinates || target.location || target.center);
-      if (!Number.isFinite(Number(coordinates[0])) || !Number.isFinite(Number(coordinates[1]))) return null;
-      return {
-        target_id: String(target.target_id || target.id || `T-${index + 1}`),
-        target_category: String(target.target_category || target.category || '综合目标'),
-        target_name: String(target.target_name || target.name || `目标 ${index + 1}`),
-        description: String(target.description || '').trim(),
-        raw_coordinates: String(target.raw_coordinates || `${coordinates[1]}, ${coordinates[0]}`),
-        lng: Number(coordinates[0]),
-        lat: Number(coordinates[1]),
-        heading_angle: Number(target.heading_angle ?? -1),
-        confidence: Number(target.confidence || 0.8),
-        threat_index: Number(target.threat_index || 0.6),
-        factors: buildAirlandingThreatFactors(target),
-        equip_params: cloneData(safeObject(target.equip_params)),
-      };
-    })
-    .filter(Boolean);
-
-  if (pythonTargets.length) return pythonTargets;
-
-  return buildThreatRiskNodes(threatOutput)
-    .map((node, index) => {
-      const coordinates = normalizeCoordinate(node.coordinates);
-      if (!Number.isFinite(Number(coordinates[0])) || !Number.isFinite(Number(coordinates[1]))) return null;
-      const target = {
-        target_id: String(node.id || `T-${index + 1}`),
-        target_category: resolveAirlandingThreatCategory(node),
-        target_name: String(node.name || `威胁节点 ${index + 1}`),
-        raw_coordinates: `${coordinates[1]}, ${coordinates[0]}`,
-        lng: Number(coordinates[0]),
-        lat: Number(coordinates[1]),
-        heading_angle: -1,
-        confidence: clamp(Number(node.weight || 0.6), 0.2, 1),
-        threat_index: clamp(Number(node.weight || 0.6), 0, 1),
-      };
-      return {
-        ...target,
-        factors: buildAirlandingThreatFactors(target, node),
-        equip_params: {
-          radius_km: Number(node.radiusKm || 0),
-        },
-      };
-    })
-    .filter(Boolean);
-}
-
-function buildAirlandingBounds(targets = [], fallbackAnchor = [120.18, 30.28, 0]) {
-  const points = safeArray(targets)
-    .map((target) => [Number(target.lng), Number(target.lat)])
-    .filter((point) => Number.isFinite(point[0]) && Number.isFinite(point[1]));
-  if (!points.length) {
-    const anchor = normalizeCoordinate(fallbackAnchor);
-    return {
-      west: round(Number(anchor[0]) - 0.3, 6),
-      south: round(Number(anchor[1]) - 0.3, 6),
-      east: round(Number(anchor[0]) + 0.3, 6),
-      north: round(Number(anchor[1]) + 0.3, 6),
-    };
-  }
-  const longitudes = points.map((point) => point[0]);
-  const latitudes = points.map((point) => point[1]);
-  const margin = points.length <= 1 ? 0.25 : 0.08;
-  return {
-    west: round(Math.min(...longitudes) - margin, 6),
-    south: round(Math.min(...latitudes) - margin, 6),
-    east: round(Math.max(...longitudes) + margin, 6),
-    north: round(Math.max(...latitudes) + margin, 6),
-  };
-}
-
-function buildAirlandingRequirements(options = {}) {
-  const landingCount = clamp(Number(options.landingCount || options.candidateCount || 5), 1, 8);
-  const areaSize = clamp(Number(options.landingAreaSizeSqKm || 0.1), 0.05, 3);
-  const areaDistance = clamp(Number(options.landingDistanceKm || 50), 1, 180);
-  const requirements = {
-    num: Math.round(landingCount),
-  };
-  for (let index = 0; index < requirements.num; index += 1) {
-    requirements[`landing_${index}`] = {
-      area_size: areaSize,
-      area_distance: areaDistance,
-    };
-  }
-  return requirements;
-}
-
-function buildAirlandingPythonPayload({
-  context = {},
-  input = {},
-  dataset = {},
-  fallbackAnchor = [120.18, 30.28, 0],
-  objectiveAnchor = [120.18, 30.28, 0],
-} = {}) {
-  const threatOutput = safeObject(context.stageOutputs?.['enemy-threat-analysis']);
-  const extractedTargets = buildAirlandingPythonTargets(threatOutput);
-  const objective = normalizeCoordinate(objectiveAnchor || fallbackAnchor);
-  const targets = extractedTargets.length ? extractedTargets : [{
-    target_id: 'DEFAULT-OBJECTIVE',
-    target_category: '综合目标',
-    target_name: '默认突击目标',
-    raw_coordinates: `${objective[1]}, ${objective[0]}`,
-    lng: Number(objective[0]),
-    lat: Number(objective[1]),
-    heading_angle: -1,
-    confidence: 0.6,
-    threat_index: 0.45,
-    factors: buildAirlandingThreatFactors({ target_category: '综合目标', threat_index: 0.45 }),
-    equip_params: {},
-  }];
-  const bounds = buildAirlandingBounds(targets, objectiveAnchor || fallbackAnchor);
-  return {
-    report_id: `planning-airlanding-${Date.now()}`,
-    bounds,
-    targets,
-    landing_requirements: buildAirlandingRequirements(input.options || {}),
-    options: cloneData(input.options || {}),
-    environment: cloneData(dataset.environment || []),
-  };
-}
-
-function normalizeAirlandingPythonCandidate(candidate = {}, index = 0) {
-  const center = safeObject(candidate.center);
-  const longitude = Number(center.lng ?? center.longitude);
-  const latitude = Number(center.lat ?? center.latitude);
-  const elevation = Number(candidate.elevation_m || candidate.refined_mean_elevation_m || 0);
-  const id = String(candidate.zone_id || candidate.candidate_id || `airlanding-candidate-${index + 1}`);
-  const name = String(candidate.zone_id || candidate.candidate_id || `智能候选机降区 ${index + 1}`);
-  const terrainScore = Number(candidate.refined_terrain_score || candidate.terrain_score || 0);
-  const surfacePenalty = Number(candidate.surface_penalty || 0);
-  const threatValue = Number(candidate.threat_value || 0);
-  const distanceScore = Number(candidate.distance_score || 0);
-  const compositeScore = scoreRatioToPercent(candidate.composite_score);
-  return {
-    id,
-    name,
-    rank: index + 1,
-    landingId: String(candidate.landing_id || ''),
-    candidateId: String(candidate.candidate_id || ''),
-    zoneId: String(candidate.zone_id || ''),
-    selected: Boolean(candidate.selected),
-    center: [round(longitude, 6), round(latitude, 6), round(elevation, 1)],
-    zone: safeArray(candidate.polygon)
-      .map((point) => [round(Number(point[0]), 6), round(Number(point[1]), 6), round(elevation, 1)])
-      .filter((point) => Number.isFinite(point[0]) && Number.isFinite(point[1])),
-    score: compositeScore,
-    concealment: round(clamp((1 - surfacePenalty) * 100, 0, 100), 1),
-    safety: round(clamp((1 - threatValue) * 100, 0, 100), 1),
-    assemblyEfficiency: scoreRatioToPercent(distanceScore),
-    helicopterFit: scoreRatioToPercent(terrainScore),
-    qualified: !candidate.refined_rejected && compositeScore >= 35,
-    terrainClass: String(candidate.terrain_class || 'unknown'),
-    elevationM: round(elevation, 1),
-    slopeDeg: round(Number(candidate.slope_deg || candidate.refined_max_slope_deg || 0), 2),
-    reliefM: round(Number(candidate.relief_m || candidate.refined_relief_m || 0), 2),
-    nearestThreatDistanceKm: round(Number(candidate.nearest_threat_distance_km || 0), 2),
-    nearestThreatId: String(candidate.nearest_threat_id || ''),
-    areaSizeSqKm: round(Number(candidate.area_size_sqkm || candidate.polygon_area_sqkm || 0), 4),
-    areaDistanceKm: round(Number(candidate.area_distance_km || 0), 2),
-    raw: cloneData(candidate),
-  };
-}
-
-function buildAirlandingPythonVisualization(rankedCandidates = [], preferredCandidate = null, stagingAnchor = [], objectiveAnchor = [], helicopterProfile = {}) {
-  const baseVisualization = buildLandingVisualization(rankedCandidates, preferredCandidate, stagingAnchor, objectiveAnchor, helicopterProfile);
-  const additionalZones = rankedCandidates
-    .filter((candidate) => candidate.selected && candidate.id !== preferredCandidate?.id && safeArray(candidate.zone).length >= 3)
-    .map((candidate) => ({
-      id: `landing-zone-${candidate.id}`,
-      name: `${candidate.name}机降地域`,
-      type: 'zone',
-      camp: 'neutral',
-      layerKey: 'symbols',
-      color: '#22c55e',
-      geometryType: 'polygon',
-      coordinates: candidate.zone,
-      radius: null,
-      annotation: `智能机降评分 ${candidate.score}`,
-      visible: true,
-      meta: {
-        source: 'airlanding-zone-python',
-      },
-    }));
-  return {
-    ...baseVisualization,
-    entities: [
-      ...safeArray(baseVisualization.entities),
-      ...additionalZones,
-    ],
-  };
-}
-
-function buildAirlandingPythonOutput({
-  rawResult = {},
-  input = {},
-  algorithm = {},
-  targetAllocation = {},
-  stagingAnchor = [],
-  objectiveAnchor = [],
-  helicopterProfile = {},
-}) {
-  const pipeline = safeObject(rawResult.pipeline);
-  const candidates = safeArray(pipeline.candidates).map(normalizeAirlandingPythonCandidate);
-  const selectedIds = new Set(safeArray(pipeline.zones).map((item) => String(item.zone_id || item.candidate_id || '')));
-  const rankedCandidates = sortByScore(candidates.map((candidate) => ({
-    ...candidate,
-    selected: candidate.selected || selectedIds.has(candidate.zoneId) || selectedIds.has(candidate.candidateId),
-  })), 'score').map((candidate, index) => ({
-    ...candidate,
-    rank: index + 1,
-  }));
-  const preferredCandidate = rankedCandidates.find((candidate) => candidate.selected) || rankedCandidates[0] || null;
-  const selectedCandidates = rankedCandidates.filter((candidate) => candidate.selected);
-  const averageScore = round(average(rankedCandidates.map((item) => item.score)), 1);
-  const methodLabel = findMethodLabel(algorithm.builtinMethods, input.builtinMethodKey);
-
-  return {
-    summary: `已调用智能机降算法完成 ${rankedCandidates.length} 个候选地域生成，并推荐 ${preferredCandidate?.name || '待确认'}。`,
-    outputPreview: [
-      `地形数据源：系统离线 terrain / ${pipeline.dem_source?.filename || 'terrain'}`,
-      `候选机降区 ${rankedCandidates.length} 个，优选 ${selectedCandidates.length || (preferredCandidate ? 1 : 0)} 个`,
-      preferredCandidate ? `推荐评分 ${preferredCandidate.score} / 安全 ${preferredCandidate.safety} / 地形适配 ${preferredCandidate.helicopterFit}` : '暂无可用候选点',
-    ],
-    artifacts: [
-      createArtifact('智能机降候选地域', '输出 Python airlanding_zone 算法生成的候选机降区、多指标评分和地形约束结果。'),
-      createArtifact('离线 terrain 地形采样过程', '使用系统内置 Cesium terrain 瓦片完成高程、坡度和起伏采样。'),
-      createArtifact('机降地域地图标注', '输出候选点、优选机降地域和接近航路，可直接在三维球地图展示。'),
-    ],
-    structuredOutput: {
-      implementationStatus: 'implemented',
-      builtinMethodKey: input.builtinMethodKey,
-      builtinMethodLabel: methodLabel,
-      appliedOptions: cloneData(input.options || {}),
-      helicopterProfile,
-      stagingAnchor,
-      objectiveAnchor,
-      candidateCount: Number(pipeline.candidate_count || rankedCandidates.length),
-      terrainSource: {
-        provider: String(pipeline.dem_source?.provider || 'local_cesium_terrain'),
-        dataset: String(pipeline.dem_source?.dataset || 'LOCAL_CESIUM_TERRAIN'),
-        terrainRoot: String(rawResult.integrationMeta?.terrainRoot || pipeline.dem_source?.terrain_root || ''),
-        filename: String(pipeline.dem_source?.filename || ''),
-      },
-      landingRequirements: cloneData(pipeline.landing_requirements || {}),
-      landingGroups: cloneData(pipeline.landing_groups || []),
-      warnings: safeArray(pipeline.warnings),
-      methodComparison: [{
-        methodKey: LANDING_INTELLIGENT_METHOD_KEY,
-        methodLabel,
-        bestCandidateName: preferredCandidate?.name || '--',
-        score: preferredCandidate?.score || 0,
-        averageScore,
-        qualifiedCount: rankedCandidates.filter((item) => item.qualified).length,
-      }],
-      rankedCandidates,
-      selectedCandidates,
-      preferredCandidateId: preferredCandidate?.id || '',
-      preferredCandidate,
-      linkageAnalysis: buildLandingLinkageAnalysis(preferredCandidate || {}, targetAllocation, helicopterProfile),
-      visualization: buildAirlandingPythonVisualization(rankedCandidates, preferredCandidate, stagingAnchor, objectiveAnchor, helicopterProfile),
-      processTrace: safeArray(rawResult.processEvents).map((event) => ({
-        emittedAt: String(event.emittedAt || ''),
-        phase: String(event.phase || ''),
-        channel: String(event.channel || 'process'),
-        level: String(event.level || 'info'),
-        title: String(event.title || ''),
-        message: String(event.message || ''),
-        data: cloneData(event.data || {}),
-      })),
-      terminalOutput: safeArray(rawResult.processEvents)
-        .filter((event) => event.channel === 'terminal' || String(event.phase || '').includes(':stream'))
-        .map((event) => String(event.message || ''))
-        .filter(Boolean),
-      sourceCompatibility: {
-        source: 'python-subprocess',
-        pythonProject: 'airlanding_zone',
-        terrainRoot: String(rawResult.integrationMeta?.terrainRoot || ''),
-      },
-      rawAirlandingOutput: cloneData(pipeline),
-    },
-  };
-}
-
-async function runBuiltinAirborneLandingSiteSelection(context, step, algorithm, input, dataset, runtime = {}) {
+async function runBuiltinAirborneLandingSiteSelection(context, step, algorithm, input, dataset) {
   const threatOutput = safeObject(context.stageOutputs['enemy-threat-analysis']);
   const forceGrouping = safeObject(context.stageOutputs['force-grouping']);
   const targetAllocation = safeObject(context.stageOutputs['target-allocation']);
@@ -7999,30 +8144,6 @@ async function runBuiltinAirborneLandingSiteSelection(context, step, algorithm, 
   const threatNodes = buildThreatRiskNodes(threatOutput);
   const threatCenter = buildWeightedCenter(threatNodes, objectiveAnchor);
   const helicopterProfile = buildHelicopterProfile(input.options.helicopterModel);
-
-  if (input.builtinMethodKey === LANDING_INTELLIGENT_METHOD_KEY) {
-    const rawResult = await runAirlandingPythonPipeline({
-      payload: buildAirlandingPythonPayload({
-        context,
-        input,
-        dataset,
-        fallbackAnchor,
-        objectiveAnchor,
-      }),
-      onProgress: runtime.onProgress,
-      timeoutMs: Number(input.options.pythonTimeoutMs || 600000),
-    });
-    return buildAirlandingPythonOutput({
-      rawResult,
-      input,
-      algorithm,
-      targetAllocation,
-      stagingAnchor,
-      objectiveAnchor,
-      helicopterProfile,
-    });
-  }
-
   const candidateCount = clamp(Number(input.options.candidateCount || 5), 3, 8);
   const rawCandidates = buildLandingSeedCandidates(
     stagingAnchor,
@@ -8040,13 +8161,13 @@ async function runBuiltinAirborneLandingSiteSelection(context, step, algorithm, 
     helicopterProfile,
   ));
 
-  const evaluatedByMethod = Object.fromEntries(CLASSIC_LANDING_SITE_METHODS.map((method) => [
+  const evaluatedByMethod = Object.fromEntries(LANDING_SITE_METHODS.map((method) => [
     method.key,
     evaluateLandingCandidates(rawCandidates, method.key, input.options.sitePreference),
   ]));
   const rankedCandidates = evaluatedByMethod[input.builtinMethodKey] || evaluatedByMethod['weighted-score'] || [];
   const preferredCandidate = rankedCandidates[0] || null;
-  const methodComparison = CLASSIC_LANDING_SITE_METHODS.map((method) => {
+  const methodComparison = LANDING_SITE_METHODS.map((method) => {
     const candidates = evaluatedByMethod[method.key] || [];
     const best = candidates[0] || null;
     return {
@@ -10236,156 +10357,7 @@ function mergeExecutionContext(context, step, algorithm, stageResult) {
   };
 }
 
-function buildStepBindingDescriptor(variant = {}) {
-  return {
-    id: variant.id,
-    name: variant.name,
-    type: variant.type,
-    runtimeKey: variant.runtimeKey,
-    source: variant.source,
-    runtime: variant.runtime,
-    version: variant.version,
-    projectName: variant.projectName || '',
-    projectPath: variant.projectPath || '',
-  };
-}
-
-function buildPlanningStepExecutionRecord({
-  step,
-  algorithm,
-  variant,
-  algorithmInput,
-  gatewayMeta,
-  status = 'completed',
-  summary = '',
-  outputPreview = [],
-  artifacts = [],
-  structuredOutput = {},
-}) {
-  return {
-    order: step.order,
-    stepId: step.id,
-    stepName: step.name,
-    objective: step.objective,
-    consumes: cloneData(step.consumes || []),
-    produces: cloneData(step.produces || []),
-    algorithm: {
-      id: algorithm.id,
-      name: algorithm.name,
-      category: algorithm.category,
-    },
-    binding: buildStepBindingDescriptor(variant),
-    config: {
-      builtinMethodKey: algorithmInput.builtinMethodKey,
-      selectedSourceIds: cloneData(algorithmInput.selectedSourceIds || []),
-      uploadedFileCount: safeArray(algorithmInput.uploadedFiles).length,
-      options: cloneData(algorithmInput.options || {}),
-    },
-    gateway: gatewayMeta,
-    status,
-    summary,
-    outputPreview: safeArray(outputPreview),
-    artifacts: safeArray(artifacts),
-    structuredOutput: cloneData(structuredOutput || {}),
-  };
-}
-
-function buildFailedStageResult(step, algorithm, input, variant, error, durationMs = 0) {
-  const normalizedError = normalizePlanningRuntimeError(error, `${step.name} 执行失败。`);
-  normalizedError.details = {
-    ...(normalizedError.details || {}),
-    stepId: step.id,
-    stepName: step.name,
-    algorithmId: algorithm.id,
-    bindingId: variant.id,
-    runtime: variant.runtimeKey,
-  };
-  const gatewayMeta = buildAlgorithmGatewayMeta(variant, {
-    status: 'failed',
-    durationMs,
-    httpStatus: normalizedError.status || 500,
-    requestId: normalizedError?.details?.requestId || '',
-    errorCode: normalizedError.code || '',
-    errorMessage: normalizedError.message || '',
-  });
-
-  return {
-    normalizedError,
-    executionRecord: buildPlanningStepExecutionRecord({
-      step,
-      algorithm,
-      variant,
-      algorithmInput: input,
-      gatewayMeta,
-      status: 'failed',
-      summary: `${step.name} 执行失败：${normalizedError.message}`,
-      outputPreview: [
-        `错误类型：${normalizedError.type || 'algorithm_failed'}`,
-        `错误编码：${normalizedError.code || 'PLANNING_ALGORITHM_FAILED'}`,
-        `错误信息：${normalizedError.message}`,
-      ],
-      artifacts: [],
-      structuredOutput: {
-        implementationStatus: 'failed',
-        error: {
-          code: normalizedError.code || 'PLANNING_ALGORITHM_FAILED',
-          type: normalizedError.type || 'algorithm_failed',
-          status: normalizedError.status || 500,
-          message: normalizedError.message || `${step.name} 执行失败。`,
-          details: cloneData(normalizedError.details || {}),
-        },
-      },
-    }),
-  };
-}
-
-function buildBlockedStageResult(step, algorithm, input, variant, missingUpstream = []) {
-  const blockedAlgorithms = safeArray(missingUpstream).map((item) => String(item || '').trim()).filter(Boolean);
-  const message = blockedAlgorithms.length
-    ? `${step.name} 已跳过：依赖的上游步骤未产出可用结果（${blockedAlgorithms.join(' / ')}）。`
-    : `${step.name} 已跳过：依赖的上游步骤未产出可用结果。`;
-  const gatewayMeta = buildAlgorithmGatewayMeta(variant, {
-    status: 'blocked',
-    durationMs: 0,
-    httpStatus: 424,
-    requestId: '',
-    errorCode: 'PLANNING_MISSING_UPSTREAM',
-    errorMessage: message,
-  });
-
-  return buildPlanningStepExecutionRecord({
-    step,
-    algorithm,
-    variant,
-    algorithmInput: input,
-    gatewayMeta,
-    status: 'blocked',
-    summary: message,
-    outputPreview: [
-      `依赖上游：${blockedAlgorithms.join(' / ') || '未知上游'}`,
-      '当前步骤已标记为受阻，前序成功步骤的结果仍会保留并可单独查看。',
-    ],
-    artifacts: [],
-    structuredOutput: {
-      implementationStatus: 'blocked',
-      missingUpstreamAlgorithms: cloneData(blockedAlgorithms),
-      error: {
-        code: 'PLANNING_MISSING_UPSTREAM',
-        type: 'missing_upstream',
-        status: 424,
-        message,
-        details: {
-          stepId: step.id,
-          stepName: step.name,
-          algorithmId: algorithm.id,
-          missingUpstreamAlgorithms: cloneData(blockedAlgorithms),
-        },
-      },
-    },
-  });
-}
-
-async function executeBuiltinStep(step, algorithm, context, input, dataset, runtime = {}) {
+async function executeBuiltinStep(step, algorithm, context, input, dataset) {
   const executor = BUILTIN_EXECUTORS[algorithm.id];
   if (!executor) {
     throw createPlanningRuntimeError({
@@ -10400,10 +10372,14 @@ async function executeBuiltinStep(step, algorithm, context, input, dataset, runt
       },
     });
   }
-  return executor(context, step, algorithm, input, dataset, runtime);
+  return executor(context, step, algorithm, input, dataset);
 }
 
-async function executeExternalStep(variant, task, step, algorithm, context, payload, input) {
+async function executeExternalStep(variant, task, step, algorithm, context, payload, input, events = null) {
+  if (variant.executionMode === 'local-python') {
+    return executeLocalPythonStep(variant, task, step, algorithm, context, payload, input, events);
+  }
+
   const requestPayload = {
     assessmentName: String(payload.assessmentName || `${task.name}规划任务`),
     task: {
@@ -10477,16 +10453,16 @@ async function executeExternalStep(variant, task, step, algorithm, context, payl
   };
 }
 
-async function executeTaskPlanning(task, template, payload = {}, dataset = {}, { db, onProgress } = {}) {
+async function executeTaskPlanning(task, template, payload = {}, dataset = {}, { db, events } = {}) {
   const algorithmMap = buildAlgorithmMap(template.algorithms);
   const bindings = safeObject(payload.bindings);
   const algorithmInputs = normalizeAlgorithmInputs(template, payload);
   let context = buildInitialContext(task, payload, algorithmInputs, dataset);
   const executionSteps = [];
   const sortedSteps = [...safeArray(task.steps)].sort((left, right) => left.order - right.order);
-  const totalSteps = Math.max(sortedSteps.length, 1);
+  const totalSteps = sortedSteps.length || 1;
 
-  for (const [stepIndex, step] of sortedSteps.entries()) {
+  for (const step of sortedSteps) {
     const algorithm = algorithmMap.get(step.algorithmId);
     if (!algorithm) {
       throw createPlanningRuntimeError({
@@ -10533,106 +10509,41 @@ async function executeTaskPlanning(task, template, payload = {}, dataset = {}, {
     }
 
     const algorithmInput = algorithmInputs[algorithm.id] || normalizeAlgorithmInput(algorithm);
-    const stepProgressBase = round((stepIndex / totalSteps) * 100, 1);
-    const stepProgressDone = round(((stepIndex + 1) / totalSteps) * 100, 1);
-    const progressStep = {
-      order: step.order,
+    const stepStartedAt = Date.now();
+    let stageResult = null;
+    const stepIndex = executionSteps.length;
+    emitPlanningEvent(events, 'step-start', {
       stepId: step.id,
       stepName: step.name,
       algorithmId: algorithm.id,
       algorithmName: algorithm.name,
       bindingId: variant.id,
       bindingName: variant.name,
-      bindingType: variant.type,
-    };
-
-    emitPlanningProgress(onProgress, {
-      phase: 'step:start',
-      channel: 'process',
-      level: 'info',
-      title: `正在运行：${algorithm.name}`,
-      message: `${step.name} / ${variant.name}`,
-      progress: stepProgressBase,
-      step: progressStep,
+      order: step.order,
+      totalSteps,
     });
-
-    const missingRuntimeUpstreamAlgorithms = resolveRequiredUpstreamAlgorithms(algorithm.id, task)
-      .filter((upstreamAlgorithmId) => {
-        const upstreamOutput = safeObject(context.stageOutputs?.[upstreamAlgorithmId]);
-        return !upstreamOutput || upstreamOutput.implementationStatus !== 'implemented';
-      });
-    if (missingRuntimeUpstreamAlgorithms.length) {
-      const blockedResult = buildBlockedStageResult(
-        step,
-        algorithm,
-        algorithmInput,
-        variant,
-        missingRuntimeUpstreamAlgorithms,
-      );
-
-      recordAlgorithmCall(db, {
-        moduleKey: 'planning',
-        assessmentName: String(payload.assessmentName || `${task.name}规划任务`),
-        taskId: Number.isFinite(Number(payload.taskCenterId)) ? Number(payload.taskCenterId) : null,
-        taskRunId: Number.isFinite(Number(payload.taskRunId)) ? Number(payload.taskRunId) : null,
-        algorithmKey: algorithm.id,
-        algorithmName: algorithm.name,
-        engineKey: variant.id,
-        engineSource: variant.source || (variant.type === 'builtin' ? 'builtin' : 'external'),
-        engineRuntime: variant.runtime || variant.runtimeKey,
-        engineVersion: variant.version || '',
-        status: 'blocked',
-        httpStatus: 424,
-        durationMs: 0,
-        requestId: '',
-        errorCode: 'PLANNING_MISSING_UPSTREAM',
-        errorMessage: blockedResult.summary,
-        requestPayload: {
-          stepId: step.id,
-          stepName: step.name,
-          selectedSourceCount: safeArray(algorithmInput.selectedSourceIds).length,
-          uploadedFileCount: safeArray(algorithmInput.uploadedFiles).length,
-        },
-        responsePayload: blockedResult.structuredOutput.error?.details || {},
-      });
-
-      executionSteps.push(blockedResult);
-      context = mergeExecutionContext(context, step, algorithm, blockedResult);
-      emitPlanningProgress(onProgress, {
-        phase: 'step:blocked',
-        channel: 'process',
-        level: 'warning',
-        title: `${algorithm.name} 已受阻`,
-        message: blockedResult.summary,
-        progress: stepProgressDone,
-        step: progressStep,
-      });
-      continue;
-    }
-
-    const stepStartedAt = Date.now();
-    let stageResult = null;
+    emitPlanningEvent(events, 'progress', {
+      currentStepId: step.id,
+      currentStepName: step.name,
+      progress: Math.round((stepIndex / totalSteps) * 100),
+      completedSteps: stepIndex,
+      totalSteps,
+      phase: 'running-step',
+    });
     try {
       stageResult = variant.type === 'builtin'
-        ? await executeBuiltinStep(step, algorithm, context, algorithmInput, dataset, {
-          onProgress: (event) => emitPlanningProgress(onProgress, {
-            progress: Math.min(stepProgressDone, Number(event?.progress || stepProgressBase + 2)),
-            step: progressStep,
-            ...event,
-          }),
-          variant,
-          llmConfig: safeObject(payload.llmConfig),
-        })
-        : await executeExternalStep(variant, task, step, algorithm, context, { ...payload, dataset }, algorithmInput);
+        ? await executeBuiltinStep(step, algorithm, context, algorithmInput, dataset)
+        : await executeExternalStep(variant, task, step, algorithm, context, { ...payload, dataset }, algorithmInput, events);
     } catch (error) {
-      const { normalizedError, executionRecord } = buildFailedStageResult(
-        step,
-        algorithm,
-        algorithmInput,
-        variant,
-        error,
-        Date.now() - stepStartedAt,
-      );
+      const normalizedError = normalizePlanningRuntimeError(error, `${step.name} 执行失败。`);
+      normalizedError.details = {
+        ...(normalizedError.details || {}),
+        stepId: step.id,
+        stepName: step.name,
+        algorithmId: algorithm.id,
+        bindingId: variant.id,
+        runtime: variant.runtimeKey,
+      };
       recordAlgorithmCall(db, {
         moduleKey: 'planning',
         assessmentName: String(payload.assessmentName || `${task.name}规划任务`),
@@ -10658,18 +10569,16 @@ async function executeTaskPlanning(task, template, payload = {}, dataset = {}, {
         },
         responsePayload: normalizedError.details || {},
       });
-      executionSteps.push(executionRecord);
-      context = mergeExecutionContext(context, step, algorithm, executionRecord);
-      emitPlanningProgress(onProgress, {
-        phase: 'step:failed',
-        channel: 'process',
-        level: 'error',
-        title: `${algorithm.name} 执行失败`,
-        message: executionRecord.summary,
-        progress: stepProgressDone,
-        step: progressStep,
+      emitPlanningEvent(events, 'error', {
+        stepId: step.id,
+        stepName: step.name,
+        algorithmId: algorithm.id,
+        bindingId: variant.id,
+        message: normalizedError.message,
+        code: normalizedError.code,
+        errorType: normalizedError.type,
       });
-      continue;
+      throw normalizedError;
     }
 
     const gatewayMeta = variant.type === 'builtin'
@@ -10685,18 +10594,43 @@ async function executeTaskPlanning(task, template, payload = {}, dataset = {}, {
         httpStatus: 200,
       });
 
-    const normalizedResult = buildPlanningStepExecutionRecord({
-      step,
-      algorithm,
-      variant,
-      algorithmInput,
-      gatewayMeta,
+    const normalizedResult = {
+      order: step.order,
+      stepId: step.id,
+      stepName: step.name,
+      objective: step.objective,
+      consumes: cloneData(step.consumes || []),
+      produces: cloneData(step.produces || []),
+      algorithm: {
+        id: algorithm.id,
+        name: algorithm.name,
+        category: algorithm.category,
+      },
+      binding: {
+        id: variant.id,
+        name: variant.name,
+        type: variant.type,
+        runtimeKey: variant.runtimeKey,
+        source: variant.source,
+        runtime: variant.runtime,
+        version: variant.version,
+        executionMode: variant.executionMode || '',
+        projectName: variant.projectName || '',
+        projectPath: variant.projectPath || '',
+      },
+      config: {
+        builtinMethodKey: algorithmInput.builtinMethodKey,
+        selectedSourceIds: cloneData(algorithmInput.selectedSourceIds || []),
+        uploadedFileCount: safeArray(algorithmInput.uploadedFiles).length,
+        options: redactSensitiveOptions(cloneData(algorithmInput.options || {})),
+      },
+      gateway: gatewayMeta,
       status: 'completed',
       summary: stageResult.summary,
-      outputPreview: stageResult.outputPreview,
-      artifacts: stageResult.artifacts,
-      structuredOutput: stageResult.structuredOutput || {},
-    });
+      outputPreview: safeArray(stageResult.outputPreview),
+      artifacts: safeArray(stageResult.artifacts),
+      structuredOutput: cloneData(stageResult.structuredOutput || {}),
+    };
 
     recordAlgorithmCall(db, {
       moduleKey: 'planning',
@@ -10727,26 +10661,29 @@ async function executeTaskPlanning(task, template, payload = {}, dataset = {}, {
     });
 
     executionSteps.push(normalizedResult);
+    emitPlanningEvent(events, 'step-complete', {
+      stepId: step.id,
+      stepName: step.name,
+      algorithmId: algorithm.id,
+      algorithmName: algorithm.name,
+      bindingId: variant.id,
+      bindingName: variant.name,
+      order: step.order,
+      durationMs: gatewayMeta.durationMs,
+      summary: normalizedResult.summary,
+      progress: Math.round((executionSteps.length / totalSteps) * 100),
+      completedSteps: executionSteps.length,
+      totalSteps,
+    });
+    emitPlanningEvent(events, 'progress', {
+      currentStepId: step.id,
+      currentStepName: step.name,
+      progress: Math.round((executionSteps.length / totalSteps) * 100),
+      completedSteps: executionSteps.length,
+      totalSteps,
+      phase: 'step-complete',
+    });
     context = mergeExecutionContext(context, step, algorithm, normalizedResult);
-    emitPlanningProgress(onProgress, {
-      phase: 'step:output',
-      channel: 'output',
-      level: 'success',
-      title: `${algorithm.name} 输出`,
-      message: normalizedResult.summary,
-      progress: stepProgressDone,
-      step: progressStep,
-      preview: safeArray(normalizedResult.outputPreview).slice(0, 4),
-    });
-    emitPlanningProgress(onProgress, {
-      phase: 'step:complete',
-      channel: 'process',
-      level: 'success',
-      title: `${algorithm.name} 完成`,
-      message: `${step.name} 已完成，耗时 ${gatewayMeta.durationMs}ms。`,
-      progress: stepProgressDone,
-      step: progressStep,
-    });
   }
 
   return {
@@ -11352,12 +11289,10 @@ function buildFinalResult(task, executionSteps = []) {
   const stepOutputs = Object.fromEntries(executionSteps.map((item) => [item.stepId, cloneData(item.structuredOutput)]));
   const algorithmOutputs = Object.fromEntries(executionSteps.map((item) => [item.algorithm.id, cloneData(item.structuredOutput)]));
   const implementedCount = executionSteps.filter((item) => item.structuredOutput?.implementationStatus === 'implemented').length;
-  const failedCount = executionSteps.filter((item) => item.structuredOutput?.implementationStatus === 'failed').length;
-  const blockedCount = executionSteps.filter((item) => item.structuredOutput?.implementationStatus === 'blocked').length;
   const placeholderCount = executionSteps.filter((item) => item.structuredOutput?.implementationStatus !== 'implemented').length;
   return {
     title: `${task.name}规划结果`,
-    summary: `已完成 ${executionSteps.length} 个规划步骤，其中 ${implementedCount} 个步骤输出结构化结果，失败 ${failedCount} 个、受阻 ${blockedCount} 个。`,
+    summary: `已完成 ${executionSteps.length} 个规划步骤，其中 ${implementedCount} 个步骤输出结构化结果，${placeholderCount} 个步骤仍为占位执行器。`,
     deliverables: buildDeliverables(task, executionSteps),
     nextStepNotice: placeholderCount
       ? '下一步可继续补充仍为占位执行器的任务步骤输入输出要求，以替换当前占位实现。'
@@ -11553,7 +11488,7 @@ export async function validatePlanning(payload = {}, { db } = {}) {
   }
 }
 
-export async function evaluatePlanning(payload = {}, { db, onProgress } = {}) {
+export async function evaluatePlanning(payload = {}, { db, events } = {}) {
   const validation = await validatePlanning(payload, { db });
   const normalizedPayload = validation.normalizedPayload || payload;
   const task = validation.taskDefinition || selectTask(validation.template, normalizedPayload.taskId, normalizedPayload.taskDefinition);
@@ -11561,12 +11496,10 @@ export async function evaluatePlanning(payload = {}, { db, onProgress } = {}) {
   const dataset = validation.dataset || loadPlanningDataset(db);
 
   try {
-    const execution = await executeTaskPlanning(task, template, normalizedPayload, dataset, { db, onProgress });
+    const execution = await executeTaskPlanning(task, template, normalizedPayload, dataset, { db, events });
     const builtinSteps = execution.steps.filter((item) => item.binding.type === 'builtin').length;
     const externalSteps = execution.steps.filter((item) => item.binding.type === 'external-model').length;
     const implementedSteps = execution.steps.filter((item) => item.structuredOutput?.implementationStatus === 'implemented').length;
-    const failedSteps = execution.steps.filter((item) => item.structuredOutput?.implementationStatus === 'failed').length;
-    const blockedSteps = execution.steps.filter((item) => item.structuredOutput?.implementationStatus === 'blocked').length;
     const placeholderSteps = execution.steps.filter((item) => item.structuredOutput?.implementationStatus !== 'implemented').length;
     const uploadedFileCount = Object.values(execution.algorithmInputs).reduce(
       (total, item) => total + safeArray(item?.uploadedFiles).length,
@@ -11590,8 +11523,6 @@ export async function evaluatePlanning(payload = {}, { db, onProgress } = {}) {
           builtinSteps,
           externalSteps,
           implementedSteps,
-          failedSteps,
-          blockedSteps,
           placeholderSteps,
         },
         steps: execution.steps,

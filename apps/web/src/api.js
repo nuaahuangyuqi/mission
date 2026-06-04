@@ -59,16 +59,35 @@ async function request(path, options = {}) {
   return response.json();
 }
 
-async function requestNdjson(path, options = {}, handlers = {}) {
+function parseSseBlock(block = '') {
+  const lines = String(block || '').split(/\r?\n/);
+  let event = 'message';
+  const dataLines = [];
+  for (const line of lines) {
+    if (line.startsWith('event:')) {
+      event = line.slice(6).trim() || 'message';
+    } else if (line.startsWith('data:')) {
+      dataLines.push(line.slice(5).trimStart());
+    }
+  }
+  const dataText = dataLines.join('\n');
+  if (!dataText) return { event, data: {} };
+  try {
+    return { event, data: JSON.parse(dataText) };
+  } catch {
+    return { event, data: { raw: dataText } };
+  }
+}
+
+async function requestEventStream(path, payload = {}, handlers = {}) {
   const response = await fetch(path, {
+    method: 'POST',
     credentials: 'include',
     headers: {
       'Content-Type': 'application/json',
-      Accept: 'application/x-ndjson',
       ...getAuthHeaders(),
-      ...(options.headers || {}),
     },
-    ...options,
+    body: JSON.stringify(payload),
   });
 
   if (!response.ok) {
@@ -78,6 +97,7 @@ async function requestNdjson(path, options = {}, handlers = {}) {
     error.code = errorInfo.code;
     error.type = errorInfo.type;
     error.details = errorInfo.details;
+
     if (response.status === 401) {
       clearSessionState();
       const redirect = `${window.location.pathname}${window.location.search}`;
@@ -85,61 +105,42 @@ async function requestNdjson(path, options = {}, handlers = {}) {
         window.location.assign(`/login?redirect=${encodeURIComponent(redirect)}`);
       }
     }
+
     throw error;
   }
 
   if (!response.body) {
-    return null;
+    throw new Error('浏览器不支持读取规划执行流。');
   }
 
   const reader = response.body.getReader();
   const decoder = new TextDecoder('utf-8');
   let buffer = '';
-  let finalResult = null;
-  let streamError = null;
-
-  const consumeLine = (line) => {
-    const trimmed = line.trim();
-    if (!trimmed) return;
-    const event = JSON.parse(trimmed);
-    if (typeof handlers.onEvent === 'function') {
-      handlers.onEvent(event);
-    }
-    if (event.type === 'result') {
-      finalResult = event.result || null;
-    }
-    if (event.type === 'error') {
-      const errorInfo = event.error || {};
-      const error = new Error(errorInfo.message || event.message || '流式请求失败');
-      error.status = errorInfo.status || 500;
-      error.code = errorInfo.code || '';
-      error.type = errorInfo.type || '';
-      error.details = errorInfo.details || null;
-      streamError = error;
-    }
-  };
+  let finalPayload = null;
 
   while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split(/\r?\n/);
-    buffer = lines.pop() || '';
-    for (const line of lines) {
-      consumeLine(line);
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const blocks = buffer.split(/\n\n/);
+    buffer = blocks.pop() || '';
+
+    for (const block of blocks) {
+      if (!block.trim()) continue;
+      const parsed = parseSseBlock(block);
+      if (parsed.event === 'final') finalPayload = parsed.data;
+      handlers.onEvent?.(parsed.event, parsed.data);
     }
+
+    if (done) break;
   }
 
-  buffer += decoder.decode();
   if (buffer.trim()) {
-    consumeLine(buffer);
+    const parsed = parseSseBlock(buffer);
+    if (parsed.event === 'final') finalPayload = parsed.data;
+    handlers.onEvent?.(parsed.event, parsed.data);
   }
 
-  if (streamError) {
-    throw streamError;
-  }
-
-  return finalResult;
+  return finalPayload;
 }
 
 export const api = {
@@ -183,10 +184,7 @@ export const api = {
     });
   },
   evaluatePlanningStream(payload, handlers = {}) {
-    return requestNdjson('/api/planning/evaluate/stream', {
-      method: 'POST',
-      body: JSON.stringify(payload),
-    }, handlers);
+    return requestEventStream('/api/planning/evaluate/stream', payload, handlers);
   },
   validatePlanning(payload) {
     return request('/api/planning/validate', {
