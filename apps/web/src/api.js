@@ -88,6 +88,7 @@ async function requestEventStream(path, payload = {}, handlers = {}) {
       ...getAuthHeaders(),
     },
     body: JSON.stringify(payload),
+    signal: handlers.signal,
   });
 
   if (!response.ok) {
@@ -188,6 +189,12 @@ export const api = {
   },
   validatePlanning(payload) {
     return request('/api/planning/validate', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+  testPlanningLlm(payload) {
+    return request('/api/planning/llm/test', {
       method: 'POST',
       body: JSON.stringify(payload),
     });

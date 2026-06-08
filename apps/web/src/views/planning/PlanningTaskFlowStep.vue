@@ -1,6 +1,7 @@
 <script setup>
-import { onMounted } from 'vue';
+import { onMounted, ref } from 'vue';
 import { useRouter } from 'vue-router';
+import { api } from '../../api';
 import { usePlanningWorkflow } from '../../modules/planningWorkflow';
 
 const router = useRouter();
@@ -16,7 +17,8 @@ const {
   formatStatusLabel,
 } = usePlanningWorkflow();
 
-const llmRuntimeFieldKeys = new Set(['llmBackend', 'llmModel', 'ollamaHost', 'openaiBaseUrl', 'openaiApiKey', 'llmMaxTokens']);
+const llmTestState = ref({});
+const llmRuntimeFieldKeys = new Set(['llmBackend', 'llmApiKey', 'llmBaseUrl', 'llmModel', 'ollamaHost', 'openaiBaseUrl', 'openaiApiKey', 'llmMaxTokens']);
 
 onMounted(() => {
   setPlanningStage('flow');
@@ -32,6 +34,26 @@ function goToExecute() {
 
 function runtimeOptionsFor(binding) {
   return binding.inputConfig?.options?.runtimeOptions?.[binding.variant?.runtimeKey] || {};
+}
+
+function runtimeDefaultsFor(binding) {
+  const fields = binding.variant?.parameterSchema || [];
+  const fieldDefaults = Object.fromEntries(
+    fields
+      .filter((field) => field.defaultValue !== undefined)
+      .map((field) => [field.key, field.defaultValue]),
+  );
+  return {
+    ...(binding.variant?.defaultOptions || {}),
+    ...fieldDefaults,
+  };
+}
+
+function mergedRuntimeOptionsFor(binding) {
+  return {
+    ...runtimeDefaultsFor(binding),
+    ...runtimeOptionsFor(binding),
+  };
 }
 
 function runtimeFieldValue(binding, field) {
@@ -55,6 +77,54 @@ function updateRuntimeField(binding, field, rawValue) {
   });
 }
 
+function llmTestKey(binding) {
+  return `${binding.step?.id || ''}:${binding.variant?.runtimeKey || binding.variant?.id || ''}`;
+}
+
+function llmTestStatus(binding) {
+  return llmTestState.value[llmTestKey(binding)] || null;
+}
+
+function formatLlmTestError(error) {
+  if (error?.status === 404 && String(error?.message || '').includes('接口不存在')) {
+    return '大模型测试接口未加载，请重启后端服务后重试。';
+  }
+  return error?.message || '大模型配置测试失败。';
+}
+
+async function testRuntimeLlm(binding) {
+  if (!binding.algorithm?.id || !binding.variant?.runtimeKey) return;
+  const key = llmTestKey(binding);
+  llmTestState.value = {
+    ...llmTestState.value,
+    [key]: { status: 'running', message: '正在测试大模型接口...' },
+  };
+  try {
+    const result = await api.testPlanningLlm({
+      algorithmId: binding.algorithm.id,
+      variantId: binding.variant.id,
+      runtimeKey: binding.variant.runtimeKey,
+      runtimeOptions: mergedRuntimeOptionsFor(binding),
+    });
+    llmTestState.value = {
+      ...llmTestState.value,
+      [key]: {
+        status: 'success',
+        message: `测试通过，${result.latencyMs || 0}ms，返回 ${result.responseLength || 0} 字符。`,
+        preview: result.preview || '',
+      },
+    };
+  } catch (error) {
+    llmTestState.value = {
+      ...llmTestState.value,
+      [key]: {
+        status: 'error',
+        message: formatLlmTestError(error),
+      },
+    };
+  }
+}
+
 function isLlmRuntimeField(field) {
   return field?.section === 'llm' || llmRuntimeFieldKeys.has(field?.key);
 }
@@ -65,6 +135,24 @@ function runtimeCoreFields(binding) {
 
 function runtimeLlmFields(binding) {
   return (binding?.variant?.parameterSchema || []).filter((field) => isLlmRuntimeField(field));
+}
+
+function isExternalOnlyLlmField(field) {
+  return ['llmApiKey', 'llmBaseUrl', 'openaiApiKey', 'openaiBaseUrl'].includes(field?.key);
+}
+
+function isInternalOnlyLlmField(field) {
+  return ['ollamaHost', 'ollama_host'].includes(field?.key);
+}
+
+function visibleRuntimeLlmFields(binding) {
+  const runtimeOptions = mergedRuntimeOptionsFor(binding);
+  const backend = String(runtimeOptions.llmBackend || 'openai-compatible').toLowerCase();
+  return runtimeLlmFields(binding).filter((field) => {
+    if (isInternalOnlyLlmField(field)) return false;
+    if (isExternalOnlyLlmField(field)) return backend !== 'ollama';
+    return true;
+  });
 }
 </script>
 
@@ -199,18 +287,34 @@ function runtimeLlmFields(binding) {
               </label>
             </div>
 
-            <div v-if="runtimeLlmFields(binding).length" class="planning-runtime-llm-panel top-gap">
+            <div v-if="visibleRuntimeLlmFields(binding).length" class="planning-runtime-llm-panel top-gap">
               <div class="planning-runtime-llm-panel__head">
                 <div>
                   <strong>LLM 结构化抽取配置</strong>
-                  <p>Ollama / OpenAI 兼容 API，结果回显自动脱敏。</p>
+                  <p>外部 OpenAI 兼容 API / 本地 Ollama，结果回显自动脱敏。</p>
                 </div>
-                <span class="pill pill-muted">前端配置</span>
+                <div class="planning-runtime-llm-panel__actions">
+                  <span
+                    v-if="llmTestStatus(binding)"
+                    class="pill"
+                    :class="llmTestStatus(binding).status === 'success' ? 'pill-active' : 'pill-muted'"
+                  >
+                    {{ llmTestStatus(binding).status === 'running' ? '测试中' : (llmTestStatus(binding).status === 'success' ? '已通过' : '未通过') }}
+                  </span>
+                  <button
+                    class="button button-ghost"
+                    type="button"
+                    :disabled="llmTestStatus(binding)?.status === 'running'"
+                    @click="testRuntimeLlm(binding)"
+                  >
+                    测试连接
+                  </button>
+                </div>
               </div>
 
               <div class="form-grid capability-stage-form planning-runtime-parameter-grid planning-runtime-llm-grid top-gap">
                 <label
-                  v-for="field in runtimeLlmFields(binding)"
+                  v-for="field in visibleRuntimeLlmFields(binding)"
                   :key="`${binding.step.id}-llm-${field.key}`"
                   :class="{ 'planning-runtime-toggle-field': field.type === 'boolean' }"
                 >
@@ -250,6 +354,17 @@ function runtimeLlmFields(binding) {
                   </template>
                 </label>
               </div>
+
+              <p
+                v-if="llmTestStatus(binding)"
+                class="planning-runtime-llm-status"
+                :class="`planning-runtime-llm-status--${llmTestStatus(binding).status}`"
+              >
+                {{ llmTestStatus(binding).message }}
+                <span v-if="llmTestStatus(binding).preview">
+                  {{ llmTestStatus(binding).preview }}
+                </span>
+              </p>
             </div>
 
             <p v-if="!runtimeCoreFields(binding).length && !runtimeLlmFields(binding).length" class="muted-text top-gap">

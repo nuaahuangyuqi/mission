@@ -37,10 +37,17 @@ force_grouping/config.py
 
 环境变量优先级最高：
 
+- `FORCE_GROUPING_LLM_BACKEND`
 - `FORCE_GROUPING_LLM_API_KEY`
 - `FORCE_GROUPING_LLM_BASE_URL`
+- `FORCE_GROUPING_LLM_OLLAMA_HOST`
 - `FORCE_GROUPING_LLM_MODEL`
 - `FORCE_GROUPING_LLM_TIMEOUT`
+- `FORCE_GROUPING_LLM_OLLAMA_NUM_CTX` / `OLLAMA_NUM_CTX`
+
+`FORCE_GROUPING_LLM_BACKEND=openai-compatible` 时使用外部 OpenAI-compatible API，需要 API Key、Base URL 和模型名称。
+`FORCE_GROUPING_LLM_BACKEND=ollama` 时使用本地 Ollama，默认连接 `http://localhost:11434`（或 `OLLAMA_HOST`），不需要 API Key 或 Base URL。
+外部 OpenAI-compatible API 与本地 Ollama 共用同一套抽取/解释提示词；Ollama 分支使用官方 `ollama` Python 包直接调用本地模型，不使用 OpenAI SDK，并通过 `trust_env=False` 避免系统代理干扰 localhost；Ollama 请求会显式发送 `think:false`，关闭支持该参数模型的 thinking 模式。正式抽取默认使用 `num_ctx=262144`，并把本地文件片段上限放开到 200k 总字符 / 100k 单文件字符以适配 256k 上下文模型。
 
 若未配置本算法或全局配置，会尝试复用第一阶段算法已有的大模型配置作为本地联调 fallback。
 

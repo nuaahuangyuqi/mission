@@ -7,7 +7,7 @@ import express from 'express';
 import { evaluateAction, getActionTemplate } from './action.js';
 import { evaluateCapability, getCapabilityTemplate } from './capability.js';
 import { evaluateConsumption, getConsumptionTemplate } from './consumption.js';
-import { evaluatePlanning, getPlanningTemplate, validatePlanning } from './planning.js';
+import { evaluatePlanning, getPlanningTemplate, testPlanningLlm, validatePlanning } from './planning.js';
 import {
   buildKnowledgeGraph,
   createDatabase,
@@ -1659,6 +1659,14 @@ app.get('/api/planning/template', (_req, res) => {
   res.json(getPlanningTemplate());
 });
 
+app.post('/api/planning/llm/test', async (req, res) => {
+  try {
+    res.json(await testPlanningLlm(req.body || {}));
+  } catch (error) {
+    sendPlanningError(res, error, '大模型配置测试失败');
+  }
+});
+
 app.post('/api/planning/validate', async (req, res) => {
   const body = req.body || {};
   const taskCenterId = Number(body.taskCenterId);
@@ -1782,11 +1790,18 @@ app.post('/api/planning/evaluate/stream', async (req, res) => {
   let task = null;
   let run = null;
   let payload = body;
+  let streamFinished = false;
+  const abortController = new AbortController();
   const events = {
     emit(type, eventPayload) {
       writePlanningEvent(res, type, eventPayload);
     },
   };
+  res.on('close', () => {
+    if (!streamFinished) {
+      abortController.abort();
+    }
+  });
 
   try {
     writePlanningEvent(res, 'run-start', {
@@ -1848,7 +1863,7 @@ app.post('/api/planning/evaluate/stream', async (req, res) => {
       message: '规划前置校验通过。',
     });
 
-    const response = await evaluatePlanning(payload, { db, events });
+    const response = await evaluatePlanning(payload, { db, events, signal: abortController.signal });
     if (run && task) {
       finalizeTaskRun(run.id, 'succeeded', buildPlanningRunSummary(response));
       saveTaskResult(task.id, run.id, response);
@@ -1864,6 +1879,7 @@ app.post('/api/planning/evaluate/stream', async (req, res) => {
       taskCenterId: task?.id || null,
       status: 'succeeded',
     });
+    streamFinished = true;
     res.end();
   } catch (error) {
     const normalizedError = normalizePlanningError(error, '智能任务规划计算失败');
@@ -1893,6 +1909,7 @@ app.post('/api/planning/evaluate/stream', async (req, res) => {
       taskCenterId: task?.id || null,
       status: 'failed',
     });
+    streamFinished = true;
     res.end();
   }
 });

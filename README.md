@@ -203,7 +203,10 @@
 - 规划运行时现在支持两类扩展执行：
   - HTTP 外部算法网关仍按 `algorithm-gateway-v1` 契约保留
   - 本地 Python runner 会在系统临时目录按 `runId / stepId` 隔离输入，把已勾选资源库数据、上传文件和上游结果落盘后调用 `algorithms/run-with-venv.mjs`；该启动器会在 `algorithms/.venv` 自动创建/复用 venv、同步 `requirements.txt` 依赖，并用该虚拟环境运行算法。可通过 `PLANNING_PYTHON_BIN` 或 `PLANNING_PYTHON_BOOTSTRAP_BIN` 指定创建 venv 时使用的基础 Python；只有显式设置 `PLANNING_PYTHON_USE_VENV=0` 时才会绕过自动 venv。
-- 本地 Python 算法运行参数在算法配置页和流程编排页可见；LLM 配置遵循页面参数优先、环境变量兜底，API key 输入框为 password，服务端结果归档会将 key 脱敏为 `configured`
+- 本地 Python 算法运行参数在算法配置页和流程编排页可见；LLM 配置遵循页面参数优先、环境变量兜底，并提供独立的 `大模型接口` 选择控件：
+  - `外部 OpenAI 兼容 API`：需要填写 API Key、Base URL 和模型名称，服务端按 `/chat/completions` 契约发起测试和真实算法调用，结果归档会将 key 脱敏为 `configured`
+  - `本地 Ollama（自动连接）`：前端只要求填写模型名称，不再显示 API Key、Base URL 或 Ollama 地址输入；后端默认连接 `http://localhost:11434`，也可用 `OLLAMA_HOST` 或算法环境变量覆盖；Ollama 与外部 OpenAI 兼容 API 共用同一套算法提示词，Python 算法的 Ollama 分支使用官方 `ollama` 包直接调用本地模型，不走 OpenAI SDK，并显式禁用环境代理读取以避免 localhost 请求被代理干扰；Ollama 请求会携带 `think:false` 关闭可关闭的 thinking 模式，并默认使用 `num_ctx=262144` 适配 256k 上下文模型；如本机模型显存/内存不足或模型支持不同上下文，可用 `OLLAMA_NUM_CTX` 或 `LLM_OLLAMA_NUM_CTX` 调整
+- 算法配置页和流程编排页的 LLM 面板现在提供 `测试连接` 控件，调用 `POST /api/planning/llm/test` 发送一次最小化 chat 请求，成功时返回延迟、响应长度和预览；若页面提示测试接口未加载，需要重启后端服务使新路由生效
 - `敌情威胁自动分析` 支持从资源库显式勾选数据源，也支持上传本地 `Word / PDF / Excel / CSV / TXT` 文件进行分析；未勾选资源库数据源时不会默认使用全部已有资源，若同时没有上传文件，执行前会提示补充输入
 - `敌情威胁自动分析` 当前使用内置规则融合实现，会结合已勾选资源库的预览、抽取条目、敌方情报、环境要素和本地上传文件，提取敌方作战企图、部署态势、火力覆盖、防空体系、侦察预警和反机降设施等结构化节点
 - `敌情威胁自动分析` 的大模型抽取结果会在 schema 校验前做安全归一化：例如模型把 `spatialContext.terrain / weather` 返回成字符串，或把 `equipment[].quantity` 返回成 `estimated / multiple / various` 等文本时，会自动转换为平台可校验的结构化字段；同时覆盖范围不再对所有目标兜底生成，指挥、机动、后勤、普通工事等点目标默认 `hasCoverage=false / radiusMeters=0`
@@ -235,6 +238,7 @@
 - `机降地域优化选择 Python 算法` 会默认读取 `apps/web/public/terrain` 的离线 Cesium terrain；若上游敌情 / 目标分配坐标不足，会生成演示目标边界兜底以保证流程可联调
 - 规划执行接口在保留 `POST /api/planning/evaluate` 的基础上，新增 `POST /api/planning/evaluate/stream`，以 `text/event-stream` 返回 `run-start / validation / step-start / progress / terminal / llm-chunk / step-complete / final / error / done` 事件
 - 规划执行页已增加执行监控面板：总进度条、当前步骤、步骤状态列表、终端日志区域和大模型片段区域会随流式接口实时更新；失败时保留已收到的终端日志和错误事件
+- 规划执行工作台现在提供 `终止任务` 控件；任务运行中可主动中断当前流式执行请求，前端会立即标记为已终止，后端会在 SSE 响应流关闭后尝试终止正在运行的本地 Python 子进程，并把已创建的执行记录归档为失败/终止状态；正常点击开始执行不会因为请求体读取完成而误触发终止
 - 任务执行结果现在按 `服务端归档 + 3 类导出 + 本地快照` 组织输出：
   - 主归档：每次执行都会写入服务端 `task_runs + task_results`，同一任务支持多次执行并保留独立历史记录
   - 导出一：`HTML` 分析报告
@@ -361,7 +365,9 @@
 
 - 外部算法网关基础契约仍可复用，未来重新集成 HTTP 算法服务时可继续走 `algorithm-gateway-v1`
 - `algorithms/enemy-threat-analysis`、`algorithms/force-grouping`、`algorithms/airlanding_zone` 已作为本地 Python 算法登记到规划模块，但不会覆盖各算法的内置默认实现
+- `enemy-threat-analysis` 与 `force-grouping` 的大模型调用已同时支持外部 OpenAI-compatible API 和本地 Ollama；两类接口共用同一套抽取/解释提示词；Ollama 模式由前端独立选择，后端自动使用 `http://localhost:11434/api/chat`（或 `OLLAMA_HOST`）调用，不需要页面录入 API Key 或 URL；Python 正式算法调用使用官方 `ollama` 包的 `Client(host=..., trust_env=False)`，避免 `httpx` 读取系统代理后把 localhost API 请求导向异常路径；正式调用和 `POST /api/planning/llm/test` 测试调用都会发送 `think:false`，关闭 Qwen 3、DeepSeek R1 等可关闭的 thinking 输出；正式算法默认向 Ollama 发送 `options.num_ctx=262144`，并把本地文件片段上限放开到 200k 总字符 / 100k 单文件字符，若仍出现 502，可设置 `OLLAMA_NUM_CTX` 或 `LLM_OLLAMA_NUM_CTX` 后重启后端重试
 - `POST /api/planning/evaluate/stream` 会把本地 Python stdout/stderr 映射为 `terminal`，把 enemy/force 的 LLM stdout 片段映射为 `llm-chunk`
+- `POST /api/planning/llm/test` 用于在执行规划前测试当前 LLM 配置是否可用
 - `敌情威胁自动分析 三维结果` 面板仍能渲染通用威胁场字段，包括 `heatmapBase64`、`heatmapGeojson`、`bounds`、`targetEntities`、`pointThreatEvaluation`、`situationMap` 和 `heatmap.matrixSummary`
 - `GeoJSON` 空间成果包仍会收集通用 `heatmapGeojson` 威胁场采样要素，前提是当前或未来算法结果中实际提供该字段
 

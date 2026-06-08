@@ -10,9 +10,12 @@ from docx import Document
 from PIL import Image
 
 from enemy_threat_analysis import analyze
+from enemy_threat_analysis import llm_extractor as llm_module
+from enemy_threat_analysis.config import resolve_llm_config
 from enemy_threat_analysis.errors import AnalysisInputError
+from enemy_threat_analysis.file_loader import LoadedFile
 from enemy_threat_analysis.image_exporter import IMAGE_SIZE, build_heatmap_base64
-from enemy_threat_analysis.llm_extractor import parse_llm_extraction
+from enemy_threat_analysis.llm_extractor import USER_PROMPT_TEMPLATE, parse_llm_extraction
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +46,161 @@ REQUIRED_FIELDS = {
 
 def load_sample() -> dict:
     return json.loads(SAMPLE_EXTRACTION.read_text(encoding="utf-8"))
+
+
+def test_llm_config_supports_ollama_backend() -> None:
+    config = resolve_llm_config(
+        {
+            "llmBackend": "ollama",
+            "ollamaHost": "http://127.0.0.1:11434",
+            "llmModel": "qwen2.5:7b",
+            "llmTimeout": 30,
+        }
+    )
+    assert config.backend == "ollama"
+    assert config.ollama_host == "http://127.0.0.1:11434"
+    assert config.model == "qwen2.5:7b"
+    assert config.timeout_seconds == 30
+    assert config.ollama_num_ctx == 262144
+
+    tuned = resolve_llm_config(
+        {
+            "llmBackend": "ollama",
+            "llmModel": "qwen2.5:7b",
+            "llmNumCtx": 12288,
+        }
+    )
+    assert tuned.ollama_num_ctx == 12288
+
+
+def test_ollama_chat_payload_disables_thinking(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = resolve_llm_config(
+        {
+            "llmBackend": "ollama",
+            "ollamaHost": "http://127.0.0.1:11434",
+            "llmModel": "qwen3:8b",
+        }
+    )
+    captured: dict[str, dict] = {}
+
+    def fake_post_ollama_chat(url: str, payload: dict, config_arg: object) -> str:
+        captured["payload"] = payload
+        return '{"ok":true}'
+
+    monkeypatch.setattr(llm_module, "_post_ollama_chat", fake_post_ollama_chat)
+    assert llm_module._ollama_chat_completion(config, "system", "user") == '{"ok":true}'
+    assert captured["payload"]["think"] is False
+    assert captured["payload"]["options"]["num_ctx"] == 262144
+
+
+def test_ollama_threat_extraction_uses_shared_user_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, str] = {}
+
+    def fake_chat_completion(config: object, system_prompt: str, user_prompt: str) -> str:
+        captured["user_prompt"] = user_prompt
+        return json.dumps(load_sample(), ensure_ascii=False)
+
+    monkeypatch.setattr(llm_module, "_chat_completion", fake_chat_completion)
+    result = llm_module.extract_threat_json_with_llm(
+        [
+            LoadedFile(
+                file_id="file-1",
+                file_name="enemy.txt",
+                file_type=".txt",
+                path="enemy.txt",
+                text="北侧远程火力群位于 118.12, 32.04。",
+                size=64,
+            )
+        ],
+        analysis_focus="comprehensive",
+        heatmap_density="low",
+        impact_bias="balanced",
+        llm_config={
+            "llmBackend": "ollama",
+            "ollamaHost": "http://127.0.0.1:11434",
+            "llmModel": "qwen3:8b",
+        },
+    )
+    assert result.schemaVersion == "threat-extraction-v1"
+    assert captured["user_prompt"].startswith(USER_PROMPT_TEMPLATE.split("__ANALYSIS_FOCUS__")[0])
+    assert "单个 target 的格式示例" in captured["user_prompt"]
+
+
+def test_ollama_threat_extraction_falls_back_to_smaller_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts: list[int] = []
+
+    def fake_post_ollama_chat(url: str, payload: dict, config_arg: object) -> str:
+        num_ctx = payload["options"]["num_ctx"]
+        attempts.append(num_ctx)
+        if num_ctx == 262144:
+            raise llm_module.ollama.ResponseError("context load failed", 502)
+        return json.dumps(load_sample(), ensure_ascii=False)
+
+    monkeypatch.setattr(llm_module, "_post_ollama_chat", fake_post_ollama_chat)
+    result = llm_module.extract_threat_json_with_llm(
+        [
+            LoadedFile(
+                file_id="file-1",
+                file_name="enemy.txt",
+                file_type=".txt",
+                path="enemy.txt",
+                text="北侧远程火力群位于 118.12, 32.04。" * 5000,
+                size=128000,
+            )
+        ],
+        analysis_focus="comprehensive",
+        heatmap_density="low",
+        impact_bias="balanced",
+        llm_config={
+            "llmBackend": "ollama",
+            "ollamaHost": "http://127.0.0.1:11434",
+            "llmModel": "qwen3:8b",
+        },
+    )
+    assert result.schemaVersion == "threat-extraction-v1"
+    assert attempts[:2] == [262144, 262144]
+    assert attempts[2] == 131072
+
+
+def test_ollama_client_ignores_environment_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs: object) -> None:
+            captured["kwargs"] = kwargs
+
+        def chat(self, **request: object) -> dict:
+            captured["request"] = request
+            return {"message": {"content": '{"ok":true}'}}
+
+    monkeypatch.setattr(llm_module.ollama, "Client", FakeClient)
+    config = resolve_llm_config(
+        {
+            "llmBackend": "ollama",
+            "ollamaHost": "http://127.0.0.1:11434/api/chat",
+            "llmModel": "qwen3:8b",
+        }
+    )
+    assert llm_module._ollama_chat_completion(config, "system", "user") == '{"ok":true}'
+    assert captured["kwargs"]["host"] == "http://127.0.0.1:11434"
+    assert captured["kwargs"]["trust_env"] is False
+    assert captured["request"]["think"] is False
+
+
+def test_llm_parser_repairs_null_camp_and_list_spatial_context() -> None:
+    payload = load_sample()
+    payload["targets"][0]["camp"] = None
+    payload["spatialContext"] = ["山地丘陵", {"description": "沿河谷展开"}]
+    extraction = parse_llm_extraction(json.dumps(payload, ensure_ascii=False))
+    assert extraction.targets[0].camp == "red"
+    assert len(extraction.spatialContext.terrain) == 2
+
+
+def test_llm_parser_uses_first_complete_json_object() -> None:
+    payload = json.dumps(load_sample(), ensure_ascii=False)
+    extraction = parse_llm_extraction(f"{payload}\n\n额外说明\n{{\"ignored\": true}}")
+    assert extraction.schemaVersion == "threat-extraction-v1"
+    assert extraction.targets
 
 
 def test_empty_input_requires_files_when_no_extraction() -> None:

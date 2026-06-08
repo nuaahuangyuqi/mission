@@ -4,6 +4,7 @@ import {
   __planningRuntimeTestHooks,
   evaluatePlanning,
   getPlanningTemplate,
+  testPlanningLlm,
   validatePlanning,
 } from './planning-runtime.js';
 
@@ -25,6 +26,89 @@ test('planning template registers three active local Python algorithm variants',
     assert.equal(variant.executionMode, 'local-python');
     assert.equal(variant.status, 'active');
     assert.ok(variant.parameterSchema.length > 0);
+  }
+});
+
+test('local Python LLM parameter schema supports external API and Ollama backends', () => {
+  const template = getPlanningTemplate();
+  const enemy = template.algorithms.find((item) => item.id === 'enemy-threat-analysis');
+  const force = template.algorithms.find((item) => item.id === 'force-grouping');
+  for (const variant of [
+    enemy?.variants.find((item) => item.runtimeKey === 'enemy-threat-analysis-local'),
+    force?.variants.find((item) => item.runtimeKey === 'force-grouping-local'),
+  ]) {
+    assert.ok(variant);
+    const fields = new Map(variant.parameterSchema.map((field) => [field.key, field]));
+    assert.equal(fields.get('llmBackend')?.type, 'select');
+    assert.deepEqual(fields.get('llmBackend')?.options.map((item) => item.value), ['openai-compatible', 'ollama']);
+    assert.equal(fields.get('llmApiKey')?.type, 'password');
+    assert.equal(fields.get('llmBaseUrl')?.section, 'llm');
+    assert.equal(fields.has('ollamaHost'), false);
+    assert.equal(variant.defaultOptions.llmBackend, 'openai-compatible');
+    assert.equal(variant.defaultOptions.ollamaHost, 'http://localhost:11434');
+  }
+});
+
+test('LLM test endpoint validation rejects incomplete configuration before network calls', async () => {
+  await assert.rejects(
+    () => testPlanningLlm({ runtimeOptions: { llmBackend: 'ollama', ollamaHost: 'http://localhost:11434' } }),
+    /请填写模型名称/,
+  );
+
+  await assert.rejects(
+    () => testPlanningLlm({
+      runtimeOptions: {
+        llmBackend: 'openai-compatible',
+        llmModel: 'demo-model',
+        llmBaseUrl: 'https://example.invalid/v1',
+      },
+    }),
+    /请填写外部 API Key/,
+  );
+});
+
+test('Ollama LLM test request disables thinking mode', async () => {
+  const originalFetch = globalThis.fetch;
+  let capturedPayload = null;
+  globalThis.fetch = async (url, init = {}) => {
+    capturedPayload = JSON.parse(init.body);
+    return {
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      async text() {
+        return JSON.stringify({ message: { content: '{"ok":true,"message":"pong"}' } });
+      },
+    };
+  };
+
+  try {
+    const defaultResult = await testPlanningLlm({
+      runtimeOptions: {
+        llmBackend: 'ollama',
+        llmModel: 'qwen3:8b',
+        ollamaHost: 'http://127.0.0.1:11434',
+      },
+    });
+    assert.equal(defaultResult.ok, true);
+    assert.equal(defaultResult.backend, 'ollama');
+    assert.equal(capturedPayload.think, false);
+    assert.equal(capturedPayload.options.num_ctx, 262144);
+
+    const result = await testPlanningLlm({
+      runtimeOptions: {
+        llmBackend: 'ollama',
+        llmModel: 'qwen3:8b',
+        ollamaHost: 'http://127.0.0.1:11434',
+        llmNumCtx: 12288,
+      },
+    });
+    assert.equal(result.ok, true);
+    assert.equal(result.backend, 'ollama');
+    assert.equal(capturedPayload.think, false);
+    assert.equal(capturedPayload.options.num_ctx, 12288);
+  } finally {
+    globalThis.fetch = originalFetch;
   }
 });
 

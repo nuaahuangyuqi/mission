@@ -11,7 +11,10 @@ import re
 import sys
 import urllib.error
 import urllib.request
+from dataclasses import replace
 from typing import Any, Sequence
+
+import ollama
 
 from .config import LLMConfig, resolve_llm_config
 from .errors import LLMConfigurationError, LLMExtractionError
@@ -25,6 +28,12 @@ DEFAULT_COVERAGE_RADIUS_BY_CATEGORY = {
     "recon_sensor": 45_000.0,
     "electronic_warfare": 35_000.0,
 }
+
+OPENAI_FILE_PROMPT_CHAR_LIMIT = 18_000
+OLLAMA_FILE_PROMPT_TOTAL_CHAR_LIMIT = 200_000
+OLLAMA_FILE_PROMPT_MAX_CHAR_LIMIT = 100_000
+OLLAMA_FILE_PROMPT_MIN_CHAR_LIMIT = 4_000
+OLLAMA_CONTEXT_FALLBACKS = (262_144, 131_072, 65_536, 32_768, 16_384)
 
 
 SYSTEM_PROMPT = """你是敌情威胁证据抽取器。
@@ -128,23 +137,89 @@ def extract_threat_json_with_llm(
 ) -> ThreatExtractionJson:
     """Call an OpenAI-compatible chat completion API and parse extraction JSON."""
     config = llm_config if isinstance(llm_config, LLMConfig) else resolve_llm_config(llm_config)
-    if not config.api_key:
-        raise LLMConfigurationError("未配置大模型 API Key，请通过页面参数或 ENEMY_THREAT_LLM_API_KEY 提供。")
-    if not config.base_url:
-        raise LLMConfigurationError("未配置大模型 Base URL，请通过页面参数或 ENEMY_THREAT_LLM_BASE_URL 提供。")
     if not config.model:
         raise LLMConfigurationError("未配置大模型 model。")
+    if _is_ollama_backend(config):
+        if not config.ollama_host:
+            raise LLMConfigurationError("未配置 Ollama 地址，请通过页面参数或 ENEMY_THREAT_LLM_OLLAMA_HOST 提供。")
+    else:
+        if not config.api_key:
+            raise LLMConfigurationError("未配置大模型 API Key，请通过页面参数或 ENEMY_THREAT_LLM_API_KEY 提供。")
+        if not config.base_url:
+            raise LLMConfigurationError("未配置大模型 Base URL，请通过页面参数或 ENEMY_THREAT_LLM_BASE_URL 提供。")
 
-    file_blocks = "\n\n---\n\n".join(item.prompt_block() for item in files)
-    user_prompt = (
+    if _is_ollama_backend(config):
+        content = _extract_with_ollama_context_fallback(
+            files,
+            config,
+            analysis_focus=analysis_focus,
+            heatmap_density=heatmap_density,
+            impact_bias=impact_bias,
+        )
+    else:
+        user_prompt = _build_user_prompt(
+            files,
+            config,
+            analysis_focus=analysis_focus,
+            heatmap_density=heatmap_density,
+            impact_bias=impact_bias,
+        )
+        content = _chat_completion(config, SYSTEM_PROMPT, user_prompt)
+    return parse_llm_extraction(content)
+
+
+def _extract_with_ollama_context_fallback(
+    files: Sequence[LoadedFile],
+    config: LLMConfig,
+    *,
+    analysis_focus: str,
+    heatmap_density: str,
+    impact_bias: str,
+) -> str:
+    attempts = _ollama_context_attempts(config)
+    last_error: Exception | None = None
+    for index, num_ctx in enumerate(attempts):
+        attempt_config = replace(config, ollama_num_ctx=num_ctx)
+        user_prompt = _build_user_prompt(
+            files,
+            attempt_config,
+            analysis_focus=analysis_focus,
+            heatmap_density=heatmap_density,
+            impact_bias=impact_bias,
+        )
+        try:
+            return _chat_completion(attempt_config, SYSTEM_PROMPT, user_prompt)
+        except LLMExtractionError as exc:
+            last_error = exc
+            if not _is_retryable_ollama_context_error(exc) or index >= len(attempts) - 1:
+                raise
+            next_ctx = attempts[index + 1]
+            print(
+                f"[enemy-threat-analysis] Ollama num_ctx={num_ctx} failed; retrying with num_ctx={next_ctx}.",
+                file=sys.stderr,
+                flush=True,
+            )
+    if last_error:
+        raise last_error
+    raise LLMExtractionError("Ollama 上下文重试未产生响应。")
+
+
+def _build_user_prompt(
+    files: Sequence[LoadedFile],
+    config: LLMConfig,
+    *,
+    analysis_focus: str,
+    heatmap_density: str,
+    impact_bias: str,
+) -> str:
+    file_blocks = _build_file_blocks(files, config)
+    return (
         USER_PROMPT_TEMPLATE
         .replace("__ANALYSIS_FOCUS__", analysis_focus)
         .replace("__HEATMAP_DENSITY__", heatmap_density)
         .replace("__IMPACT_BIAS__", impact_bias)
         .replace("__FILE_BLOCKS__", file_blocks)
     )
-    content = _chat_completion(config, SYSTEM_PROMPT, user_prompt)
-    return parse_llm_extraction(content)
 
 
 def parse_llm_extraction(content: str) -> ThreatExtractionJson:
@@ -165,6 +240,9 @@ def parse_llm_extraction(content: str) -> ThreatExtractionJson:
 
 
 def _chat_completion(config: LLMConfig, system_prompt: str, user_prompt: str) -> str:
+    if _is_ollama_backend(config):
+        return _ollama_chat_completion(config, system_prompt, user_prompt)
+
     url = _chat_completion_url(config.base_url)
     payload = {
         "model": config.model,
@@ -180,10 +258,7 @@ def _chat_completion(config: LLMConfig, system_prompt: str, user_prompt: str) ->
     request = urllib.request.Request(
         url,
         data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {config.api_key}",
-            "Content-Type": "application/json",
-        },
+        headers=_openai_headers(config),
         method="POST",
     )
     try:
@@ -202,6 +277,55 @@ def _chat_completion(config: LLMConfig, system_prompt: str, user_prompt: str) ->
         return data["choices"][0]["message"]["content"]
     except Exception as exc:
         raise LLMExtractionError(f"大模型 API 响应格式异常: {body[:500]}") from exc
+
+
+def _ollama_chat_completion(config: LLMConfig, system_prompt: str, user_prompt: str) -> str:
+    if not config.ollama_host:
+        raise LLMExtractionError("未配置 Ollama 地址。")
+    request = {
+        "model": config.model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "stream": bool(config.stream),
+        "think": False,
+        "format": "json",
+        "options": {"temperature": 0.1, "num_ctx": config.ollama_num_ctx},
+    }
+    try:
+        return _post_ollama_chat(config.ollama_host, request, config)
+    except ollama.ResponseError as exc:
+        if _ollama_response_status(exc) in {500, 502, 503, 504}:
+            retry_request = dict(request)
+            retry_request.pop("format", None)
+            try:
+                return _post_ollama_chat(config.ollama_host, retry_request, config)
+            except ollama.ResponseError as retry_exc:
+                raise LLMExtractionError(_ollama_response_error_message(retry_exc, retried_without_json=True)) from retry_exc
+            except Exception as retry_exc:
+                raise LLMExtractionError(f"Ollama API 请求失败: {retry_exc}") from retry_exc
+        raise LLMExtractionError(_ollama_response_error_message(exc)) from exc
+    except Exception as exc:
+        raise LLMExtractionError(f"Ollama API 请求失败: {exc}") from exc
+
+
+def _post_ollama_chat(host: str, request: dict[str, Any], config: LLMConfig) -> str:
+    client = ollama.Client(
+        host=_ollama_client_host(host),
+        timeout=config.timeout_seconds,
+        trust_env=False,
+    )
+    response = client.chat(**request)
+    if config.stream:
+        return _read_streaming_ollama_chat_response(response, label="enemy-threat-analysis", echo=config.stream_to_stdout)
+    return _extract_ollama_message_content(response)
+
+    try:
+        data = json.loads(body)
+        return data["message"]["content"]
+    except Exception as exc:
+        raise LLMExtractionError(f"Ollama API 响应格式异常: {body[:500]}") from exc
 
 
 def _read_streaming_chat_response(response: Any, *, label: str, echo: bool) -> str:
@@ -236,6 +360,26 @@ def _read_streaming_chat_response(response: Any, *, label: str, echo: bool) -> s
     return "".join(chunks)
 
 
+def _read_streaming_ollama_chat_response(response: Any, *, label: str, echo: bool) -> str:
+    chunks: list[str] = []
+    if echo:
+        print(f"\n[{label} stream] begin", flush=True)
+    for event in response:
+        content = _extract_ollama_message_content(event, default="")
+        if not content:
+            continue
+        text = str(content)
+        chunks.append(text)
+        if echo:
+            sys.stdout.write(text)
+            sys.stdout.flush()
+        if _ollama_response_done(event):
+            break
+    if echo:
+        print(f"\n[{label} stream] end, chars={sum(len(item) for item in chunks)}", flush=True)
+    return "".join(chunks)
+
+
 def _chat_completion_url(base_url: str) -> str:
     normalized = base_url.rstrip("/")
     if normalized.endswith("/chat/completions"):
@@ -243,17 +387,151 @@ def _chat_completion_url(base_url: str) -> str:
     return f"{normalized}/chat/completions"
 
 
+def _ollama_chat_url(host: str) -> str:
+    normalized = host.rstrip("/")
+    if normalized.endswith("/api/chat"):
+        return normalized
+    return f"{normalized}/api/chat"
+
+
+def _ollama_client_host(host: str) -> str:
+    normalized = str(host or "").rstrip("/")
+    if normalized.endswith("/api/chat"):
+        return normalized[: -len("/api/chat")]
+    if normalized.endswith("/api"):
+        return normalized[: -len("/api")]
+    return normalized
+
+
+def _extract_ollama_message_content(response: Any, default: str | None = None) -> str:
+    if isinstance(response, dict):
+        message = response.get("message") or {}
+        return str(message.get("content") or default or "")
+    message = getattr(response, "message", None)
+    if isinstance(message, dict):
+        return str(message.get("content") or default or "")
+    return str(getattr(message, "content", None) or default or "")
+
+
+def _ollama_response_done(response: Any) -> bool:
+    if isinstance(response, dict):
+        return bool(response.get("done"))
+    return bool(getattr(response, "done", False))
+
+
+def _build_file_blocks(files: Sequence[LoadedFile], config: LLMConfig) -> str:
+    file_count = max(1, len(files))
+    if _is_ollama_backend(config):
+        total_limit, max_limit, min_limit = _ollama_file_char_limits(config.ollama_num_ctx)
+        max_chars = max(
+            min_limit,
+            min(max_limit, total_limit // file_count),
+        )
+    else:
+        max_chars = OPENAI_FILE_PROMPT_CHAR_LIMIT
+    return "\n\n---\n\n".join(item.prompt_block(max_chars=max_chars) for item in files)
+
+
+def _ollama_context_attempts(config: LLMConfig) -> list[int]:
+    start = int(getattr(config, "ollama_num_ctx", 262_144) or 262_144)
+    candidates = [start, *OLLAMA_CONTEXT_FALLBACKS]
+    attempts: list[int] = []
+    for value in candidates:
+        if value > start or value < 2_048 or value in attempts:
+            continue
+        attempts.append(value)
+    return attempts or [start]
+
+
+def _ollama_file_char_limits(num_ctx: int) -> tuple[int, int, int]:
+    if num_ctx >= 262_144:
+        return OLLAMA_FILE_PROMPT_TOTAL_CHAR_LIMIT, OLLAMA_FILE_PROMPT_MAX_CHAR_LIMIT, OLLAMA_FILE_PROMPT_MIN_CHAR_LIMIT
+    if num_ctx >= 131_072:
+        return 100_000, 50_000, 4_000
+    if num_ctx >= 65_536:
+        return 48_000, 24_000, 2_000
+    if num_ctx >= 32_768:
+        return 20_000, 10_000, 1_200
+    return 8_000, 4_000, 600
+
+
+def _is_retryable_ollama_context_error(exc: Exception) -> bool:
+    message = str(exc)
+    return "Ollama API HTTP 5" in message or "Ollama API 请求失败" in message
+
+
+def _read_http_error_detail(exc: urllib.error.HTTPError) -> str:
+    try:
+        body = exc.read().decode("utf-8", errors="ignore").strip()
+    except Exception:
+        body = ""
+    if not body:
+        return ""
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError:
+        return body
+    if isinstance(payload, dict):
+        for key in ("error", "message", "detail"):
+            value = payload.get(key)
+            if value:
+                return str(value)
+    return body
+
+
+def _ollama_http_error_message(code: int, detail: str = "", *, retried_without_json: bool = False) -> str:
+    message = f"Ollama API HTTP {code}"
+    if detail:
+        message = f"{message}: {detail}"
+    if code >= 500:
+        suffix = (
+            "提示：Ollama 测试连接只验证小型请求，正式敌情抽取会携带文件上下文；"
+            "当前已对本地模型输入按 256k 上下文窗口截断，默认使用 num_ctx=262144，并在 JSON 模式失败后重试普通聊天模式。"
+            "若仍失败，请确认模型已加载、上下文窗口/内存足够，或用 OLLAMA_NUM_CTX 调整上下文窗口。"
+        )
+        if retried_without_json:
+            suffix = f"{suffix} 普通聊天模式重试也失败。"
+        message = f"{message}。{suffix}"
+    return message
+
+
+def _ollama_response_status(exc: ollama.ResponseError) -> int:
+    return int(getattr(exc, "status_code", -1) or -1)
+
+
+def _ollama_response_error_message(exc: ollama.ResponseError, *, retried_without_json: bool = False) -> str:
+    return _ollama_http_error_message(
+        _ollama_response_status(exc),
+        str(exc).strip(),
+        retried_without_json=retried_without_json,
+    )
+
+
+def _openai_headers(config: LLMConfig) -> dict[str, str]:
+    headers = {"Content-Type": "application/json"}
+    if config.api_key:
+        headers["Authorization"] = f"Bearer {config.api_key}"
+    return headers
+
+
+def _is_ollama_backend(config: LLMConfig) -> bool:
+    return str(getattr(config, "backend", "") or "").strip().lower().replace("_", "-") in {"ollama", "local-ollama", "local"}
+
+
 def _extract_json_text(content: str) -> str:
     text = str(content or "").strip()
     fence = re.search(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.DOTALL | re.IGNORECASE)
     if fence:
         text = fence.group(1).strip()
-    if text.startswith("{") and text.endswith("}"):
-        return text
-    start = text.find("{")
-    end = text.rfind("}")
-    if start >= 0 and end > start:
-        return text[start : end + 1]
+    decoder = json.JSONDecoder()
+    for match in re.finditer(r"\{", text):
+        candidate = text[match.start() :]
+        try:
+            payload, _ = decoder.raw_decode(candidate)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(payload, dict):
+            return json.dumps(payload, ensure_ascii=False)
     raise LLMExtractionError("大模型响应中未找到 JSON 对象。")
 
 
@@ -335,7 +613,12 @@ def _coerce_target_categories(value: Any) -> list[dict[str, Any]]:
 
 
 def _coerce_spatial_context(value: Any) -> dict[str, Any]:
-    context = dict(value or {}) if isinstance(value, dict) else {}
+    if isinstance(value, dict):
+        context = dict(value or {})
+    elif isinstance(value, list):
+        context = {"terrain": value}
+    else:
+        context = {}
     for key in ["terrain", "weather", "civilianOrRestrictedAreas"]:
         context[key] = _coerce_context_items(context.get(key), key)
     return context
@@ -360,6 +643,8 @@ def _coerce_target(value: Any, index: int) -> dict[str, Any]:
     target.setdefault("category", "unknown")
     target["subCategory"] = str(target.get("subCategory") or target.get("sub_category") or "")
     target.setdefault("camp", "red")
+    if not str(target.get("camp") or "").strip():
+        target["camp"] = "red"
     target.setdefault("status", "unknown")
     target["location"] = _coerce_location(target.get("location"), target)
     target["mobility"] = _coerce_mobility(target.get("mobility"))

@@ -1,6 +1,6 @@
 ﻿# Agent Memory
 
-Updated: 2026-06-04
+Updated: 2026-06-05
 
 Purpose: keep a handoff-ready memory for future agents working on the data-service, planning, and calculation modules.
 
@@ -14,6 +14,165 @@ Purpose: keep a handoff-ready memory for future agents working on the data-servi
 - After any code change, the agent must update both `agent.md` and `README.md` before finishing the task.
 
 ## Current Status
+
+Planning Ollama official-client refactor completed on 2026-06-05:
+
+- Files:
+  - `algorithms/requirements.txt`
+  - `algorithms/enemy-threat-analysis/enemy_threat_analysis/llm_extractor.py`
+  - `algorithms/enemy-threat-analysis/tests/test_enemy_threat_analysis.py`
+  - `algorithms/enemy-threat-analysis/README.md`
+  - `algorithms/force-grouping/force_grouping/llm_extractor.py`
+  - `algorithms/force-grouping/tests/test_force_grouping.py`
+  - `algorithms/force-grouping/README.md`
+  - `README.md`
+  - `agent.md`
+- Notes:
+  - Final root cause for the repeated Ollama 502 was not the shared prompt, JSON mode, or `num_ctx` alone.
+  - The official `ollama` Python package uses `httpx`; with default environment handling, local `Client.chat()` requests to `localhost:11434` returned `ResponseError 502` in this environment, while equivalent `curl /api/chat` requests succeeded.
+  - Passing `trust_env=False` to `ollama.Client` avoids environment proxy handling and makes the official-library local request succeed.
+  - Added `ollama>=0.6.0` to `algorithms/requirements.txt`; `algorithms/run-with-venv.mjs` synced the dependency into `algorithms/.venv`.
+  - Refactored enemy-threat and force-grouping Ollama branches to use the official `ollama.Client(host=..., timeout=..., trust_env=False)` directly.
+  - OpenAI-compatible external API calls still use the existing `/chat/completions` path; no prompt template changes were made in this refactor.
+  - Ollama host normalization strips `/api` or `/api/chat` before constructing the official client.
+  - Streaming Ollama reads now consume official `ChatResponse` iterator objects and only append `message.content`, ignoring `message.thinking`.
+  - Kept `think: false`, `format: "json"` first attempt, ordinary chat retry without `format`, and context fallback behavior.
+  - Added parser tolerance for enemy-threat small-model outputs: `camp: null` now repairs to `red`, list-valued `spatialContext` is treated as terrain context, and JSON extraction accepts the first complete JSON object when the model appends extra text or a second JSON block.
+- Verification:
+  - `node algorithms/run-with-venv.mjs -c "import ollama; ..."` installed and confirmed official package availability.
+  - `ollama list`: local models include `qwen3.5:0.8b`, `deepseek-r1:7b`, and `gemma3:270m`.
+  - Reproduced the proxy-sensitive failure: official `ollama.Client(...)` with default env returned `ResponseError 502`; `ollama.Client(..., trust_env=False)` succeeded against `qwen3.5:0.8b`.
+  - `node algorithms/run-with-venv.mjs -m pytest algorithms/enemy-threat-analysis/tests/test_enemy_threat_analysis.py algorithms/force-grouping/tests/test_force_grouping.py -q`: 46 tests passed.
+  - `npm test --workspace @mission/server`: 15 tests passed.
+  - Real CLI smoke with `ENEMY_THREAT_LLM_BACKEND=ollama ENEMY_THREAT_LLM_MODEL=qwen3.5:0.8b` against `algorithms/enemy-threat-analysis/examples/sample_enemy_report.txt` completed with `rc=0`, `implementationStatus=implemented`, `enemyUnitCount=0`, `threatScore=3`, `threatLevel=低`.
+- Remaining risk:
+  - The smoke used `qwen3.5:0.8b`, which is too small for high-quality structured enemy extraction; it now completes, but may produce weak or empty target extraction. Use a stronger local model for production-quality planning outputs.
+
+Planning Ollama 256k context expansion completed on 2026-06-05:
+
+- Files:
+  - `algorithms/enemy-threat-analysis/enemy_threat_analysis/config.py`
+  - `algorithms/enemy-threat-analysis/enemy_threat_analysis/llm_extractor.py`
+  - `algorithms/enemy-threat-analysis/tests/test_enemy_threat_analysis.py`
+  - `algorithms/enemy-threat-analysis/README.md`
+  - `algorithms/force-grouping/force_grouping/config.py`
+  - `algorithms/force-grouping/force_grouping/llm_extractor.py`
+  - `algorithms/force-grouping/tests/test_force_grouping.py`
+  - `algorithms/force-grouping/README.md`
+  - `apps/server/src/planning-runtime.js`
+  - `apps/server/src/planning-runtime.support.test.js`
+  - `README.md`
+  - `agent.md`
+- Notes:
+  - Follow-up to the local Ollama `Ollama API HTTP 502` failure after switching Ollama to the shared full prompt.
+  - The user confirmed their model supports a 256k context window, so the previous conservative small-window default was too low.
+  - Enemy-threat and force-grouping Ollama formal calls now default to `num_ctx=262144` while preserving `think: false`.
+  - Both Python algorithm configs now accept `llmNumCtx` / `ollamaNumCtx` overrides and environment overrides via algorithm-specific `*_OLLAMA_NUM_CTX`, `LLM_OLLAMA_NUM_CTX`, or `OLLAMA_NUM_CTX`.
+  - Node planning runtime passes `LLM_OLLAMA_NUM_CTX` into Python child processes and sends `options.num_ctx` in the planning LLM test request.
+  - Ollama file-context limits were expanded to total `200000` / per-file max `100000` chars, with a minimum of `4000`, so the 256k window can actually be used.
+  - Force-grouping Ollama explanation payloads were expanded to `160000` chars.
+  - Restarted `launchctl` label `com.mission.server.dev`; backend PID `32083` is listening on `http://localhost:3100`, and `/api/health` returned ready JSON.
+- Verification:
+  - `node algorithms/run-with-venv.mjs -m pytest algorithms/enemy-threat-analysis/tests/test_enemy_threat_analysis.py algorithms/force-grouping/tests/test_force_grouping.py -q`: 40 tests passed.
+  - `npm test --workspace @mission/server`: 15 tests passed.
+  - `node --check apps/server/src/planning-runtime.js`: passed.
+- Remaining risk:
+  - Live Ollama generation was not re-run because no guaranteed local model/inputs were configured in this turn.
+  - If the selected model advertises 256k but local memory/GPU offload cannot actually load that context, users may still see 5xx; lower `OLLAMA_NUM_CTX`, reduce uploaded file size, or verify the model is fully reachable through `ollama ps` / local test calls.
+
+Planning Ollama shared prompt and thinking disable completed on 2026-06-05:
+
+- Files:
+  - `algorithms/enemy-threat-analysis/enemy_threat_analysis/llm_extractor.py`
+  - `algorithms/enemy-threat-analysis/tests/test_enemy_threat_analysis.py`
+  - `algorithms/enemy-threat-analysis/README.md`
+  - `algorithms/force-grouping/force_grouping/llm_extractor.py`
+  - `algorithms/force-grouping/tests/test_force_grouping.py`
+  - `algorithms/force-grouping/README.md`
+  - `apps/server/src/planning-runtime.js`
+  - `apps/server/src/planning-runtime.support.test.js`
+  - `README.md`
+  - `agent.md`
+- Notes:
+  - Removed the Ollama-specific simplified prompt templates from the enemy-threat and force-grouping LLM extractors.
+  - Ollama and external OpenAI-compatible calls now share the same algorithm prompt templates; Ollama still keeps the existing smaller file-context truncation limits to reduce local model context pressure.
+  - Enemy-threat and force-grouping Ollama `/api/chat` payloads now include `think: false`.
+  - The server-side planning LLM test call (`POST /api/planning/llm/test`) also sends `think: false` for Ollama, matching formal algorithm execution.
+  - Documentation now states that Ollama shares prompts with the external API path and disables thinking where the model/API supports it.
+- Verification:
+  - `rg` found no remaining `OLLAMA_USER_PROMPT` or `OLLAMA_EXTRACTION_USER_PROMPT` references.
+  - `node algorithms/run-with-venv.mjs -m pytest algorithms/enemy-threat-analysis/tests/test_enemy_threat_analysis.py algorithms/force-grouping/tests/test_force_grouping.py -q`: 40 tests passed.
+  - `npm test --workspace @mission/server`: 15 tests passed.
+  - `node --check apps/server/src/planning-runtime.js`: passed.
+- Remaining risk:
+  - Live Ollama calls were not executed against a local model in this pass; verification captures request payload construction and shared prompt selection without network access.
+  - Ollama documentation says most thinking-capable models accept `think:false`, while GPT-OSS uses thinking levels and cannot be fully disabled; the code sends the disabling flag for supported models and ignores streamed `thinking` chunks by only reading `message.content`.
+
+Planning execution termination control completed on 2026-06-05:
+
+- Files:
+  - `apps/web/src/api.js`
+  - `apps/web/src/modules/planningWorkflow.js`
+  - `apps/web/src/views/planning/PlanningTaskExecutionOverview.vue`
+  - `apps/server/src/index.js`
+  - `apps/server/src/planning-runtime.js`
+  - `README.md`
+  - `agent.md`
+- Notes:
+  - Added a `终止任务` button to the planning execution workbench action row.
+  - The button is disabled when no planning run is active and becomes available while `state.calculating` / the execution stream is active.
+  - Frontend execution now uses an `AbortController` for `evaluatePlanningStream`; terminating aborts the SSE request, marks the stream as terminated, records a terminal line, and refreshes run history shortly after the abort.
+  - The stream route now creates a server-side `AbortController` and aborts planning execution when the client connection closes before normal completion.
+  - Follow-up bug fix: abort detection now listens to the SSE response `close` event instead of the request `close` event, because `req.close` can fire after the request body is read and previously caused each new execution to auto-terminate.
+  - Local Python planning runners receive the abort signal; on abort they emit a terminal message, send `SIGTERM` to the child process, and escalate to `SIGKILL` after 3 seconds if the child has not closed.
+  - Aborted executions use `PLANNING_EXECUTION_TERMINATED` and are finalized as failed/terminated runs when a run record already exists.
+- Verification:
+  - `node --check apps/server/src/planning-runtime.js && node --check apps/server/src/index.js`: passed.
+  - `npm test --workspace @mission/server`: 14 tests passed.
+  - `npm run build --workspace @mission/web`: passed; Vite still emits the existing large chunk warning.
+  - Restarted `localhost:3100` with the current code.
+  - Authenticated SSE smoke against `POST /api/planning/evaluate/stream` with a one-step built-in enemy-threat task completed with `final`/`done` and `status: succeeded`, confirming normal start no longer auto-terminates after the request body is read.
+  - In-app browser validation at `http://localhost:5173/planning/tasks/execute` confirmed the `规划执行工作台` action row contains `终止任务`, disabled when no run is active.
+- Remaining risk:
+  - A live terminate click during an active Python/LLM run was not exercised to avoid triggering real model calls; validation covers UI render state, frontend abort wiring by build, server abort plumbing by syntax/tests, and route availability after restart.
+
+Planning LLM interface selection and test control completed on 2026-06-05:
+
+- Files:
+  - `apps/server/src/planning-runtime.js`
+  - `apps/server/src/planning.js`
+  - `apps/server/src/index.js`
+  - `apps/server/src/planning-runtime.support.test.js`
+  - `apps/web/src/api.js`
+  - `apps/web/src/views/planning/PlanningAlgorithmsStep.vue`
+  - `apps/web/src/views/planning/PlanningTaskFlowStep.vue`
+  - `apps/web/src/styles.css`
+  - `algorithms/enemy-threat-analysis/enemy_threat_analysis/config.py`
+  - `algorithms/enemy-threat-analysis/enemy_threat_analysis/llm_extractor.py`
+  - `algorithms/enemy-threat-analysis/tests/test_enemy_threat_analysis.py`
+  - `algorithms/enemy-threat-analysis/README.md`
+  - `algorithms/force-grouping/force_grouping/config.py`
+  - `algorithms/force-grouping/force_grouping/llm_extractor.py`
+  - `algorithms/force-grouping/tests/test_force_grouping.py`
+  - `algorithms/force-grouping/README.md`
+  - `README.md`
+  - `agent.md`
+- Notes:
+  - Added a dedicated `大模型接口` select for the local Python enemy-threat and force-grouping variants.
+  - `外部 OpenAI 兼容 API` keeps API Key, Base URL, model, timeout, and stream controls.
+  - `本地 Ollama（自动连接）` hides API Key, Base URL, and Ollama URL fields; the backend defaults to `http://localhost:11434` or `OLLAMA_HOST`.
+  - Python LLM callers now support OpenAI-compatible `/chat/completions` and Ollama `/api/chat`, including non-streaming and streaming reads.
+  - Added `POST /api/planning/llm/test`, which sends a small chat request and returns latency, response length, and preview; frontend LLM panels expose a `测试连接` button and explain stale-backend 404s as “测试接口未加载，请重启后端服务后重试。”
+  - Confirmed the user-observed `接口不存在` error was caused by an old `localhost:3100` backend process started on 2026-06-04; restarted `localhost:3100` with the current code.
+- Verification:
+  - `node --check apps/server/src/planning-runtime.js && node --check apps/server/src/index.js`: passed.
+  - `npm test --workspace @mission/server`: 14 tests passed.
+  - `node algorithms/run-with-venv.mjs -m pytest algorithms/enemy-threat-analysis/tests/test_enemy_threat_analysis.py algorithms/force-grouping/tests/test_force_grouping.py -q`: 36 tests passed.
+  - `npm run build --workspace @mission/web`: passed; Vite still emits the existing large chunk warning.
+  - Authenticated curl against `http://localhost:3100/api/planning/llm/test` returned the new validation error `请填写模型名称。` instead of `接口不存在`.
+  - In-app browser validation on `http://localhost:5173/planning/algorithms` confirmed the LLM panel renders the external API fields by default, switches to `本地 Ollama（自动连接）`, hides API Key/Base URL/Ollama URL, and the test button reports `请填写模型名称。` when no model is set.
+- Remaining risk:
+  - Live external-provider and local Ollama model calls were not executed with a real configured key/model during verification; endpoint construction, UI behavior, route availability, and validation paths were tested.
 
 GitHub publication hygiene prepared on 2026-06-04:
 

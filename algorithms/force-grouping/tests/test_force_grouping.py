@@ -8,6 +8,8 @@ from pathlib import Path
 import pytest
 
 from force_grouping import analyze
+from force_grouping import llm_extractor as llm_module
+from force_grouping.config import resolve_llm_config
 from force_grouping.evaluator import build_group_metrics
 from force_grouping.force_pool_builder import CATEGORY_DEFAULTS, build_force_pool, normalize_extraction
 from force_grouping.llm_extractor import EXTRACTION_SYSTEM_PROMPT, EXTRACTION_USER_PROMPT
@@ -15,6 +17,123 @@ from force_grouping.llm_extractor import EXTRACTION_SYSTEM_PROMPT, EXTRACTION_US
 
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
+
+
+def test_llm_config_supports_ollama_backend() -> None:
+    config = resolve_llm_config(
+        {
+            "llmBackend": "ollama",
+            "ollamaHost": "http://127.0.0.1:11434",
+            "llmModel": "qwen2.5:7b",
+            "llmTimeout": 30,
+        }
+    )
+    assert config.backend == "ollama"
+    assert config.ollama_host == "http://127.0.0.1:11434"
+    assert config.model == "qwen2.5:7b"
+    assert config.timeout_seconds == 30
+    assert config.ollama_num_ctx == 262144
+
+    tuned = resolve_llm_config(
+        {
+            "llmBackend": "ollama",
+            "llmModel": "qwen2.5:7b",
+            "llmNumCtx": 12288,
+        }
+    )
+    assert tuned.ollama_num_ctx == 12288
+
+
+def test_ollama_chat_payload_disables_thinking(monkeypatch: pytest.MonkeyPatch) -> None:
+    config = resolve_llm_config(
+        {
+            "llmBackend": "ollama",
+            "ollamaHost": "http://127.0.0.1:11434",
+            "llmModel": "qwen3:8b",
+        }
+    )
+    captured: dict[str, dict] = {}
+
+    def fake_post_ollama_chat(endpoint: str, payload: dict, config_arg: object) -> str:
+        captured["payload"] = payload
+        return '{"ok":true}'
+
+    monkeypatch.setattr(llm_module, "_post_ollama_chat", fake_post_ollama_chat)
+    response = llm_module._ollama_chat_completion([{"role": "user", "content": "ping"}], config)
+    assert response == '{"ok":true}'
+    assert captured["payload"]["think"] is False
+    assert captured["payload"]["options"]["num_ctx"] == 262144
+
+
+def test_ollama_force_extraction_uses_shared_user_prompt(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, list[dict[str, str]]] = {}
+
+    def fake_chat_completion(messages: list[dict[str, str]], config: object) -> str:
+        captured["messages"] = messages
+        return '{"schemaVersion":"force-extraction-v1","forceUnits":[]}'
+
+    monkeypatch.setattr(llm_module, "_chat_completion", fake_chat_completion)
+    result = llm_module.extract_force_json_with_llm(
+        [{"fileId": "file-1", "fileName": "force.txt", "text": "运输分队 1 个。"}],
+        {
+            "llmBackend": "ollama",
+            "ollamaHost": "http://127.0.0.1:11434",
+            "llmModel": "qwen3:8b",
+        },
+    )
+    assert result["schemaVersion"] == "force-extraction-v1"
+    assert captured["messages"][1]["content"].startswith(EXTRACTION_USER_PROMPT)
+    assert '"schemaVersion": "force-extraction-v1"' in captured["messages"][1]["content"]
+
+
+def test_ollama_force_extraction_falls_back_to_smaller_context(monkeypatch: pytest.MonkeyPatch) -> None:
+    attempts: list[int] = []
+
+    def fake_post_ollama_chat(endpoint: str, payload: dict, config_arg: object) -> str:
+        num_ctx = payload["options"]["num_ctx"]
+        attempts.append(num_ctx)
+        if num_ctx == 262144:
+            raise llm_module.ollama.ResponseError("context load failed", 502)
+        return '{"schemaVersion":"force-extraction-v1","forceUnits":[]}'
+
+    monkeypatch.setattr(llm_module, "_post_ollama_chat", fake_post_ollama_chat)
+    result = llm_module.extract_force_json_with_llm(
+        [{"fileId": "file-1", "fileName": "force.txt", "text": "运输分队 1 个。" * 5000}],
+        {
+            "llmBackend": "ollama",
+            "ollamaHost": "http://127.0.0.1:11434",
+            "llmModel": "qwen3:8b",
+        },
+    )
+    assert result["schemaVersion"] == "force-extraction-v1"
+    assert attempts[:2] == [262144, 262144]
+    assert attempts[2] == 131072
+
+
+def test_ollama_client_ignores_environment_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class FakeClient:
+        def __init__(self, **kwargs: object) -> None:
+            captured["kwargs"] = kwargs
+
+        def chat(self, **request: object) -> dict:
+            captured["request"] = request
+            return {"message": {"content": '{"ok":true}'}}
+
+    monkeypatch.setattr(llm_module.ollama, "Client", FakeClient)
+    config = resolve_llm_config(
+        {
+            "llmBackend": "ollama",
+            "ollamaHost": "http://127.0.0.1:11434/api/chat",
+            "llmModel": "qwen3:8b",
+        }
+    )
+    response = llm_module._ollama_chat_completion([{"role": "user", "content": "ping"}], config)
+    assert response == '{"ok":true}'
+    assert captured["kwargs"]["host"] == "http://127.0.0.1:11434"
+    assert captured["kwargs"]["trust_env"] is False
+    assert captured["request"]["think"] is False
 
 
 @pytest.fixture()

@@ -19,6 +19,7 @@ const {
   loadTaskRuns,
   replayTaskRun,
   calculatePlanningAssessment,
+  terminatePlanningExecution,
   saveCurrentResultSnapshot,
   downloadResultPackage,
   formatVariantType,
@@ -41,6 +42,7 @@ const streamPanelVisible = computed(() => Boolean(
 const llmStreamText = computed(() => (streamState.value.llmChunks || [])
   .map((item) => item.content)
   .join(''));
+const canTerminateExecution = computed(() => Boolean(state.calculating || streamState.value.active));
 
 const executionStateLabel = computed(() => {
   if (state.calculating) return '执行中';
@@ -152,6 +154,10 @@ async function handleCalculate() {
   }
 }
 
+function handleTerminateExecution() {
+  terminatePlanningExecution();
+}
+
 function handleSaveSnapshot() {
   try {
     saveCurrentResultSnapshot();
@@ -227,6 +233,9 @@ function openStepResult(item) {
         <div class="planning-task-actions top-gap">
           <button class="button" :disabled="state.calculating || state.loading || !selectedTask" @click="handleCalculate">
             {{ state.calculating ? '执行中...' : state.results ? '重新执行任务模板' : '执行任务模板' }}
+          </button>
+          <button class="button button-danger" :disabled="!canTerminateExecution" @click="handleTerminateExecution">
+            终止任务
           </button>
           <button class="button button-secondary" :disabled="!outputPackages.storageSnapshot?.data" @click="handleSaveSnapshot">
             保存结果快照

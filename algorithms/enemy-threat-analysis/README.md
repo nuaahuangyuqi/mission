@@ -17,21 +17,39 @@ python3 -m pip install -r requirements.txt
 
 ## 配置大模型接口
 
-在 `enemy_threat_analysis/config.py` 中填写：
+默认使用外部 OpenAI-compatible chat completions；也可切换到本地 Ollama。
+
+在 `enemy_threat_analysis/config.py` 中填写外部 API：
 
 ```python
+LLM_BACKEND = "openai-compatible"
 LLM_API_KEY = "your-api-key"
 LLM_BASE_URL = "https://your-openai-compatible-endpoint/v1"
 LLM_MODEL = "your-model"
 ```
 
-也可以使用环境变量：
+也可以使用环境变量配置外部 API：
 
 ```bash
+export ENEMY_THREAT_LLM_BACKEND="openai-compatible"
 export ENEMY_THREAT_LLM_API_KEY="your-api-key"
 export ENEMY_THREAT_LLM_BASE_URL="https://your-openai-compatible-endpoint/v1"
 export ENEMY_THREAT_LLM_MODEL="your-model"
 ```
+
+如需使用本地 Ollama：
+
+```bash
+export ENEMY_THREAT_LLM_BACKEND="ollama"
+export ENEMY_THREAT_LLM_MODEL="qwen2.5:7b"
+# 可选，默认 http://localhost:11434
+export OLLAMA_HOST="http://localhost:11434"
+# 可选，默认 262144；正式抽取携带文件上下文时可按本机资源调整
+export OLLAMA_NUM_CTX="262144"
+```
+
+平台前端选择 `本地 Ollama（自动连接）` 时不会要求 API Key 或 Base URL，后端会自动连接 Ollama。
+外部 OpenAI-compatible API 与本地 Ollama 共用同一套抽取提示词；Ollama 分支使用官方 `ollama` Python 包直接调用本地模型，不使用 OpenAI SDK，并通过 `trust_env=False` 避免系统代理干扰 localhost；Ollama 请求会显式发送 `think:false`，关闭支持该参数模型的 thinking 模式。正式抽取默认使用 `num_ctx=262144`，并把本地文件片段上限放开到 200k 总字符 / 100k 单文件字符以适配 256k 上下文模型。
 
 ## CLI
 

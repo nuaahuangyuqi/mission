@@ -1,5 +1,6 @@
 <script setup>
 import { computed, ref } from 'vue';
+import { api } from '../../api';
 import { usePlanningWorkflow } from '../../modules/planningWorkflow';
 
 const {
@@ -26,7 +27,8 @@ const {
 const localFileAccept = '.doc,.docx,.pdf,.xls,.xlsx,.csv,.txt';
 const sourceDialogAlgorithmId = ref('');
 const selectedAlgorithmId = ref('');
-const llmRuntimeFieldKeys = new Set(['llmBackend', 'llmModel', 'ollamaHost', 'openaiBaseUrl', 'openaiApiKey', 'llmMaxTokens']);
+const llmTestState = ref({});
+const llmRuntimeFieldKeys = new Set(['llmBackend', 'llmApiKey', 'llmBaseUrl', 'llmModel', 'ollamaHost', 'openaiBaseUrl', 'openaiApiKey', 'llmMaxTokens']);
 
 const sourceDialogAlgorithm = computed(() => algorithmLibrary.value.find((item) => item.id === sourceDialogAlgorithmId.value) || null);
 const selectedAlgorithm = computed(() => algorithmLibrary.value.find((item) => item.id === selectedAlgorithmId.value) || null);
@@ -42,6 +44,25 @@ function resolveInput(algorithmId) {
 
 function resolveRuntimeOptions(algorithmId, runtimeKey) {
   return resolveInput(algorithmId).options?.runtimeOptions?.[runtimeKey] || {};
+}
+
+function resolveRuntimeDefaults(variant) {
+  const fieldDefaults = Object.fromEntries(
+    (variant?.parameterSchema || [])
+      .filter((field) => field.defaultValue !== undefined)
+      .map((field) => [field.key, field.defaultValue]),
+  );
+  return {
+    ...(variant?.defaultOptions || {}),
+    ...fieldDefaults,
+  };
+}
+
+function resolveMergedRuntimeOptions(algorithmId, variant) {
+  return {
+    ...resolveRuntimeDefaults(variant),
+    ...resolveRuntimeOptions(algorithmId, variant.runtimeKey),
+  };
 }
 
 function resolveRuntimeFieldValue(algorithmId, variant, field) {
@@ -65,6 +86,53 @@ function updateRuntimeField(algorithmId, variant, field, rawValue) {
   });
 }
 
+function llmTestKey(algorithmId, variant) {
+  return `${algorithmId}:${variant?.runtimeKey || variant?.id || ''}`;
+}
+
+function resolveLlmTestStatus(algorithmId, variant) {
+  return llmTestState.value[llmTestKey(algorithmId, variant)] || null;
+}
+
+function formatLlmTestError(error) {
+  if (error?.status === 404 && String(error?.message || '').includes('接口不存在')) {
+    return '大模型测试接口未加载，请重启后端服务后重试。';
+  }
+  return error?.message || '大模型配置测试失败。';
+}
+
+async function testRuntimeLlm(algorithmId, variant) {
+  const key = llmTestKey(algorithmId, variant);
+  llmTestState.value = {
+    ...llmTestState.value,
+    [key]: { status: 'running', message: '正在测试大模型接口...' },
+  };
+  try {
+    const result = await api.testPlanningLlm({
+      algorithmId,
+      variantId: variant.id,
+      runtimeKey: variant.runtimeKey,
+      runtimeOptions: resolveMergedRuntimeOptions(algorithmId, variant),
+    });
+    llmTestState.value = {
+      ...llmTestState.value,
+      [key]: {
+        status: 'success',
+        message: `测试通过，${result.latencyMs || 0}ms，返回 ${result.responseLength || 0} 字符。`,
+        preview: result.preview || '',
+      },
+    };
+  } catch (error) {
+    llmTestState.value = {
+      ...llmTestState.value,
+      [key]: {
+        status: 'error',
+        message: formatLlmTestError(error),
+      },
+    };
+  }
+}
+
 function isLlmRuntimeField(field) {
   return field?.section === 'llm' || llmRuntimeFieldKeys.has(field?.key);
 }
@@ -75,6 +143,24 @@ function runtimeCoreFields(variant) {
 
 function runtimeLlmFields(variant) {
   return (variant?.parameterSchema || []).filter((field) => isLlmRuntimeField(field));
+}
+
+function isExternalOnlyLlmField(field) {
+  return ['llmApiKey', 'llmBaseUrl', 'openaiApiKey', 'openaiBaseUrl'].includes(field?.key);
+}
+
+function isInternalOnlyLlmField(field) {
+  return ['ollamaHost', 'ollama_host'].includes(field?.key);
+}
+
+function visibleRuntimeLlmFields(algorithmId, variant) {
+  const runtimeOptions = resolveMergedRuntimeOptions(algorithmId, variant);
+  const backend = String(runtimeOptions.llmBackend || 'openai-compatible').toLowerCase();
+  return runtimeLlmFields(variant).filter((field) => {
+    if (isInternalOnlyLlmField(field)) return false;
+    if (isExternalOnlyLlmField(field)) return backend !== 'ollama';
+    return true;
+  });
 }
 
 function hasInputMode(algorithm, mode) {
@@ -347,18 +433,34 @@ async function handleFileChange(algorithmId, event) {
                   </label>
                 </div>
 
-                <div v-if="runtimeLlmFields(variant).length" class="planning-runtime-llm-panel top-gap">
+                <div v-if="visibleRuntimeLlmFields(selectedAlgorithm.id, variant).length" class="planning-runtime-llm-panel top-gap">
                   <div class="planning-runtime-llm-panel__head">
                     <div>
                       <strong>LLM 结构化抽取配置</strong>
-                      <p>Ollama / OpenAI 兼容 API，结果回显自动脱敏。</p>
+                      <p>外部 OpenAI 兼容 API / 本地 Ollama，结果回显自动脱敏。</p>
                     </div>
-                    <span class="pill pill-muted">前端配置</span>
+                    <div class="planning-runtime-llm-panel__actions">
+                      <span
+                        v-if="resolveLlmTestStatus(selectedAlgorithm.id, variant)"
+                        class="pill"
+                        :class="resolveLlmTestStatus(selectedAlgorithm.id, variant).status === 'success' ? 'pill-active' : 'pill-muted'"
+                      >
+                        {{ resolveLlmTestStatus(selectedAlgorithm.id, variant).status === 'running' ? '测试中' : (resolveLlmTestStatus(selectedAlgorithm.id, variant).status === 'success' ? '已通过' : '未通过') }}
+                      </span>
+                      <button
+                        class="button button-ghost"
+                        type="button"
+                        :disabled="resolveLlmTestStatus(selectedAlgorithm.id, variant)?.status === 'running'"
+                        @click="testRuntimeLlm(selectedAlgorithm.id, variant)"
+                      >
+                        测试连接
+                      </button>
+                    </div>
                   </div>
 
                   <div class="form-grid capability-stage-form planning-runtime-parameter-grid planning-runtime-llm-grid top-gap">
                     <label
-                      v-for="field in runtimeLlmFields(variant)"
+                      v-for="field in visibleRuntimeLlmFields(selectedAlgorithm.id, variant)"
                       :key="`${variant.id}-llm-${field.key}`"
                       :class="{ 'planning-runtime-toggle-field': field.type === 'boolean' }"
                     >
@@ -398,6 +500,17 @@ async function handleFileChange(algorithmId, event) {
                       </template>
                     </label>
                   </div>
+
+                  <p
+                    v-if="resolveLlmTestStatus(selectedAlgorithm.id, variant)"
+                    class="planning-runtime-llm-status"
+                    :class="`planning-runtime-llm-status--${resolveLlmTestStatus(selectedAlgorithm.id, variant).status}`"
+                  >
+                    {{ resolveLlmTestStatus(selectedAlgorithm.id, variant).message }}
+                    <span v-if="resolveLlmTestStatus(selectedAlgorithm.id, variant).preview">
+                      {{ resolveLlmTestStatus(selectedAlgorithm.id, variant).preview }}
+                    </span>
+                  </p>
                 </div>
 
                 <p v-if="!runtimeCoreFields(variant).length && !runtimeLlmFields(variant).length" class="muted-text top-gap">

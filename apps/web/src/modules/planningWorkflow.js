@@ -127,6 +127,8 @@ function createExecutionStreamState() {
   return {
     active: false,
     done: false,
+    cancelRequested: false,
+    terminated: false,
     progress: 0,
     currentStepId: '',
     currentStepName: '',
@@ -169,6 +171,7 @@ const state = reactive({
 });
 
 let persistTimer = null;
+let planningExecutionAbortController = null;
 
 const currentUser = computed(() => authState.user || { username: '', role: 'user' });
 const algorithmLibrary = computed(() => state.template?.algorithms || []);
@@ -383,6 +386,26 @@ function formatPlanningError(error) {
 
 function resetExecutionStream() {
   state.executionStream = createExecutionStreamState();
+}
+
+function isAbortError(error) {
+  return error?.name === 'AbortError'
+    || error?.code === 'ABORT_ERR'
+    || String(error?.message || '').toLowerCase().includes('abort');
+}
+
+function markPlanningExecutionTerminated(message = '规划任务已终止。') {
+  state.executionStream.active = false;
+  state.executionStream.done = true;
+  state.executionStream.cancelRequested = true;
+  state.executionStream.terminated = true;
+  state.executionStream.errorMessage = message;
+  state.errorMessage = message;
+  appendTerminalLine({
+    stream: 'system',
+    message,
+    timestamp: new Date().toISOString(),
+  });
 }
 
 function pushExecutionEvent(eventType, payload = {}) {
@@ -802,12 +825,16 @@ async function calculatePlanningAssessment() {
   state.calculating = true;
   clearError();
   resetExecutionStream();
+  planningExecutionAbortController = new AbortController();
 
   try {
     await persistCurrentTaskConfig({ silent: true });
     const response = await api.evaluatePlanningStream(
       { taskCenterId: state.selectedTaskInstanceId, assessmentName: state.assessmentName },
-      { onEvent: handlePlanningStreamEvent },
+      {
+        onEvent: handlePlanningStreamEvent,
+        signal: planningExecutionAbortController.signal,
+      },
     );
     if (!response) {
       const streamError = new Error(state.executionStream.errorMessage || '规划执行流未返回最终结果。');
@@ -823,14 +850,33 @@ async function calculatePlanningAssessment() {
     await loadTaskRuns(state.selectedTaskInstanceId);
     if (state.activeResultRunId) await replayTaskRun(state.activeResultRunId, { silent: true });
   } catch (error) {
+    if (state.executionStream.cancelRequested || isAbortError(error)) {
+      markPlanningExecutionTerminated();
+      if (state.selectedTaskInstanceId) {
+        window.setTimeout(() => {
+          loadTaskRuns(state.selectedTaskInstanceId).catch(() => {});
+        }, 600);
+      }
+      return null;
+    }
     state.executionStream.active = false;
     state.executionStream.done = true;
     state.executionStream.errorMessage = state.executionStream.errorMessage || error.message || '规划执行失败。';
     state.errorMessage = formatPlanningError(error);
     throw error;
   } finally {
+    planningExecutionAbortController = null;
     state.calculating = false;
   }
+}
+
+function terminatePlanningExecution() {
+  if (!state.calculating && !state.executionStream.active) return;
+  state.executionStream.cancelRequested = true;
+  if (planningExecutionAbortController) {
+    planningExecutionAbortController.abort();
+  }
+  markPlanningExecutionTerminated();
 }
 
 function setPlanningStage(stageKey) {
@@ -1111,6 +1157,7 @@ export function usePlanningWorkflow() {
     loadTaskRuns,
     replayTaskRun,
     calculatePlanningAssessment,
+    terminatePlanningExecution,
     saveCurrentResultSnapshot,
     downloadResultPackage,
     downloadPlanningFile,

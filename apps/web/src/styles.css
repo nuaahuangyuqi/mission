@@ -4833,6 +4833,41 @@ tbody tr:hover, tbody tr.active { background: rgba(111, 143, 82, 0.12); }
   line-height: 1.5;
 }
 
+.planning-runtime-llm-panel__actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.planning-runtime-llm-status {
+  margin: 0;
+  padding: 10px 12px;
+  border-radius: 8px;
+  border: 1px solid rgba(176, 214, 179, 0.14);
+  color: var(--muted);
+  line-height: 1.55;
+  overflow-wrap: anywhere;
+  background: rgba(8, 15, 10, 0.48);
+}
+
+.planning-runtime-llm-status span {
+  display: block;
+  margin-top: 4px;
+  color: var(--text);
+}
+
+.planning-runtime-llm-status--success {
+  border-color: rgba(132, 204, 22, 0.34);
+  color: #bbf7d0;
+}
+
+.planning-runtime-llm-status--error {
+  border-color: rgba(248, 113, 113, 0.4);
+  color: #fecaca;
+}
+
 .planning-runtime-llm-grid {
   grid-template-columns: repeat(3, minmax(190px, 1fr));
 }

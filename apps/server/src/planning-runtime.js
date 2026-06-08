@@ -1289,8 +1289,19 @@ const PLANNING_EXTERNAL_ALGORITHM_PROJECTS = [
         ],
       },
       { key: 'skipAssessment', label: '跳过评估报告', type: 'boolean', defaultValue: false },
-      { key: 'llmApiKey', label: 'API Key', type: 'password', section: 'llm', defaultValue: '' },
-      { key: 'llmBaseUrl', label: 'Base URL', type: 'text', section: 'llm', defaultValue: '' },
+      {
+        key: 'llmBackend',
+        label: '大模型接口',
+        type: 'select',
+        section: 'llm',
+        defaultValue: 'openai-compatible',
+        options: [
+          { value: 'openai-compatible', label: '外部 OpenAI 兼容 API' },
+          { value: 'ollama', label: '本地 Ollama（自动连接）' },
+        ],
+      },
+      { key: 'llmApiKey', label: '外部 API Key', type: 'password', section: 'llm', defaultValue: '' },
+      { key: 'llmBaseUrl', label: '外部 API Base URL', type: 'text', section: 'llm', defaultValue: '' },
       { key: 'llmModel', label: '模型名称', type: 'text', section: 'llm', defaultValue: '' },
       { key: 'llmTimeout', label: '超时秒数', type: 'number', section: 'llm', defaultValue: 120, min: 10, max: 900 },
       { key: 'llmStream', label: '流式输出', type: 'boolean', section: 'llm', defaultValue: true },
@@ -1300,8 +1311,10 @@ const PLANNING_EXTERNAL_ALGORITHM_PROJECTS = [
       heatmapDensity: 'medium',
       impactBias: 'balanced',
       skipAssessment: false,
+      llmBackend: 'openai-compatible',
       llmApiKey: '',
       llmBaseUrl: '',
+      ollamaHost: 'http://localhost:11434',
       llmModel: '',
       llmTimeout: 120,
       llmStream: true,
@@ -1339,8 +1352,19 @@ const PLANNING_EXTERNAL_ALGORITHM_PROJECTS = [
       },
       { key: 'expectedGroupCount', label: '期望编组数量', type: 'number', defaultValue: 4, min: 1, max: 12 },
       { key: 'useLlmExplanation', label: '启用大模型解释', type: 'boolean', defaultValue: true },
-      { key: 'llmApiKey', label: 'API Key', type: 'password', section: 'llm', defaultValue: '' },
-      { key: 'llmBaseUrl', label: 'Base URL', type: 'text', section: 'llm', defaultValue: '' },
+      {
+        key: 'llmBackend',
+        label: '大模型接口',
+        type: 'select',
+        section: 'llm',
+        defaultValue: 'openai-compatible',
+        options: [
+          { value: 'openai-compatible', label: '外部 OpenAI 兼容 API' },
+          { value: 'ollama', label: '本地 Ollama（自动连接）' },
+        ],
+      },
+      { key: 'llmApiKey', label: '外部 API Key', type: 'password', section: 'llm', defaultValue: '' },
+      { key: 'llmBaseUrl', label: '外部 API Base URL', type: 'text', section: 'llm', defaultValue: '' },
       { key: 'llmModel', label: '模型名称', type: 'text', section: 'llm', defaultValue: '' },
       { key: 'llmTimeout', label: '超时秒数', type: 'number', section: 'llm', defaultValue: 120, min: 10, max: 900 },
       { key: 'llmStream', label: '流式输出', type: 'boolean', section: 'llm', defaultValue: true },
@@ -1351,8 +1375,10 @@ const PLANNING_EXTERNAL_ALGORITHM_PROJECTS = [
       comparisonFocus: 'balanced',
       expectedGroupCount: 4,
       useLlmExplanation: true,
+      llmBackend: 'openai-compatible',
       llmApiKey: '',
       llmBaseUrl: '',
+      ollamaHost: 'http://localhost:11434',
       llmModel: '',
       llmTimeout: 120,
       llmStream: true,
@@ -2069,6 +2095,22 @@ function normalizePlanningRuntimeError(error, fallbackMessage = '规划执行失
   return normalized;
 }
 
+function createPlanningAbortError(details = {}) {
+  return createPlanningRuntimeError({
+    code: 'PLANNING_EXECUTION_TERMINATED',
+    type: 'algorithm_failed',
+    status: 499,
+    message: '规划任务已终止。',
+    details,
+  });
+}
+
+function throwIfPlanningAborted(signal, details = {}) {
+  if (signal?.aborted) {
+    throw createPlanningAbortError(details);
+  }
+}
+
 const REQUIRED_UPSTREAM_ALGORITHMS = {
   'force-grouping': ['enemy-threat-analysis'],
   'target-allocation': ['enemy-threat-analysis', 'force-grouping'],
@@ -2327,6 +2369,49 @@ function safeRuntimeText(value = '') {
   return String(value ?? '').trim();
 }
 
+const DEFAULT_OLLAMA_NUM_CTX = 262144;
+
+function normalizeLlmBackend(value = '', runtimeOptions = {}) {
+  const normalized = safeRuntimeText(value).toLowerCase().replace(/_/g, '-');
+  if (['ollama', 'local-ollama', 'local'].includes(normalized)) {
+    return 'ollama';
+  }
+  if (['openai', 'openai-compatible', 'external', 'external-api'].includes(normalized)) {
+    return 'openai-compatible';
+  }
+
+  const ollamaHost = safeRuntimeText(runtimeOptions.ollamaHost || runtimeOptions.ollama_host);
+  const baseUrl = safeRuntimeText(runtimeOptions.llmBaseUrl || runtimeOptions.openaiBaseUrl || runtimeOptions.baseUrl);
+  const apiKey = safeRuntimeText(runtimeOptions.llmApiKey || runtimeOptions.openaiApiKey || runtimeOptions.apiKey);
+  if (ollamaHost && !baseUrl && !apiKey) {
+    return 'ollama';
+  }
+  return 'openai-compatible';
+}
+
+function normalizeLlmRuntimeOptions(runtimeOptions = {}) {
+  const source = safeObject(runtimeOptions);
+  const backend = normalizeLlmBackend(source.llmBackend || source.backend || source.provider, source);
+  const timeoutSeconds = Number(source.llmTimeout || source.timeoutSeconds || source.timeout || 120);
+  const ollamaNumCtx = Number(
+    source.llmNumCtx
+      || source.ollamaNumCtx
+      || source.numCtx
+      || process.env.LLM_OLLAMA_NUM_CTX
+      || process.env.OLLAMA_NUM_CTX
+      || DEFAULT_OLLAMA_NUM_CTX,
+  );
+  return {
+    backend,
+    apiKey: safeRuntimeText(source.llmApiKey || source.openaiApiKey || source.apiKey || source.api_key),
+    baseUrl: safeRuntimeText(source.llmBaseUrl || source.openaiBaseUrl || source.baseUrl || source.base_url),
+    ollamaHost: safeRuntimeText(source.ollamaHost || source.ollama_host || process.env.OLLAMA_HOST || 'http://localhost:11434'),
+    model: safeRuntimeText(source.llmModel || source.model),
+    timeoutSeconds: Number.isFinite(timeoutSeconds) ? clamp(timeoutSeconds, 1, 900) : 120,
+    ollamaNumCtx: Number.isFinite(ollamaNumCtx) ? clamp(ollamaNumCtx, 2048, 262144) : DEFAULT_OLLAMA_NUM_CTX,
+  };
+}
+
 const SENSITIVE_OPTION_KEYS = new Set([
   'apiKey',
   'api_key',
@@ -2400,22 +2485,218 @@ function appendPythonPath(env, projectRoot) {
 }
 
 function applyLlmRuntimeEnv(env, prefix, runtimeOptions = {}) {
-  const apiKey = safeRuntimeText(runtimeOptions.llmApiKey);
-  const baseUrl = safeRuntimeText(runtimeOptions.llmBaseUrl);
-  const model = safeRuntimeText(runtimeOptions.llmModel);
-  const timeout = safeRuntimeText(runtimeOptions.llmTimeout);
+  const llmOptions = normalizeLlmRuntimeOptions(runtimeOptions);
+  const apiKey = llmOptions.apiKey;
+  const baseUrl = llmOptions.baseUrl;
+  const model = llmOptions.model;
+  const timeout = safeRuntimeText(llmOptions.timeoutSeconds);
   const stream = normalizeBooleanOption(runtimeOptions.llmStream, false);
 
+  env[`${prefix}_BACKEND`] = llmOptions.backend;
   if (apiKey) env[`${prefix}_API_KEY`] = apiKey;
   if (baseUrl) env[`${prefix}_BASE_URL`] = baseUrl;
+  if (llmOptions.ollamaHost) env[`${prefix}_OLLAMA_HOST`] = llmOptions.ollamaHost;
   if (model) env[`${prefix}_MODEL`] = model;
   if (timeout) env[`${prefix}_TIMEOUT`] = timeout;
+  if (llmOptions.ollamaNumCtx) env[`${prefix}_OLLAMA_NUM_CTX`] = String(llmOptions.ollamaNumCtx);
   env[`${prefix}_STREAM`] = stream ? '1' : '0';
   env[`${prefix}_STREAM_STDOUT`] = stream ? '1' : '0';
+  env.LLM_BACKEND = llmOptions.backend;
   env.LLM_STREAM = stream ? '1' : '0';
   env.LLM_STREAM_STDOUT = stream ? '1' : '0';
   if (timeout) env.LLM_TIMEOUT = timeout;
+  if (llmOptions.ollamaHost) env.OLLAMA_HOST = llmOptions.ollamaHost;
+  if (llmOptions.ollamaNumCtx) env.LLM_OLLAMA_NUM_CTX = String(llmOptions.ollamaNumCtx);
   return env;
+}
+
+function chatCompletionUrl(baseUrl = '') {
+  const normalized = safeRuntimeText(baseUrl).replace(/\/+$/, '');
+  if (normalized.endsWith('/chat/completions')) return normalized;
+  return `${normalized}/chat/completions`;
+}
+
+function ollamaChatUrl(host = '') {
+  const normalized = safeRuntimeText(host).replace(/\/+$/, '');
+  if (normalized.endsWith('/api/chat')) return normalized;
+  return `${normalized}/api/chat`;
+}
+
+function toShortProviderText(value = '', maxLength = 500) {
+  return String(value || '').replace(/\s+/g, ' ').trim().slice(0, maxLength);
+}
+
+function extractOpenAiContent(payload = {}) {
+  return String(safeArray(payload.choices)[0]?.message?.content || '');
+}
+
+function extractOllamaContent(payload = {}) {
+  return String(safeObject(payload.message).content || payload.response || '');
+}
+
+async function postJsonWithTimeout(url, payload, { headers = {}, timeoutSeconds = 120 } = {}) {
+  const controller = new AbortController();
+  const timeoutMs = Math.max(1, Number(timeoutSeconds || 120)) * 1000;
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...headers,
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+    const text = await response.text();
+    let data = null;
+    try {
+      data = text ? JSON.parse(text) : {};
+    } catch {
+      data = null;
+    }
+    if (!response.ok) {
+      throw createPlanningRuntimeError({
+        code: 'PLANNING_LLM_TEST_FAILED',
+        type: 'algorithm_failed',
+        status: 502,
+        message: `大模型接口返回 HTTP ${response.status}: ${toShortProviderText(text, 300) || response.statusText}`,
+        details: { httpStatus: response.status },
+      });
+    }
+    if (!data || typeof data !== 'object') {
+      throw createPlanningRuntimeError({
+        code: 'PLANNING_LLM_TEST_FAILED',
+        type: 'algorithm_failed',
+        status: 502,
+        message: `大模型接口响应不是 JSON: ${toShortProviderText(text, 300)}`,
+      });
+    }
+    return data;
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      throw createPlanningRuntimeError({
+        code: 'PLANNING_LLM_TEST_TIMEOUT',
+        type: 'algorithm_failed',
+        status: 504,
+        message: `大模型测试请求超时（${timeoutSeconds} 秒）。`,
+      });
+    }
+    if (error?.code && error?.type) throw error;
+    throw createPlanningRuntimeError({
+      code: 'PLANNING_LLM_TEST_FAILED',
+      type: 'algorithm_failed',
+      status: 502,
+      message: `大模型测试请求失败：${String(error?.message || error)}`,
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function testOpenAiCompatibleLlm(options) {
+  if (!options.baseUrl) {
+    throw createPlanningRuntimeError({
+      code: 'PLANNING_MISSING_DATA',
+      type: 'missing_data',
+      status: 400,
+      message: '请填写外部 API Base URL。',
+    });
+  }
+  if (!options.apiKey) {
+    throw createPlanningRuntimeError({
+      code: 'PLANNING_MISSING_DATA',
+      type: 'missing_data',
+      status: 400,
+      message: '请填写外部 API Key。',
+    });
+  }
+  const endpoint = chatCompletionUrl(options.baseUrl);
+  const startedAt = Date.now();
+  const data = await postJsonWithTimeout(
+    endpoint,
+    {
+      model: options.model,
+      messages: [
+        { role: 'system', content: '只输出 JSON，不要输出 Markdown。' },
+        { role: 'user', content: '请回复一个 JSON 对象：{"ok":true,"message":"pong"}' },
+      ],
+      temperature: 0,
+      max_tokens: 80,
+      response_format: { type: 'json_object' },
+      stream: false,
+    },
+    {
+      timeoutSeconds: options.timeoutSeconds,
+      headers: { Authorization: `Bearer ${options.apiKey}` },
+    },
+  );
+  const content = extractOpenAiContent(data);
+  if (!content) {
+    throw createPlanningRuntimeError({
+      code: 'PLANNING_LLM_TEST_FAILED',
+      type: 'algorithm_failed',
+      status: 502,
+      message: '外部 API 响应中没有 choices[0].message.content。',
+      details: { providerKeys: Object.keys(data).slice(0, 20) },
+    });
+  }
+  return {
+    ok: true,
+    backend: 'openai-compatible',
+    endpoint,
+    model: options.model,
+    latencyMs: Date.now() - startedAt,
+    responseLength: content.length,
+    preview: toShortText(content, 180),
+  };
+}
+
+async function testOllamaLlm(options) {
+  if (!options.ollamaHost) {
+    throw createPlanningRuntimeError({
+      code: 'PLANNING_MISSING_DATA',
+      type: 'missing_data',
+      status: 400,
+      message: '请填写 Ollama 地址。',
+    });
+  }
+  const endpoint = ollamaChatUrl(options.ollamaHost);
+  const startedAt = Date.now();
+  const data = await postJsonWithTimeout(
+    endpoint,
+    {
+      model: options.model,
+      messages: [
+        { role: 'system', content: '只输出 JSON，不要输出 Markdown。' },
+        { role: 'user', content: '请回复一个 JSON 对象：{"ok":true,"message":"pong"}' },
+      ],
+      stream: false,
+      think: false,
+      format: 'json',
+      options: { temperature: 0, num_ctx: options.ollamaNumCtx },
+    },
+    { timeoutSeconds: options.timeoutSeconds },
+  );
+  const content = extractOllamaContent(data);
+  if (!content) {
+    throw createPlanningRuntimeError({
+      code: 'PLANNING_LLM_TEST_FAILED',
+      type: 'algorithm_failed',
+      status: 502,
+      message: 'Ollama 响应中没有 message.content。',
+      details: { providerKeys: Object.keys(data).slice(0, 20) },
+    });
+  }
+  return {
+    ok: true,
+    backend: 'ollama',
+    endpoint,
+    model: options.model,
+    latencyMs: Date.now() - startedAt,
+    responseLength: content.length,
+    preview: toShortText(content, 180),
+  };
 }
 
 function splitLines(text = '') {
@@ -2436,6 +2717,7 @@ function runPythonProcess({
   cwd = REPO_ROOT,
   env = {},
   events = null,
+  signal = null,
   step = {},
   algorithm = {},
   variant = {},
@@ -2443,9 +2725,20 @@ function runPythonProcess({
   terminalPrefix = '',
 } = {}) {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(createPlanningAbortError({
+        stepId: step.id,
+        algorithmId: algorithm.id,
+        bindingId: variant.id,
+      }));
+      return;
+    }
     const startedAt = Date.now();
     let stdout = '';
     let stderr = '';
+    let abortRequested = false;
+    let childClosed = false;
+    let forceKillTimer = null;
     const pythonCommand = PLANNING_PYTHON_USE_VENV ? process.execPath : (PLANNING_PYTHON_BIN || 'python3');
     const pythonArgs = PLANNING_PYTHON_USE_VENV ? [PLANNING_PYTHON_VENV_RUNNER, ...args] : args;
     const pythonEnv = PLANNING_PYTHON_USE_VENV && PLANNING_PYTHON_BIN
@@ -2464,6 +2757,33 @@ function runPythonProcess({
       env: { ...process.env, ...pythonEnv, ...env },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+
+    const clearAbortResources = () => {
+      if (forceKillTimer) {
+        clearTimeout(forceKillTimer);
+        forceKillTimer = null;
+      }
+      signal?.removeEventListener?.('abort', handleAbort);
+    };
+    const handleAbort = () => {
+      if (abortRequested) return;
+      abortRequested = true;
+      emitPlanningEvent(events, 'terminal', {
+        stepId: step.id,
+        stepName: step.name,
+        algorithmId: algorithm.id,
+        bindingId: variant.id,
+        stream: 'terminal',
+        message: `${terminalPrefix || variant.name || algorithm.name} 收到终止指令，正在结束子进程。`,
+      });
+      if (!child.killed) {
+        child.kill('SIGTERM');
+        forceKillTimer = setTimeout(() => {
+          if (!childClosed) child.kill('SIGKILL');
+        }, 3000);
+      }
+    };
+    signal?.addEventListener?.('abort', handleAbort, { once: true });
 
     child.stdout.on('data', (chunk) => {
       const text = chunk.toString('utf-8');
@@ -2506,6 +2826,17 @@ function runPythonProcess({
     });
 
     child.on('error', (error) => {
+      clearAbortResources();
+      if (abortRequested || signal?.aborted) {
+        reject(createPlanningAbortError({
+          stepId: step.id,
+          algorithmId: algorithm.id,
+          bindingId: variant.id,
+          stderr: tailText(stderr),
+          stdout: tailText(stdout),
+        }));
+        return;
+      }
       reject(createPlanningRuntimeError({
         code: 'PLANNING_ALGORITHM_FAILED',
         type: 'algorithm_failed',
@@ -2522,7 +2853,20 @@ function runPythonProcess({
     });
 
     child.on('close', (code) => {
+      childClosed = true;
+      clearAbortResources();
       const durationMs = Date.now() - startedAt;
+      if (abortRequested || signal?.aborted) {
+        reject(createPlanningAbortError({
+          stepId: step.id,
+          algorithmId: algorithm.id,
+          bindingId: variant.id,
+          exitCode: code,
+          stderr: tailText(stderr),
+          stdout: tailText(stdout),
+        }));
+        return;
+      }
       if (code === 0) {
         resolve({ stdout, stderr, durationMs });
         return;
@@ -2757,7 +3101,7 @@ function buildAirlandingRequirements(runtimeOptions = {}, input = {}) {
   return requirements;
 }
 
-async function executeLocalEnemyThreatAnalysis(variant, task, step, algorithm, context, payload, input, tempDir, events) {
+async function executeLocalEnemyThreatAnalysis(variant, task, step, algorithm, context, payload, input, tempDir, events, signal) {
   const runtimeOptions = resolveRuntimeOptions(input, variant);
   const projectRoot = resolveProjectRoot(variant);
   const { files } = await materializePlanningContextFiles({
@@ -2808,6 +3152,7 @@ async function executeLocalEnemyThreatAnalysis(variant, task, step, algorithm, c
     cwd: REPO_ROOT,
     env,
     events,
+    signal,
     step,
     algorithm,
     variant,
@@ -2843,7 +3188,7 @@ async function executeLocalEnemyThreatAnalysis(variant, task, step, algorithm, c
   };
 }
 
-async function executeLocalForceGrouping(variant, task, step, algorithm, context, payload, input, tempDir, events) {
+async function executeLocalForceGrouping(variant, task, step, algorithm, context, payload, input, tempDir, events, signal) {
   const runtimeOptions = resolveRuntimeOptions(input, variant);
   const projectRoot = resolveProjectRoot(variant);
   const { files } = await materializePlanningContextFiles({
@@ -2897,6 +3242,7 @@ async function executeLocalForceGrouping(variant, task, step, algorithm, context
     cwd: REPO_ROOT,
     env,
     events,
+    signal,
     step,
     algorithm,
     variant,
@@ -3053,7 +3399,7 @@ function adaptAirlandingOutput(raw = {}, context = {}, input = {}, dataset = {},
   };
 }
 
-async function executeLocalAirlandingZone(variant, task, step, algorithm, context, payload, input, tempDir, events) {
+async function executeLocalAirlandingZone(variant, task, step, algorithm, context, payload, input, tempDir, events, signal) {
   const runtimeOptions = resolveRuntimeOptions(input, variant);
   const projectRoot = resolveProjectRoot(variant);
   const inputPayload = buildAirlandingInputPayload(context, input, payload.dataset || {}, runtimeOptions);
@@ -3068,6 +3414,7 @@ async function executeLocalAirlandingZone(variant, task, step, algorithm, contex
     cwd: projectRoot,
     env,
     events,
+    signal,
     step,
     algorithm,
     variant,
@@ -3104,7 +3451,7 @@ async function executeLocalAirlandingZone(variant, task, step, algorithm, contex
   };
 }
 
-async function executeLocalPythonStep(variant, task, step, algorithm, context, payload, input, events) {
+async function executeLocalPythonStep(variant, task, step, algorithm, context, payload, input, events, signal) {
   const runKey = safeFileNamePart(`${payload.taskRunId || Date.now()}-${step.id || algorithm.id}`, 'planning-run');
   const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), `mission-planning-${runKey}-`));
   emitPlanningEvent(events, 'terminal', {
@@ -3114,17 +3461,18 @@ async function executeLocalPythonStep(variant, task, step, algorithm, context, p
     bindingId: variant.id,
     stream: 'terminal',
     message: `临时工作目录已创建：${tempDir}`,
-  });
+    });
 
   try {
+    throwIfPlanningAborted(signal, { stepId: step.id, algorithmId: algorithm.id, bindingId: variant.id });
     if (algorithm.id === 'enemy-threat-analysis') {
-      return await executeLocalEnemyThreatAnalysis(variant, task, step, algorithm, context, payload, input, tempDir, events);
+      return await executeLocalEnemyThreatAnalysis(variant, task, step, algorithm, context, payload, input, tempDir, events, signal);
     }
     if (algorithm.id === 'force-grouping') {
-      return await executeLocalForceGrouping(variant, task, step, algorithm, context, payload, input, tempDir, events);
+      return await executeLocalForceGrouping(variant, task, step, algorithm, context, payload, input, tempDir, events, signal);
     }
     if (algorithm.id === 'airborne-landing-site-selection') {
-      return await executeLocalAirlandingZone(variant, task, step, algorithm, context, payload, input, tempDir, events);
+      return await executeLocalAirlandingZone(variant, task, step, algorithm, context, payload, input, tempDir, events, signal);
     }
     throw createPlanningRuntimeError({
       code: 'PLANNING_MISSING_DATA',
@@ -10375,9 +10723,10 @@ async function executeBuiltinStep(step, algorithm, context, input, dataset) {
   return executor(context, step, algorithm, input, dataset);
 }
 
-async function executeExternalStep(variant, task, step, algorithm, context, payload, input, events = null) {
+async function executeExternalStep(variant, task, step, algorithm, context, payload, input, events = null, signal = null) {
+  throwIfPlanningAborted(signal, { stepId: step.id, algorithmId: algorithm.id, bindingId: variant.id });
   if (variant.executionMode === 'local-python') {
-    return executeLocalPythonStep(variant, task, step, algorithm, context, payload, input, events);
+    return executeLocalPythonStep(variant, task, step, algorithm, context, payload, input, events, signal);
   }
 
   const requestPayload = {
@@ -10453,7 +10802,7 @@ async function executeExternalStep(variant, task, step, algorithm, context, payl
   };
 }
 
-async function executeTaskPlanning(task, template, payload = {}, dataset = {}, { db, events } = {}) {
+async function executeTaskPlanning(task, template, payload = {}, dataset = {}, { db, events, signal } = {}) {
   const algorithmMap = buildAlgorithmMap(template.algorithms);
   const bindings = safeObject(payload.bindings);
   const algorithmInputs = normalizeAlgorithmInputs(template, payload);
@@ -10463,6 +10812,11 @@ async function executeTaskPlanning(task, template, payload = {}, dataset = {}, {
   const totalSteps = sortedSteps.length || 1;
 
   for (const step of sortedSteps) {
+    throwIfPlanningAborted(signal, {
+      taskId: task.id,
+      stepId: step.id,
+      algorithmId: step.algorithmId,
+    });
     const algorithm = algorithmMap.get(step.algorithmId);
     if (!algorithm) {
       throw createPlanningRuntimeError({
@@ -10533,7 +10887,7 @@ async function executeTaskPlanning(task, template, payload = {}, dataset = {}, {
     try {
       stageResult = variant.type === 'builtin'
         ? await executeBuiltinStep(step, algorithm, context, algorithmInput, dataset)
-        : await executeExternalStep(variant, task, step, algorithm, context, { ...payload, dataset }, algorithmInput, events);
+        : await executeExternalStep(variant, task, step, algorithm, context, { ...payload, dataset }, algorithmInput, events, signal);
     } catch (error) {
       const normalizedError = normalizePlanningRuntimeError(error, `${step.name} 执行失败。`);
       normalizedError.details = {
@@ -11317,6 +11671,34 @@ export function getPlanningTemplate() {
   return buildPlanningTemplate();
 }
 
+export async function testPlanningLlm(payload = {}) {
+  try {
+    const runtimeOptions = {
+      ...safeObject(payload.runtimeOptions),
+      ...safeObject(payload.options),
+    };
+    const llmOptions = normalizeLlmRuntimeOptions(runtimeOptions);
+    if (!llmOptions.model) {
+      throw createPlanningRuntimeError({
+        code: 'PLANNING_MISSING_DATA',
+        type: 'missing_data',
+        status: 400,
+        message: '请填写模型名称。',
+      });
+    }
+
+    const result = llmOptions.backend === 'ollama'
+      ? await testOllamaLlm(llmOptions)
+      : await testOpenAiCompatibleLlm(llmOptions);
+    return {
+      ...result,
+      testedAt: new Date().toISOString(),
+    };
+  } catch (error) {
+    throw normalizePlanningRuntimeError(error, '大模型配置测试失败。');
+  }
+}
+
 export async function validatePlanning(payload = {}, { db } = {}) {
   try {
     const template = buildPlanningTemplate();
@@ -11488,15 +11870,16 @@ export async function validatePlanning(payload = {}, { db } = {}) {
   }
 }
 
-export async function evaluatePlanning(payload = {}, { db, events } = {}) {
+export async function evaluatePlanning(payload = {}, { db, events, signal } = {}) {
   const validation = await validatePlanning(payload, { db });
+  throwIfPlanningAborted(signal, { taskId: payload.taskId || payload.taskCenterId || null });
   const normalizedPayload = validation.normalizedPayload || payload;
   const task = validation.taskDefinition || selectTask(validation.template, normalizedPayload.taskId, normalizedPayload.taskDefinition);
   const template = validation.template || buildPlanningTemplate();
   const dataset = validation.dataset || loadPlanningDataset(db);
 
   try {
-    const execution = await executeTaskPlanning(task, template, normalizedPayload, dataset, { db, events });
+    const execution = await executeTaskPlanning(task, template, normalizedPayload, dataset, { db, events, signal });
     const builtinSteps = execution.steps.filter((item) => item.binding.type === 'builtin').length;
     const externalSteps = execution.steps.filter((item) => item.binding.type === 'external-model').length;
     const implementedSteps = execution.steps.filter((item) => item.structuredOutput?.implementationStatus === 'implemented').length;

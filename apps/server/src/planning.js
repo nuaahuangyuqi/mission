@@ -1,1 +1,1 @@
-export { evaluatePlanning, getPlanningTemplate, validatePlanning } from './planning-runtime.js';
+export { evaluatePlanning, getPlanningTemplate, testPlanningLlm, validatePlanning } from './planning-runtime.js';
