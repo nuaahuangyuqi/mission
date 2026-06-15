@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { TextDecoder } from 'node:util';
 import mammoth from 'mammoth';
 import WordExtractor from 'word-extractor';
 import XLSX from 'xlsx';
@@ -8,6 +9,7 @@ const wordExtractor = new WordExtractor();
 const WORD_EXTENSIONS = new Set(['.doc', '.docx']);
 const EXCEL_EXTENSIONS = new Set(['.xlsx', '.xls', '.csv']);
 const PDF_EXTENSIONS = new Set(['.pdf']);
+const TEXT_EXTENSIONS = new Set(['.txt', '.text', '.md', '.markdown']);
 
 function decodeBase64Content(base64Value = '') {
   const normalized = String(base64Value || '').trim();
@@ -32,6 +34,20 @@ function normalizeWhitespace(text = '') {
     .replace(/\n{3,}/g, '\n\n')
     .replace(/[ \f]{2,}/g, ' ')
     .trim();
+}
+
+function decodeTextBuffer(buffer) {
+  if (!buffer?.length) return '';
+
+  try {
+    return new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+  } catch {
+    try {
+      return new TextDecoder('gb18030', { fatal: true }).decode(buffer);
+    } catch {
+      return buffer.toString('utf8');
+    }
+  }
 }
 
 function clipText(text = '', maxLength = 220) {
@@ -264,6 +280,38 @@ async function createPdfPreviewPayload(fileName, description, buffer, textConten
   };
 }
 
+function createTextPreviewPayload(fileName, description, buffer, textContent) {
+  const rawText = normalizeWhitespace(
+    textContent || decodeTextBuffer(buffer),
+  );
+  const paragraphs = splitParagraphs(rawText);
+  const chunks = chunkParagraphs(paragraphs.length ? paragraphs : [rawText]);
+
+  const extractedAt = nowIso();
+  return {
+    previewType: 'document',
+    payload: {
+      title: fileName || '文本文件导入',
+      description: description || '文本内容已提取，可直接用于规划算法分析。',
+      content: clipText(rawText, 4000),
+      paragraphs: paragraphs.slice(0, 80),
+      stats: {
+        paragraphCount: paragraphs.length,
+        charCount: rawText.length,
+      },
+    },
+    extractionDrafts: chunks.map((text, index) => ({
+      title: chunks.length > 1 ? `${fileName || '文本文件'} / 片段 ${index + 1}` : (fileName || '文本文件'),
+      text,
+      summary: clipText(text, 160),
+      sourceType: 'text-file',
+      sourceName: fileName || '文本文件',
+      fileName: fileName || '',
+      extractedAt,
+    })),
+  };
+}
+
 function parseWorkbook(buffer, textContent, fileName) {
   const extension = path.extname(fileName || '').toLowerCase();
 
@@ -339,6 +387,17 @@ export async function normalizeImportedPreview(type, body = {}) {
       return await createPdfPreviewPayload(fileName, description, buffer, textContent);
     } catch (error) {
       throw new Error(`PDF 文件解析失败：${error?.message || '请检查文件是否损坏或加密。'}`);
+    }
+  }
+
+  if (type === 'text') {
+    if (extension && !TEXT_EXTENSIONS.has(extension) && !textContent) {
+      throw new Error('当前仅支持导入 .txt、.text、.md 或 .markdown 文本文件。');
+    }
+    try {
+      return createTextPreviewPayload(fileName, description, buffer, textContent);
+    } catch (error) {
+      throw new Error(`文本文件解析失败：${error?.message || '请检查文件内容或编码格式。'}`);
     }
   }
 

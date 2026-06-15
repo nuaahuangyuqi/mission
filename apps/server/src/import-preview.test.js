@@ -57,6 +57,23 @@ test('word text preview returns readable document payload without binary extract
   assertNoMojibake(preview);
 });
 
+test('txt import preview returns readable document payload and extraction drafts', async () => {
+  const preview = await normalizeImportedPreview('text', {
+    fileName: 'enemy-report.txt',
+    fileExtension: '.txt',
+    fileContentBase64: Buffer.from('敌方防空节点位于北侧高地。\n\n火力覆盖半径约 8 公里。', 'utf8').toString('base64'),
+  });
+
+  assert.equal(preview.previewType, 'document');
+  assert.equal(preview.payload.title, 'enemy-report.txt');
+  assert.equal(preview.payload.description, '文本内容已提取，可直接用于规划算法分析。');
+  assert.deepEqual(preview.payload.paragraphs, ['敌方防空节点位于北侧高地。', '火力覆盖半径约 8 公里。']);
+  assert.equal(preview.extractionDrafts.length, 1);
+  assert.equal(preview.extractionDrafts[0].sourceType, 'text-file');
+  assert.match(preview.extractionDrafts[0].text, /防空节点/);
+  assertNoMojibake(preview);
+});
+
 test('unsupported import extensions return readable validation errors', async () => {
   await assert.rejects(
     () => normalizeImportedPreview('excel', {

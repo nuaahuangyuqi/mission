@@ -65,16 +65,17 @@
 
 - 服务端新增 `import_batches / import_batch_items`，记录批次状态、成功数、失败数、失败原因、尝试次数和结果摘要
 - 支持 `Word / PDF / Excel / CSV / 文本` 导入解析失败原因透明返回（含文件格式/解析失败上下文）
-- `Word / PDF / Excel / CSV` 预览链路中的运行时提示、表格摘要、抽取草稿标题与格式校验错误已清理为可读中文，并补充了 `import-preview` 回归测试覆盖 CSV、仅表头 CSV、Word 文本预览和非法扩展提示
+- `Word / PDF / Excel / CSV / TXT` 预览链路中的运行时提示、表格摘要、抽取草稿标题与格式校验错误已清理为可读中文，并补充了 `import-preview` 回归测试覆盖 CSV、仅表头 CSV、Word/TXT 文本预览和非法扩展提示
 - 批量导入支持单条重试，并保留历史失败原因用于排障
 - 导入数据源可关联任务实例，后续规划输入可按任务维度追溯来源
 
 ### 2. 专题态势子模块
 
 - 二维地图 / 三维地球切换
-- 离线瓦片 / 在线底图切换
+- 离线底图 / 在线底图切换
+- 数据信息服务中的地图配置为全局配置：视图模式、底图选择、地形模式、地形夸张和天地图 token 会应用到其他地图面板
 - 平面 / 离线 DEM / 在线 DEM 切换
-- 底图自动回退：当未检测到本地离线瓦片，且天地图影像瓦片因 token、网络或上游拦截不可用时，前端会自动回退到内置网格演示底图，避免三维球只显示黑色背景
+- 默认优先使用 `apps/web/public/dem` 中的离线底图；当未检测到本地离线底图时，前端会自动尝试使用已配置的天地图 token；天地图也不可用时再回退到内置网格演示底图，避免三维球只显示黑色背景
 - 离线 DEM 模式下默认关闭 Cesium 时间光照，优先保证数据服务和专题态势工作台的可读性
 - 左键重叠目标辅助选择
 - 左键拖拽单位、命令线端点、区域顶点
@@ -192,7 +193,7 @@
   - `机降地域优化选择`
   - `作战方法自动规划`
   - `作战保障自动规划`
-- 上述 `6` 个算法当前均已有内置实现；其中 3 个算法额外登记了本地 Python 扩展实现，用户可在“流程编排 / 算法实现”下拉中切换：
+- 上述 `6` 个算法当前均已有内置实现；其中 3 个算法额外登记了本地 Python 扩展实现，用户可在“流程编排 / 算法实现”下拉中切换；`作战目标自动分配` 另在内置方法列表中接入本地 Python `intelligent-allocation / 智能分配算法`，默认方法仍保持 `multi-objective`：
   - `敌情威胁自动分析`：`基于大模型分析算法`，来自 `algorithms/enemy-threat-analysis`
   - `作战力量智能编组`：`智能编组算法`，来自 `algorithms/force-grouping`
   - `机降地域优化选择`：`机降地域优化选择 Python 算法`，来自 `algorithms/airlanding_zone`
@@ -219,8 +220,11 @@
 - `作战力量智能编组` 对本地 `CSV/Excel` 兵力文件支持按行拆解文档候选单元，即使没有结构化我方兵力，也能直接生成基础编组方案
 - `作战力量智能编组` 已预留 `约束模型` 扩展接口，当前内置默认模型为 `基础编组约束`，会输出约束得分、约束满足状态和分方案约束评估结果
 - `作战目标自动分配` 现已基于敌情威胁结果和编组结果构建平台级分配模型，不再只把编组整体当作单个平台使用
-- `作战目标自动分配` 当前内置 `匈牙利算法分配 / 蚁群协同分配 / 多目标优化分配` 三种方法，支持多平台、多目标、多波次打击包分配，并输出方案对比
+- `作战目标自动分配` 当前内置 `匈牙利算法分配 / 蚁群协同分配 / 多目标优化分配 / 智能分配算法` 四种方法，支持多平台、多目标、多波次打击包分配，并输出方案对比
+- `作战目标自动分配` 的 `智能分配算法` 来自 `algorithms/target-allocation` Python 包；后端会把上游 `enemy-threat-analysis` 与 `force-grouping` 结构化结果写入临时 JSON，再调用 `python -m target_allocation.cli --upstream-threat ... --upstream-grouping ... --objective-preference ... --validation-mode ... --max-assignments-per-group ... --output ...`，输出仍保持平台字段 `candidateTargets / platforms / groups / comparedPlans / preferredPlan / systemBestPlan / validationFindings / adjustmentSuggestions`
+- 当选择 `智能分配算法` 时，`comparedPlans` 会同时展示原三种 Node 内置方案和 Python 智能方案；`preferredPlanMethodKey` 指向 `intelligent-allocation`，`systemBestPlan` 仍按评分从全部方案中自动选择
 - `作战目标自动分配` 会结合目标重要性、打击难度、平台能力、射程利用率、编组负荷和验证模式输出合理性校核、目标覆盖摘要和调整建议
+- `作战目标自动分配` 单算法结果页现在会额外展示“作战目标分配态势”面板，复用三维球渲染蓝方编组、红方目标、部署区上下文和分配箭头，并同步展示分配清单和方案指标
 - `作战方法自动规划` 支持 `A*`、`Dijkstra`、`RRT` 三类路径规划算法，当前会优先读取 `作战目标自动分配` 的实际群组-目标-波次结果生成路线任务，再在气象、地形、电磁和敌方火力约束下执行真实路径求解，而不是固定模板航点拼接
 - `作战方法自动规划` 的输出现在包含每条路线的波次、平台上下文、检查点、时间窗、场代价和三维球约束叠加层；若上游目标分配样本未形成有效分配，则会回退到目标锚点生成基础路线任务，保证流程仍可联调
 - `作战保障自动规划` 现在要求显式配置结构化战损预测输入：
@@ -247,7 +251,7 @@
   - 本地快照：可选将当前结构化结果另存为浏览器本地快照（按登录账号隔离）用于快速回看，也可直接导出为 `JSON` 文件
 - `敌情威胁自动分析` 单算法结果页顶部现在提供 `导出分析文件` 控件：优先导出 Python 算法生成的 `DOCX` 研判报告；内置算法、关闭二次研判或历史结果没有 DOCX 时，自动回退为结构化 `JSON` 分析文件。
 - 单算法结果页的“生成文件与阶段产物”会识别已有 `DOCX / PNG / GeoJSON` 文件，并为每个生成文件和每项阶段产物单独提供 `导出文件` 控件；各算法的完整结构化输出也可独立导出为 `JSON`，历史归档无需重新执行即可使用。
-- 结果页仍会输出阶段产物、摘要、结构化规划结果和三维球可视化实体，并会额外展示规划方法对比、推荐航路表、检查点表、阶段时序以及三维威胁 / 环境约束层
+- 结果页仍会输出阶段产物、摘要、结构化规划结果和三维球可视化实体，并会额外展示目标分配态势、规划方法对比、推荐航路表、检查点表、阶段时序以及三维威胁 / 环境约束层
 - 前端已增加规划模块懒加载路由的自动恢复：如果生产环境前端刚完成重建而浏览器仍持有旧页面，点击某个规划子页面时遇到过期 chunk，会自动整页刷新一次以恢复进入
 - 作战任务库已切换为“模板实例化 + 服务端持久化编辑”：模板选择、流程步骤、算法绑定、输入配置都会绑定到任务实例并保存到服务端；再次进入同一任务实例时可恢复上述状态
 - 规划任务中的本地上传文件现已从任务配置正文中拆分为服务端任务附件：
@@ -335,12 +339,12 @@
 - 能力模块：`CAPABILITY_PYTHON_URL / CAPABILITY_CPP_URL / CAPABILITY_PYTHON_VERSION / CAPABILITY_CPP_VERSION / CAPABILITY_BUILTIN_VERSION`
 - 行动模块：`ACTION_PYTHON_URL / ACTION_CPP_URL / ACTION_PYTHON_VERSION / ACTION_CPP_VERSION / ACTION_BUILTIN_VERSION`
 - 消耗模块：`CONSUMPTION_PYTHON_URL / CONSUMPTION_CPP_URL / CONSUMPTION_PYTHON_VERSION / CONSUMPTION_CPP_VERSION / CONSUMPTION_BUILTIN_VERSION`
-- 规划模块：`PLANNING_BUILTIN_VERSION` 影响内置执行器版本；默认会通过 `algorithms/run-with-venv.mjs` 使用 `algorithms/.venv` 执行本地 Python 算法，`PLANNING_PYTHON_BIN` / `PLANNING_PYTHON_BOOTSTRAP_BIN` 可覆盖首次创建 venv 时的基础 Python；只有设置 `PLANNING_PYTHON_USE_VENV=0` 时，`PLANNING_PYTHON_BIN` 才会作为直接执行命令使用；当前已登记 `enemy-threat-analysis-local / force-grouping-local / airlanding-zone-local` 三个 active 本地 Python 变体，HTTP 外部工程仍可继续按 URL 与版本环境变量登记
+- 规划模块：`PLANNING_BUILTIN_VERSION` 影响内置执行器版本；默认会通过 `algorithms/run-with-venv.mjs` 使用 `algorithms/.venv` 执行本地 Python 算法，`PLANNING_PYTHON_BIN` / `PLANNING_PYTHON_BOOTSTRAP_BIN` 可覆盖首次创建 venv 时的基础 Python；只有设置 `PLANNING_PYTHON_USE_VENV=0` 时，`PLANNING_PYTHON_BIN` 才会作为直接执行命令使用；当前已登记 `enemy-threat-analysis-local / force-grouping-local / airlanding-zone-local` 三个 active 本地 Python 变体，`target-allocation` 作为目标分配内置方法 `intelligent-allocation` 调用本地 Python 包，HTTP 外部工程仍可继续按 URL 与版本环境变量登记
 
 说明：
 
 - 内置引擎与 active 本地 Python 引擎可直接执行；HTTP 外部引擎在未配置 URL 时会返回结构化“未接入”错误，不会再出现无意义空报错。
-- 本地 Python 算法不需要手动 `source algorithms/.venv/bin/activate`；第一次执行会自动创建 `algorithms/.venv` 并安装 `algorithms/requirements.txt`、`algorithms/enemy-threat-analysis/requirements.txt`、`algorithms/force-grouping/requirements.txt` 中的依赖。依赖文件变更后，下一次执行会自动重新同步。
+- 本地 Python 算法不需要手动 `source algorithms/.venv/bin/activate`；第一次执行会自动创建 `algorithms/.venv` 并安装 `algorithms/requirements.txt`、`algorithms/enemy-threat-analysis/requirements.txt`、`algorithms/force-grouping/requirements.txt`、`algorithms/target-allocation/requirements.txt` 中的依赖。依赖文件变更后，下一次执行会自动重新同步；在 Python 3.9 环境下，敌情分析和兵力编组会安装 `eval_type_backport`，以兼容 Pydantic 对 `list[...] | None` 等新式类型注解的解析。
 - `algorithm_call_logs` 当前用于服务端归档与排障；若要做可视化运维看板，可再补充查询接口。
 - 规划模块当前真实发送的 `module/moduleKey` 为 `intelligent-task-planning`；若外部服务想兼容旧称呼，可同时兼容 `planning-calculation`
 - 规划模块扩展实现按 `algorithms` 工程名注册；新建规划任务仍默认选择内置算法，用户可在流程编排中切换到本地 Python 变体
@@ -364,11 +368,12 @@
 当前保留并新增的能力：
 
 - 外部算法网关基础契约仍可复用，未来重新集成 HTTP 算法服务时可继续走 `algorithm-gateway-v1`
-- `algorithms/enemy-threat-analysis`、`algorithms/force-grouping`、`algorithms/airlanding_zone` 已作为本地 Python 算法登记到规划模块，但不会覆盖各算法的内置默认实现
+- `algorithms/enemy-threat-analysis`、`algorithms/force-grouping`、`algorithms/airlanding_zone` 已作为本地 Python 算法登记到规划模块，但不会覆盖各算法的内置默认实现；`algorithms/target-allocation` 已接入 `作战目标自动分配` 的内置方法列表，和原三种方法并列
 - `enemy-threat-analysis` 与 `force-grouping` 的大模型调用已同时支持外部 OpenAI-compatible API 和本地 Ollama；两类接口共用同一套抽取/解释提示词；Ollama 模式由前端独立选择，后端自动使用 `http://localhost:11434/api/chat`（或 `OLLAMA_HOST`）调用，不需要页面录入 API Key 或 URL；Python 正式算法调用使用官方 `ollama` 包的 `Client(host=..., trust_env=False)`，避免 `httpx` 读取系统代理后把 localhost API 请求导向异常路径；正式调用和 `POST /api/planning/llm/test` 测试调用都会发送 `think:false`，关闭 Qwen 3、DeepSeek R1 等可关闭的 thinking 输出；正式算法默认向 Ollama 发送 `options.num_ctx=262144`，并把本地文件片段上限放开到 200k 总字符 / 100k 单文件字符，若仍出现 502，可设置 `OLLAMA_NUM_CTX` 或 `LLM_OLLAMA_NUM_CTX` 后重启后端重试
 - `POST /api/planning/evaluate/stream` 会把本地 Python stdout/stderr 映射为 `terminal`，把 enemy/force 的 LLM stdout 片段映射为 `llm-chunk`
 - `POST /api/planning/llm/test` 用于在执行规划前测试当前 LLM 配置是否可用
 - `敌情威胁自动分析 三维结果` 面板仍能渲染通用威胁场字段，包括 `heatmapBase64`、`heatmapGeojson`、`bounds`、`targetEntities`、`pointThreatEvaluation`、`situationMap` 和 `heatmap.matrixSummary`
+- `作战目标自动分配` 的 `structuredOutput.visualization` 或 `preferredPlan.visualization` 会被单算法结果页和最终 GeoJSON 汇总读取，用于显示蓝方编组点、红方目标点、分配箭头和部署区上下文
 - `GeoJSON` 空间成果包仍会收集通用 `heatmapGeojson` 威胁场采样要素，前提是当前或未来算法结果中实际提供该字段
 
 ### 4.3 乱码与异常提示清理（T16）
@@ -587,24 +592,25 @@ npm run start
 
 ## 离线底图目录
 
-将离线瓦片放入：
+默认将离线底图瓦片放入 `apps/web/public/dem`：
 
 ```text
-apps/web/public/tiles/{z}/{x}/{y}.png
-apps/web/public/tiles/{z}/{x}/{y}.jpg
-apps/web/public/tiles/{z}/{x}/{y}.jpeg
-apps/web/public/tiles/{z}/{x}/{y}.webp
+apps/web/public/dem/{z}/{x}/{y}.png
+apps/web/public/dem/{z}/{x}/{y}.jpg
+apps/web/public/dem/{z}/{x}/{y}.jpeg
+apps/web/public/dem/{z}/{x}/{y}.webp
+apps/web/public/dem/{z}/{x}/{y}.svg
 ```
 
 示例：
 
 ```text
-apps/web/public/tiles/0/0/0.jpg
-apps/web/public/tiles/1/0/0.jpg
-apps/web/public/tiles/1/1/0.jpg
+apps/web/public/dem/0/0/0.svg
+apps/web/public/dem/1/0/0.svg
+apps/web/public/dem/1/1/0.svg
 ```
 
-如果目录中存在 `apps/web/public/tiles/tilemapresource.xml`，前端会优先读取其中元数据，并自动识别：
+如果目录中存在 `apps/web/public/dem/tilemapresource.xml`，前端会优先读取其中元数据，并自动识别：
 
 - 瓦片扩展名
 - 层级范围
@@ -648,7 +654,9 @@ apps/web/public/terrain/0/0/0.terrain
 
 ### 2. 在线 DEM / 天地图配置
 
-在 `apps/web/.env.local` 中配置：
+可以在数据信息服务的地图控制区保存天地图 `tk` 参数。该设置保存在当前浏览器本地，优先级高于 `.env`，保存后会应用到全局地图面板，不需要重启前端。
+
+也可以在 `apps/web/.env.local` 中配置默认值：
 
 ```bash
 VITE_TDT_TOKEN=你的天地图令牌
@@ -657,10 +665,10 @@ VITE_TDT_TERRAIN_URL=Cesium兼容地形服务地址
 
 说明：
 
-- `VITE_TDT_TOKEN` 用于天地图底图访问
+- 数据信息服务保存的 token 和 `VITE_TDT_TOKEN` 都用于天地图底图访问；数据信息服务中的本地设置优先生效，清空本地设置后会回退到 `.env` 默认值
 - `VITE_TDT_TERRAIN_URL` 应指向 Cesium 兼容的地形服务地址或 `layer.json`
 - 若在线 DEM 不可用，系统会自动回退到离线 DEM；若离线 DEM 也不存在，则回退到平面椭球地形
-- 若天地图影像瓦片请求返回 `418`、`403`、超时或图片加载失败，系统会自动回退到底图网格。此时右上角状态会提示天地图瓦片不可用；需要真实影像底图时，请更换可用 token、检查网络/WAF 限制，或放入本地离线瓦片目录。
+- 底图默认选择为“离线底图”。若 `apps/web/public/dem` 中未检测到可用离线底图，系统会自动尝试天地图影像；若天地图影像瓦片请求返回 `418`、`403`、超时或图片加载失败，则回退到底图网格。此时状态会提示离线底图或天地图瓦片不可用。
 
 ## 示例瓦片脚本
 
@@ -670,11 +678,11 @@ VITE_TDT_TERRAIN_URL=Cesium兼容地形服务地址
 npm run tiles:sample
 ```
 
-该命令会在 `apps/web/public/tiles` 下生成一套示例瓦片。
+该命令会在 `apps/web/public/dem` 下生成一套轻量 SVG 示例瓦片，用于离线底图流程验证；脚本可在 macOS / Windows / Linux 通过 Node.js 直接运行。
 
 如果你已经替换成自己的真实演示瓦片数据，则无需再执行该命令。
 
-说明：`apps/web/public/tiles` 属于本地生成 / 外部放置的大体量瓦片目录，当前已加入忽略规则；仓库默认不再保留历史验证用瓦片产物。需要离线底图时请重新运行示例脚本或放入自己的演示瓦片。
+说明：`apps/web/public/dem` 是当前默认离线底图目录。仓库默认只保留目录说明文件，不内置离线底图瓦片；需要离线底图时请运行示例脚本或放入自己的演示瓦片。若目录为空，系统会按规则尝试天地图 token。
 
 ## 项目结构
 
@@ -701,7 +709,8 @@ TODO.md     后续优化建议
 - 若需强制重建前端，可设置 `MISSION_FORCE_WEB_BUILD=1`
 - 规划模块核心运行时代码位于 `apps/server/src/planning-runtime.js`
 - 仓库只提交源码、测试、设计文档、示例配置和必要示例文件；`.env.example` 中只能保留占位符，真实 API key、token 和本地 `.env.*` 配置不会提交
-- `node_modules`、前端构建目录、服务端运行数据库、运行时导入数据、临时文件、算法虚拟环境、算法输出结果、源码压缩包以及本地瓦片 / DEM / terrain 资产均已加入 `.gitignore`，不要把这些可再生成或大体量本地文件当作源码维护
+- `node_modules`、前端构建目录、服务端运行数据库、运行时导入数据、临时文件、算法虚拟环境、算法输出结果、源码压缩包以及本地瓦片 / DEM / terrain 资产均已加入 `.gitignore`，不要把这些可再生成或大体量本地文件当作源码维护；`apps/web/public/dem/README.txt` 是例外，会随仓库保留为空目录说明
+- 2026-06-15 本地瘦身清理已移除前端生产构建产物、Vite 预构建缓存、生成输入材料、算法输出样例、旧算法压缩包副本、macOS `.DS_Store`、Python 字节码 / pytest 缓存和陈旧临时 pid/log；根目录 `node_modules`、`algorithms/.venv`、`apps/server/data/mission-demo.sqlite*` 和 `data-service-sources` 保留，以保证项目仍可直接运行并保留当前演示数据
 
 ## Agent 协作约束
 
@@ -741,6 +750,7 @@ TODO.md     后续优化建议
 20. 本地大体量验证产物已清理：`apps/web/dist-check-*`、`apps/web/dist-auth-check` 和历史 `apps/web/public/tiles` 已从工作区移除，并通过 `.gitignore` 防止再次混入源码维护范围。
 21. 本地瘦身清理已进一步移除可再生成产物：根目录 `node_modules`、`apps/web/dist`，以及 `apps/web/public/terrain` 下已展开后的 `terrain1.zip` 压缩包副本和 `.tmp` 临时地形目录；正式离线 DEM 运行目录仍保留。
 22. 已移除上一版 `tactical-visualizer2.0` 敌情威胁分析外部集成：规划 Python 适配服务、相关启动脚本、默认外部绑定、专属运行参数和 DOCX 二次研判导出均已删除；三维威胁场通用渲染能力继续保留。
+23. `作战目标自动分配` 已新增 `intelligent-allocation / 智能分配算法` 内置方法，调用 `algorithms/target-allocation` Python 包并在单算法结果页展示目标分配态势图层；默认方法仍为 `multi-objective`，原三种目标分配方法不被覆盖。
 
 ### 本次 review 的正向结论
 

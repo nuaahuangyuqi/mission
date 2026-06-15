@@ -271,6 +271,11 @@ const mapEntities = computed(() => {
   }
   return mergeEntities(safeArray(mapData.value.entities), derivedThreatEntities);
 });
+const targetAllocationPanel = computed(() => buildTargetAllocationPanel(
+  currentStep.value,
+  currentOutput.value,
+  mapData.value,
+));
 const objectSections = computed(() => buildObjectSections(currentStep.value, currentOutput.value));
 const tableSections = computed(() => buildTableSections(currentStep.value, currentOutput.value));
 const formattedStructuredOutput = computed(() => JSON.stringify(currentOutput.value || {}, null, 2));
@@ -927,6 +932,27 @@ function truncateText(value, limit = 180) {
   return `${text.slice(0, Math.max(0, limit - 1)).trim()}…`;
 }
 
+function normalizePercentValue(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return null;
+  const percent = number > 0 && number <= 1 ? number * 100 : number;
+  return Number(percent.toFixed(1));
+}
+
+function resolveTargetAllocationCoverage(plan = {}) {
+  const metrics = safeObject(plan.metrics);
+  const stats = safeObject(plan.stats);
+  const objectives = safeObject(plan.objectives);
+  return normalizePercentValue(
+    metrics.targetCoverageRate
+      ?? metrics.coverageRate
+      ?? stats.fullCoverRate
+      ?? stats.coverRate
+      ?? objectives.fullCoverRate
+      ?? objectives.partialCoverRate,
+  );
+}
+
 function buildMetricCards(step, output) {
   const algorithmId = step?.algorithm?.id || '';
   if (algorithmId === 'enemy-threat-analysis') {
@@ -946,11 +972,12 @@ function buildMetricCards(step, output) {
     ];
   }
   if (algorithmId === 'target-allocation') {
+    const coverage = resolveTargetAllocationCoverage(output.preferredPlan);
     return [
       ['推荐方案', output.preferredPlan?.name || '--'],
       ['方案得分', output.preferredPlan?.score ?? '--'],
       ['分配数量', output.preferredPlan?.assignments?.length || 0],
-      ['目标覆盖', output.preferredPlan?.metrics?.targetCoverageRate ? `${output.preferredPlan.metrics.targetCoverageRate}%` : '--'],
+      ['目标覆盖', coverage === null ? '--' : `${formatValue(coverage)}%`],
     ];
   }
   if (algorithmId === 'airborne-landing-site-selection') {
@@ -983,6 +1010,51 @@ function buildMetricCards(step, output) {
     ['结果字段', Object.keys(output || {}).length],
     ['预览条目', previewItems.value.length],
   ];
+}
+
+function buildTargetAllocationPanel(step, output = {}, visualization = {}) {
+  if (step?.algorithm?.id !== 'target-allocation') return null;
+  const preferredPlan = safeObject(output.preferredPlan);
+  const assignments = safeArray(preferredPlan.assignments);
+  const comparedPlans = safeArray(output.comparedPlans).map((plan) => {
+    const coverage = resolveTargetAllocationCoverage(plan);
+    return {
+      key: plan.methodKey || plan.id || plan.name,
+      methodLabel: plan.methodLabel || plan.name || plan.methodKey || '--',
+      methodKey: plan.methodKey || '--',
+      score: formatValue(plan.score),
+      coverage: coverage === null ? '--' : `${formatValue(coverage)}%`,
+      assignmentCount: safeArray(plan.assignments).length,
+      isPreferred: String(plan.methodKey || '') === String(output.preferredPlanMethodKey || preferredPlan.methodKey || ''),
+      isSystemBest: String(plan.methodKey || '') === String(output.systemBestPlanMethodKey || ''),
+    };
+  });
+  const entities = safeArray(visualization.entities);
+  const environment = safeArray(visualization.environment);
+  if (!Object.keys(preferredPlan).length && !assignments.length && !comparedPlans.length && !entities.length && !environment.length) {
+    return null;
+  }
+
+  const assignmentArrows = entities.filter((item) => String(item.id || '').startsWith('allocation-order-')).length;
+  const coverage = resolveTargetAllocationCoverage(preferredPlan);
+  return {
+    methodLabel: output.builtinMethodLabel || preferredPlan.methodLabel || '--',
+    score: formatValue(preferredPlan.score),
+    assignmentCount: assignments.length,
+    targetCount: safeArray(output.candidateTargets).length,
+    groupCount: safeArray(output.groups).length,
+    coverage: coverage === null ? '--' : `${formatValue(coverage)}%`,
+    entities,
+    environment,
+    comparedPlans,
+    assignments: assignments.slice(0, 8),
+    statCards: [
+      ['执行方法', output.builtinMethodLabel || preferredPlan.methodLabel || '--'],
+      ['推荐评分', formatValue(preferredPlan.score)],
+      ['目标覆盖', coverage === null ? '--' : `${formatValue(coverage)}%`],
+      ['分配箭头', assignmentArrows || assignments.length],
+    ],
+  };
 }
 
 function resolveVisualization(output) {
@@ -1309,6 +1381,89 @@ function handleDownloadFile(file) {
         :output="currentOutput"
       />
 
+      <article
+        v-if="targetAllocationPanel"
+        class="capability-stage-card planning-target-allocation-panel top-gap"
+      >
+        <div class="section-heading compact">
+          <div>
+            <h3>作战目标分配态势</h3>
+            <p>展示蓝方编组、红方目标、分配箭头、分配清单和方案指标。</p>
+          </div>
+        </div>
+
+        <div class="stats-strip compact-grid four-up">
+          <div v-for="item in targetAllocationPanel.statCards" :key="item[0]" class="mini-stat">
+            <span>{{ item[0] }}</span>
+            <strong>{{ item[1] }}</strong>
+          </div>
+        </div>
+
+        <PlanningThreatMapPanel
+          v-if="targetAllocationPanel.entities.length || targetAllocationPanel.environment.length"
+          class="top-gap planning-target-allocation-map"
+          title="作战目标分配态势"
+          description="蓝方编组、红方目标和分配箭头来自当前目标分配结构化结果。"
+          :entities="targetAllocationPanel.entities"
+          :environment="targetAllocationPanel.environment"
+          :threat-field="null"
+        />
+
+        <div class="planning-result-two-column top-gap">
+          <article class="detail-card">
+            <span class="eyebrow">方案指标</span>
+            <div v-if="targetAllocationPanel.comparedPlans.length" class="table-shell compact-table top-gap">
+              <table>
+                <thead>
+                  <tr>
+                    <th>方法</th>
+                    <th>评分</th>
+                    <th>覆盖</th>
+                    <th>分配</th>
+                    <th>标记</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr v-for="plan in targetAllocationPanel.comparedPlans" :key="plan.key">
+                    <td>{{ plan.methodLabel }}</td>
+                    <td>{{ plan.score }}</td>
+                    <td>{{ plan.coverage }}</td>
+                    <td>{{ plan.assignmentCount }}</td>
+                    <td>
+                      <span v-if="plan.isPreferred" class="pill pill-active">当前推荐</span>
+                      <span v-else-if="plan.isSystemBest" class="pill pill-muted">系统最优</span>
+                      <span v-else class="pill pill-muted">{{ plan.methodKey }}</span>
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            <p v-else class="muted-text top-gap">当前结果未返回可对比方案。</p>
+          </article>
+
+          <article class="detail-card">
+            <span class="eyebrow">分配清单</span>
+            <div v-if="targetAllocationPanel.assignments.length" class="planning-target-allocation-list top-gap">
+              <article
+                v-for="(assignment, index) in targetAllocationPanel.assignments"
+                :key="assignment.id || `${assignment.groupId}-${assignment.targetId}-${index}`"
+                class="planning-target-allocation-item"
+              >
+                <strong>{{ assignment.groupName || assignment.platformName || assignment.platformId || '编组' }} -> {{ assignment.targetName || assignment.targetId || '目标' }}</strong>
+                <p>
+                  波次 {{ assignment.wave || '--' }} /
+                  匹配 {{ assignment.matchScore ?? '--' }} /
+                  可行性 {{ assignment.feasibilityScore ?? '--' }} /
+                  距离 {{ assignment.distanceKm ?? '--' }} km
+                </p>
+                <small>{{ assignment.reason || assignment.summary || '结构化分配项' }}</small>
+              </article>
+            </div>
+            <p v-else class="muted-text top-gap">当前推荐方案未返回分配清单。</p>
+          </article>
+        </div>
+      </article>
+
       <div class="planning-result-two-column top-gap">
         <article class="detail-card">
           <span class="eyebrow">结果预览</span>
@@ -1341,7 +1496,7 @@ function handleDownloadFile(file) {
       </div>
 
       <PlanningThreatMapPanel
-        v-if="mapEntities.length || mapData.environment?.length || threatFieldPanel"
+        v-if="!targetAllocationPanel && (mapEntities.length || mapData.environment?.length || threatFieldPanel)"
         class="top-gap"
         :title="`${currentStep.algorithm.name} 三维结果`"
         description=""

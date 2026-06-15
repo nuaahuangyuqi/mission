@@ -1,6 +1,6 @@
 pydantic>=2.0
+eval_type_backport
 python-docx>=1.0
 pypdf>=4.0
 openpyxl>=3.1
 pytest>=8.0
-

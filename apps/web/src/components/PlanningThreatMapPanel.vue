@@ -1,6 +1,12 @@
 <script setup>
 import { computed, reactive, ref } from 'vue';
 import CesiumGlobe from './CesiumGlobe.vue';
+import {
+  globalBasemap,
+  globalMapMode,
+  globalTerrainExaggeration,
+  globalTerrainMode,
+} from '../config/mapSettings';
 
 const props = defineProps({
   title: { type: String, default: '威胁态势三维展示' },
@@ -384,10 +390,10 @@ const hasThreatField = computed(() => Boolean(Object.keys(threatFieldData.value)
             :entities="filteredEntities"
             :environment="filteredEnvironment"
             :image-overlays="heatmapOverlay"
-            basemap="auto"
-            map-mode="3D"
-            terrain-mode="offline"
-            :terrain-exaggeration="1"
+            :basemap="globalBasemap"
+            :map-mode="globalMapMode"
+            :terrain-mode="globalTerrainMode"
+            :terrain-exaggeration="globalTerrainExaggeration"
             :layer-visibility="layerVisibility"
             :draw-tool="inactiveDrawTool"
             :active-entity-id="selectedEntityId"
@@ -437,10 +443,10 @@ const hasThreatField = computed(() => Boolean(Object.keys(threatFieldData.value)
       v-else
       :entities="entities"
       :environment="environment"
-      basemap="auto"
-      map-mode="3D"
-      terrain-mode="offline"
-      :terrain-exaggeration="1"
+      :basemap="globalBasemap"
+      :map-mode="globalMapMode"
+      :terrain-mode="globalTerrainMode"
+      :terrain-exaggeration="globalTerrainExaggeration"
       :layer-visibility="layerVisibility"
       :draw-tool="inactiveDrawTool"
       active-entity-id=""

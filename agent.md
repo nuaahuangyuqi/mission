@@ -1,6 +1,6 @@
 ﻿# Agent Memory
 
-Updated: 2026-06-05
+Updated: 2026-06-15
 
 Purpose: keep a handoff-ready memory for future agents working on the data-service, planning, and calculation modules.
 
@@ -14,6 +14,156 @@ Purpose: keep a handoff-ready memory for future agents working on the data-servi
 - After any code change, the agent must update both `agent.md` and `README.md` before finishing the task.
 
 ## Current Status
+
+Git ignore review and repository handoff sync completed on 2026-06-15:
+
+- Files:
+  - `.gitignore`
+  - `apps/web/public/dem/README.txt`
+  - `apps/web/.env.example`
+  - `TODO.md`
+  - `README.md`
+  - `agent.md`
+- Notes:
+  - `.gitignore` continues to ignore dependency folders, build outputs, local databases, import data, generated input docs, temp files, local map/terrain assets, Python virtual environments/caches, algorithm result artifacts, archives, OS files, and local Codex caches.
+  - Added explicit exceptions so `apps/web/public/dem/README.txt` can be tracked while generated or user-provided offline basemap/DEM files under `apps/web/public/dem` remain ignored.
+  - Restored tracked project metadata files `apps/web/.env.example` and `TODO.md`; README still references both, and `.env.example` contains only the placeholder TianDiTu token.
+  - `git ls-files -ci --exclude-standard` reported no tracked files hidden by ignore rules before this note was added.
+- Verification:
+  - `git status --ignored --short` was reviewed; ignored local-only items included `.DS_Store`, `algorithms/.venv`, runtime database files, `data-service-sources`, `node_modules`, and algorithm `result*.json` outputs.
+  - `find apps/web/public -maxdepth 4 -type f` found only `apps/web/public/dem/README.txt` under the local public asset directory at review time.
+  - `git check-ignore -v apps/web/public/dem/README.txt apps/web/public/dem/0/0/0.svg algorithms/force-grouping/result.json apps/web/.env.local apps/web/.env.example` confirmed the README exception, continued ignore for generated DEM tiles, continued ignore for algorithm result JSON, continued ignore for local env files, and no ignore match for `.env.example`.
+  - `PATH=/opt/homebrew/bin:$PATH /opt/homebrew/bin/npm test --workspace @mission/server`: 19 passed.
+  - `PATH=/opt/homebrew/bin:$PATH /opt/homebrew/bin/npm run build --workspace @mission/web`: passed; Vite still reports the existing large chunk warning.
+  - `PATH=/opt/homebrew/bin:$PATH /opt/homebrew/bin/node algorithms/run-with-venv.mjs -m pytest algorithms/enemy-threat-analysis/tests/test_enemy_threat_analysis.py algorithms/force-grouping/tests/test_force_grouping.py algorithms/target-allocation/tests/test_target_allocation.py -q`: 69 passed.
+- Remaining risk:
+  - Real offline basemap, terrain, runtime database, and imported source payloads remain intentionally local and will not be pushed; clone users must regenerate or provide those assets/data when needed.
+
+Redundant local artifact cleanup completed on 2026-06-15:
+
+- Removed:
+  - `apps/web/dist`
+  - `apps/web/node_modules`
+  - `generated-input-docs`
+  - `algorithms/enemy-threat-analysis/outputs`
+  - `algorithms/force-grouping/force_grouping.zip`
+  - `tmp/mission-vite.log`
+  - stale `tmp/mission-vite.pid`, then empty `tmp`
+  - macOS `.DS_Store` files under the workspace
+  - Python `__pycache__` and `.pytest_cache` directories outside `algorithms/.venv`
+- Preserved:
+  - root `node_modules`, so the project can still run without reinstalling JS dependencies
+  - `algorithms/.venv`, because the planning Python algorithms depend on the installed virtual environment
+  - `apps/server/data/mission-demo.sqlite*`, because this is current runtime/demo data
+  - `data-service-sources`, because it stores current data-service source payloads
+  - `apps/web/public/dem/README.txt`; the default offline-basemap directory remains otherwise empty
+- Verification:
+  - `find` scans excluding root `node_modules` and `algorithms/.venv` found no remaining `.DS_Store`, `__pycache__`, `.pytest_cache`, `.vite`, `dist`, archive, log, temp, or Python bytecode artifacts.
+  - Remaining large files outside dependencies are only `apps/server/data/mission-demo.sqlite` and its WAL file; these were intentionally kept.
+  - Ports `5173` and `3100` were still held by running Node processes after cleanup.
+- Remaining risk:
+  - `apps/web/dist` was intentionally removed as a generated build artifact; production start will rebuild or require a new `npm run build --workspace @mission/web` if a prebuilt client is desired.
+
+Global map configuration and `/dem` offline-basemap path completed on 2026-06-14:
+
+- Files:
+  - `package.json`
+  - `scripts/generate-sample-tiles.mjs`
+  - `scripts/download-sample-tiles.mjs`
+  - `scripts/generate-sample-tiles.ps1`
+  - `apps/web/src/components/CesiumGlobe.vue`
+  - `apps/web/src/config/mapSettings.js`
+  - `apps/web/src/components/ResourceWorkbench.vue`
+  - `apps/web/src/components/SituationWorkbench.vue`
+  - `apps/web/src/components/PlanningThreatMapPanel.vue`
+  - `apps/web/src/views/HomeView.vue`
+  - `apps/web/src/styles.css`
+  - `README.md`
+  - `agent.md`
+- Notes:
+  - The user changed the basemap requirement after the temporary sample-tile pass: do not use `apps/web/public/tiles`; use `apps/web/public/dem` as the default offline-basemap storage path, leave it empty unless the user provides tiles, and fall back to TianDiTu when offline basemap tiles are unavailable.
+  - `apps/web/public/tiles` is absent; `apps/web/public/dem` currently contains only `README.txt`. No sample tiles were regenerated after the requirement change.
+  - `CesiumGlobe.vue` now probes `/dem/tilemapresource.xml` and `/dem/0/0/0.{png,jpg,jpeg,webp,svg}` for offline basemap imagery, and uses `/dem/{z}/{x}/{y}` as the imagery template.
+  - The default global basemap setting is `offline`; if `/dem` has no offline basemap tiles, the map tries the configured TianDiTu token and only falls back to the grid demo when TianDiTu is also unavailable.
+  - `mapSettings.js` now owns global map preferences: `basemap`, `mapMode`, `terrainMode`, `terrainExaggeration`, and the runtime TianDiTu token. These settings persist in browser local storage and are shared by data-service resource maps, data-service situation maps, and planning threat/result maps.
+  - The homepage TianDiTu token card was removed per the changed flow. TianDiTu token configuration now appears inside the data-service map controls and still falls back to `VITE_TDT_TOKEN` when the local setting is cleared.
+  - Optional sample/download tile scripts now write to `apps/web/public/dem` instead of `apps/web/public/tiles`; they were syntax-checked but not run, so the `/dem` folder remains empty.
+- Verification:
+  - `PATH=/opt/homebrew/bin:$PATH /opt/homebrew/bin/node --check scripts/generate-sample-tiles.mjs && PATH=/opt/homebrew/bin:$PATH /opt/homebrew/bin/node --check scripts/download-sample-tiles.mjs`: passed.
+  - `PATH=/opt/homebrew/bin:$PATH /opt/homebrew/bin/npm run build --workspace @mission/web`: passed; Vite still reports the existing large chunk warning.
+  - `rg -n "/tiles|public/tiles|apps/web/public/tiles|离线瓦片" apps/web/src scripts package.json`: no matches.
+  - `find apps/web/public/tiles ...`: no directory/files; `find apps/web/public/dem ...`: only `apps/web/public/dem/README.txt`.
+  - Browser QA on `http://localhost:5173/data-service` confirmed the resource map defaults to active `离线底图`, has one TianDiTu token input, renders a Cesium canvas, and reports `未检测到离线底图，天地图瓦片也不可用，已回退到网格演示底图。` in the no-token/no-offline case.
+  - Browser QA saved a temporary token in the data-service token control, confirmed the local status and masked token display, then cleared it and confirmed the UI returned to `未配置`.
+  - Browser QA confirmed the situation tab also shows the token input and uses the same active `离线底图` / `离线 DEM` configuration.
+  - Browser QA toggled `二维地图` in the situation tab, switched back to the resource tab, confirmed `二维地图` propagated globally, then restored `三维地球`.
+- Remaining risk:
+  - `apps/web/public/dem` is intentionally empty, so the current no-token path ends at the grid demo. Real basemap imagery requires placing tiles under `/dem` or saving a valid TianDiTu token in data service / `.env`.
+  - Layer-visibility toggles remain local to each map context; the globalized configuration covers view mode, basemap, terrain mode, terrain exaggeration, and TianDiTu token.
+
+Planning TXT upload support and algorithm venv setup completed on 2026-06-14:
+
+- Files:
+  - `apps/server/src/import-preview.js`
+  - `apps/server/src/import-preview.test.js`
+  - `apps/server/src/planning-runtime.js`
+  - `apps/server/src/planning-runtime.support.test.js`
+  - `apps/web/src/views/planning/PlanningAlgorithmsStep.vue`
+  - `algorithms/enemy-threat-analysis/requirements.txt`
+  - `algorithms/force-grouping/requirements.txt`
+  - `README.md`
+  - `agent.md`
+- Notes:
+  - Fixed the planning upload normalization path that accepted `.txt` in the frontend but rejected it during execution as “only Word/PDF/Excel/CSV”.
+  - `normalizeImportedPreview` now supports a `text` import type for `.txt/.text/.md/.markdown`, producing the same document preview/extraction-draft contract used by planning evidence fusion.
+  - `resolveImportedFileType` now maps text extensions to `text`, so built-in enemy-threat and force-grouping planning steps can consume TXT uploads.
+  - The planning algorithm library upload label now says `上传 Word / PDF / Excel / CSV / TXT`.
+  - The project algorithm virtual environment is installed at `algorithms/.venv`; dependency sync via `algorithms/run-with-venv.mjs` completed successfully with Python `3.9.6`.
+  - Follow-up fix: Python `3.9.6` with Pydantic v2 failed to evaluate annotations such as `list[float] | None`; added `eval_type_backport` to enemy-threat and force-grouping requirements and resynced `algorithms/.venv`.
+- Verification:
+  - `node --check apps/server/src/import-preview.js && node --check apps/server/src/planning-runtime.js && node --check apps/server/src/planning-runtime.support.test.js`: passed.
+  - `npm test --workspace @mission/server`: 19 passed, including TXT import preview and TXT-only enemy-threat planning execution.
+  - `node algorithms/run-with-venv.mjs -c "import sys, numpy, pyproj, ollama, pydantic, docx, pypdf, openpyxl, PIL; ..."`: passed and printed `algorithm venv dependencies ready`.
+  - `node algorithms/run-with-venv.mjs -c "import eval_type_backport; from enemy_threat_analysis.schemas import ThreatExtractionJson; from force_grouping.schemas import ForceExtractionJson; ..."`: passed after dependency sync.
+  - `node algorithms/run-with-venv.mjs -m pytest algorithms/enemy-threat-analysis/tests/test_enemy_threat_analysis.py algorithms/force-grouping/tests/test_force_grouping.py -q`: 46 passed.
+  - `node algorithms/run-with-venv.mjs - <<'PY' ... analyze(files=[sample_enemy_report.txt], extraction_json=mock, generate_assessment=False) ... PY`: passed and confirmed `.txt` import through the enemy-threat package.
+  - `npm run build --workspace @mission/web`: passed; Vite still reports the existing large chunk warning.
+  - Running dev stack auto-restarted backend on `http://localhost:3100` and hot-updated frontend on `http://localhost:5173`; both ports remained listening.
+- Remaining risk:
+  - Live LLM extraction with a real model/key was not run in this pass; validation covers local parsing, built-in planning execution, dependency installation, and frontend build.
+
+Target allocation intelligent method integration completed on 2026-06-12:
+
+- Files:
+  - `algorithms/target-allocation/**`
+  - `algorithms/run-with-venv.mjs`
+  - `apps/server/src/planning-runtime.js`
+  - `apps/server/src/planning-runtime.support.test.js`
+  - `apps/web/src/views/planning/PlanningTaskExecutionResultStep.vue`
+  - `apps/web/src/styles.css`
+  - `algorithms/README.md`
+  - `README.md`
+  - `agent.md`
+- Notes:
+  - `target_allocation.zip` was integrated into the platform copy at `algorithms/target-allocation/`; the pure algorithm repository was not modified.
+  - `algorithms/run-with-venv.mjs` now syncs `algorithms/target-allocation/requirements.txt` and adds `algorithms/target-allocation` to `PYTHONPATH`.
+  - `作战目标自动分配` now has a fourth builtin method, `intelligent-allocation / 智能分配算法`, alongside `hungarian / ant-colony / multi-objective`; the default remains `multi-objective`.
+  - Selecting `intelligent-allocation` writes upstream `enemy-threat-analysis` and `force-grouping` outputs to temporary JSON files and runs `python -m target_allocation.cli --upstream-threat ... --upstream-grouping ... --objective-preference ... --validation-mode ... --max-assignments-per-group ... --output ...`.
+  - The platform result contract remains `candidateTargets / platforms / groups / comparedPlans / preferredPlan / systemBestPlan / validationFindings / adjustmentSuggestions`; the intelligent branch also adds `visualization` under the structured output and preferred plan.
+  - When the intelligent method is selected, `comparedPlans` includes the three existing Node plans plus the Python intelligent plan. `preferredPlanMethodKey` is `intelligent-allocation`; `systemBestPlan` is still selected by score across all compared plans.
+  - The single-algorithm result page now renders a target-allocation-specific `作战目标分配态势` panel with blue groups, red targets, assignment arrows, compared-plan metrics, and assignment cards. Coverage display accepts Python-style `stats.fullCoverRate / stats.coverRate / objectives.partialCoverRate` as well as the older `metrics.targetCoverageRate`.
+- Verification:
+  - `node --check apps/server/src/planning-runtime.js`: passed.
+  - `node --check apps/server/src/planning-runtime.support.test.js`: passed.
+  - `node algorithms/run-with-venv.mjs -m pytest algorithms/target-allocation/tests/test_target_allocation.py -q`: 23 passed.
+  - `npm test --workspace @mission/server`: 17 passed.
+  - `npm run build --workspace @mission/web`: passed; Vite still reports the existing large chunk warning.
+  - Browser QA on `http://localhost:5173/planning/algorithms` confirmed `作战目标自动分配` lists `匈牙利算法分配 / 蚁群协同分配 / 多目标优化分配 / 智能分配算法`, and the selected default remains `多目标优化分配`.
+  - Browser QA on a temporary archived result for task 59 confirmed the single-algorithm result page renders `作战目标分配态势`, method `智能分配算法`, 100% coverage, 7 assignment arrows, four compared plans, and assignment cards. QA task instances 58 and 59 were archived after validation.
+  - Browser console check for the target allocation result page returned no warning/error entries before the mobile-width smoke attempt.
+- Remaining risk:
+  - The visualization depends on upstream coordinates; if threat/grouping outputs lack coordinates, the result remains structurally valid but map entities may be partial.
+  - A mobile-width screenshot attempt on the Cesium result page timed out and then the route returned to login on reload, so mobile visual QA remains limited to build coverage and desktop DOM/screenshot validation.
 
 Planning Ollama official-client refactor completed on 2026-06-05:
 

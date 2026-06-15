@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   __planningRuntimeTestHooks,
   evaluatePlanning,
@@ -8,7 +11,55 @@ import {
   validatePlanning,
 } from './planning-runtime.js';
 
-const { buildSupportPlan, normalizeSupportPlanningOptions } = __planningRuntimeTestHooks;
+const {
+  buildSupportPlan,
+  normalizeSupportPlanningOptions,
+  runBuiltinTargetAllocation,
+} = __planningRuntimeTestHooks;
+const CURRENT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(CURRENT_DIR, '../../..');
+
+function readRepoJson(...parts) {
+  return JSON.parse(fs.readFileSync(path.join(REPO_ROOT, ...parts), 'utf-8'));
+}
+
+function cloneJson(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function withTargetAllocationCoordinates(threatOutput, forceGrouping) {
+  const threat = cloneJson(threatOutput);
+  const grouping = cloneJson(forceGrouping);
+  const targetPositions = {
+    targetAssessments: [[118.105, 32.042, 0]],
+    fireCoverage: [[118.105, 32.042, 0]],
+    airDefenseSystem: [[118.228, 31.968, 0]],
+    reconEarlyWarning: [[118.036, 31.906, 0]],
+    antiAirborneFacilities: [[118.308, 32.082, 0]],
+  };
+  for (const [key, coordinates] of Object.entries(targetPositions)) {
+    (threat[key] || []).forEach((item, index) => {
+      const coordinate = coordinates[index] || coordinates[0];
+      item.center = coordinate;
+      item.coordinates = coordinate;
+    });
+  }
+
+  const groupPositions = [
+    [117.682, 31.808, 0],
+    [117.744, 31.936, 0],
+    [117.818, 31.742, 0],
+    [117.902, 32.012, 0],
+  ];
+  (grouping.preferredScheme?.groups || []).forEach((group, index) => {
+    const coordinate = groupPositions[index] || groupPositions[groupPositions.length - 1];
+    group.coordinates = coordinate;
+    (group.units || []).forEach((unit) => {
+      unit.location = unit.location || coordinate;
+    });
+  });
+  return { threat, grouping };
+}
 
 test('planning template registers three active local Python algorithm variants', () => {
   const template = getPlanningTemplate();
@@ -27,6 +78,67 @@ test('planning template registers three active local Python algorithm variants',
     assert.equal(variant.status, 'active');
     assert.ok(variant.parameterSchema.length > 0);
   }
+});
+
+test('target allocation builtin methods include intelligent allocation without changing default', () => {
+  const template = getPlanningTemplate();
+  const algorithm = template.algorithms.find((item) => item.id === 'target-allocation');
+  assert.ok(algorithm);
+  assert.equal(algorithm.defaultConfig.builtinMethodKey, 'multi-objective');
+  assert.deepEqual(
+    algorithm.builtinMethods.map((item) => item.key),
+    ['hungarian', 'ant-colony', 'multi-objective', 'intelligent-allocation'],
+  );
+  assert.equal(
+    algorithm.builtinMethods.find((item) => item.key === 'intelligent-allocation')?.label,
+    '智能分配算法',
+  );
+});
+
+test('intelligent target allocation returns platform contract and visualization entities', async () => {
+  const template = getPlanningTemplate();
+  const algorithm = template.algorithms.find((item) => item.id === 'target-allocation');
+  const { threat, grouping } = withTargetAllocationCoordinates(
+    readRepoJson('algorithms', 'force-grouping', 'docs', 'sample_enemy_threat_output.json'),
+    readRepoJson('algorithms', 'force-grouping', 'result.json'),
+  );
+  const result = await runBuiltinTargetAllocation(
+    {
+      stageOutputs: {
+        'enemy-threat-analysis': threat,
+        'force-grouping': grouping,
+      },
+    },
+    { id: 'step-target-allocation', name: '作战目标自动分配' },
+    algorithm,
+    {
+      builtinMethodKey: 'intelligent-allocation',
+      options: {
+        objectivePreference: 'balanced',
+        validationMode: 'strict',
+        maxAssignmentsPerGroup: 2,
+      },
+    },
+    {},
+  );
+
+  const output = result.structuredOutput;
+  assert.equal(output.builtinMethodKey, 'intelligent-allocation');
+  assert.equal(output.builtinMethodLabel, '智能分配算法');
+  assert.equal(output.preferredPlanMethodKey, 'intelligent-allocation');
+  assert.deepEqual(
+    output.comparedPlans.map((item) => item.methodKey),
+    ['hungarian', 'ant-colony', 'multi-objective', 'intelligent-allocation'],
+  );
+  assert.ok(output.candidateTargets.length > 0);
+  assert.ok(output.groups.length > 0);
+  assert.ok(output.preferredPlan.assignments.length > 0);
+  assert.ok(output.visualization.entities.some((item) => String(item.id).startsWith('allocation-group-')));
+  assert.ok(output.visualization.entities.some((item) => String(item.id).startsWith('allocation-target-')));
+  assert.ok(output.visualization.entities.some((item) => String(item.id).startsWith('allocation-order-')));
+  assert.equal(output.preferredPlan.visualization, output.visualization);
+  assert.ok(Array.isArray(output.validationFindings));
+  assert.ok(output.systemBestPlanMethodKey);
 });
 
 test('local Python LLM parameter schema supports external API and Ollama backends', () => {
@@ -375,6 +487,52 @@ test('evaluatePlanning surfaces dependency validation errors for support-only ta
     }),
     /缺少上游步骤产物/,
   );
+});
+
+test('enemy threat planning accepts uploaded txt files', async () => {
+  const result = await evaluatePlanning({
+    assessmentName: 'TXT 敌情材料规划测试',
+    taskDefinition: {
+      id: 'threat-txt-upload-review',
+      name: 'TXT 敌情材料规划测试',
+      category: 'review',
+      steps: [
+        {
+          id: 'step-threat-analysis',
+          order: 1,
+          name: '敌情威胁自动分析',
+          algorithmId: 'enemy-threat-analysis',
+          objective: 'review',
+          consumes: ['本地文件'],
+          produces: ['威胁模型'],
+        },
+      ],
+    },
+    bindings: {
+      'step-threat-analysis': 'enemy-threat-analysis:builtin',
+    },
+    algorithmInputs: {
+      'enemy-threat-analysis': {
+        builtinMethodKey: 'knowledge-fusion',
+        selectedSourceIds: [],
+        uploadedFiles: [
+          {
+            fileName: 'enemy-report.txt',
+            fileExtension: '.txt',
+            fileContentBase64: Buffer.from('敌方防空节点位于北侧高地。\n火力覆盖半径约 8 公里。', 'utf8').toString('base64'),
+          },
+        ],
+        options: {},
+      },
+    },
+  });
+
+  assert.equal(result.execution.summary.completedSteps, 1);
+  const output = result.execution.steps[0].structuredOutput;
+  assert.equal(output.inputSummary.uploadedFileCount, 1);
+  assert.equal(output.importedFiles[0].fileName, 'enemy-report.txt');
+  assert.equal(output.importedFiles[0].fileExtension, '.txt');
+  assert.match(output.importedFiles[0].summary, /防空节点/);
 });
 
 test('enemy threat analysis requires an explicit selected source or uploaded file', async () => {

@@ -3,6 +3,21 @@ import { computed, reactive, ref, watch } from 'vue';
 import CesiumGlobe from './CesiumGlobe.vue';
 import { exportKml, exportViewerToPdf, exportViewerToPng } from '../utils/exporters';
 import { commandStyles, detectionSensorTypes, unitTypeGroups, zoneShapes } from '../data/situationCatalog';
+import {
+  clearLocalTiandituToken,
+  globalBasemap,
+  globalMapMode,
+  globalTerrainExaggeration,
+  globalTerrainMode,
+  maskToken,
+  saveTiandituToken,
+  setGlobalBasemap,
+  setGlobalMapMode,
+  setGlobalTerrainExaggeration,
+  setGlobalTerrainMode,
+  tiandituToken,
+  tiandituTokenSource,
+} from '../config/mapSettings';
 
 const props = defineProps({
   entities: { type: Array, default: () => [] },
@@ -14,10 +29,13 @@ const emit = defineEmits(['create-entity', 'update-entity', 'delete-entity']);
 
 const globeRef = ref(null);
 const mapStageRef = ref(null);
-const basemap = ref('auto');
-const mapMode = ref('3D');
-const terrainMode = ref('offline');
-const terrainExaggeration = ref(1);
+const basemap = globalBasemap;
+const mapMode = globalMapMode;
+const terrainMode = globalTerrainMode;
+const terrainExaggeration = globalTerrainExaggeration;
+const tiandituTokenDraft = ref(tiandituToken.value);
+const tiandituTokenVisible = ref(false);
+const tiandituTokenMessage = ref('');
 const activeMeasurementMode = ref('');
 const activeEntityId = ref('');
 const drawStepCount = ref(0);
@@ -68,6 +86,15 @@ const entityStats = computed(() => ({
 }));
 
 const filteredExportEntities = computed(() => props.entities.filter((item) => item.visible && isEntityVisible(item)));
+const effectiveTiandituTokenLabel = computed(() => maskToken(tiandituToken.value));
+const tiandituTokenSourceLabel = computed(() => {
+  if (tiandituTokenSource.value === 'local') return '数据信息服务已设置';
+  if (tiandituTokenSource.value === 'env') return '.env 默认值';
+  return '未配置';
+});
+const tiandituTokenStatusClass = computed(() => (
+  tiandituToken.value ? 'pill-active' : 'pill-warn'
+));
 
 function clampTerrainExaggeration(value) {
   const numeric = Number(value);
@@ -76,8 +103,28 @@ function clampTerrainExaggeration(value) {
 }
 
 function setTerrainExaggeration(value) {
-  terrainExaggeration.value = clampTerrainExaggeration(value);
+  setGlobalTerrainExaggeration(clampTerrainExaggeration(value));
 }
+
+function saveMapTiandituToken() {
+  const effectiveToken = saveTiandituToken(tiandituTokenDraft.value);
+  tiandituTokenDraft.value = effectiveToken;
+  tiandituTokenMessage.value = effectiveToken
+    ? '天地图 token 已保存，离线底图不存在时会自动使用该 token。'
+    : '天地图 token 已清空，离线底图不存在时将回退到网格演示。';
+}
+
+function clearMapTiandituToken() {
+  const effectiveToken = clearLocalTiandituToken();
+  tiandituTokenDraft.value = effectiveToken;
+  tiandituTokenMessage.value = effectiveToken
+    ? '已清空本地 token，当前恢复使用 .env 默认值。'
+    : '已清空本地 token，当前未配置天地图。';
+}
+
+watch(tiandituToken, (value) => {
+  tiandituTokenDraft.value = value;
+});
 
 watch(() => props.entities, (list) => {
   if (!list.length) {
@@ -688,25 +735,46 @@ function handleMeasurementStateChange(state) {
       <div class="panel-group top-gap">
         <h4>视图模式</h4>
         <div class="segmented-row">
-          <button class="segmented" :class="{ active: mapMode === '3D' }" @click="mapMode = '3D'">三维地球</button>
-          <button class="segmented" :class="{ active: mapMode === '2D' }" @click="mapMode = '2D'">二维地图</button>
+          <button class="segmented" :class="{ active: mapMode === '3D' }" @click="setGlobalMapMode('3D')">三维地球</button>
+          <button class="segmented" :class="{ active: mapMode === '2D' }" @click="setGlobalMapMode('2D')">二维地图</button>
         </div>
       </div>
 
       <div class="panel-group top-gap">
         <h4>底图选择</h4>
         <div class="segmented-row">
-          <button class="segmented" :class="{ active: basemap === 'auto' }" @click="basemap = 'auto'">自动</button>
-          <button class="segmented" :class="{ active: basemap === 'offline' }" @click="basemap = 'offline'">离线瓦片</button>
-          <button class="segmented" :class="{ active: basemap === 'tianditu' }" @click="basemap = 'tianditu'">天地图</button>
+          <button class="segmented" :class="{ active: basemap === 'offline' }" @click="setGlobalBasemap('offline')">离线底图</button>
+          <button class="segmented" :class="{ active: basemap === 'auto' }" @click="setGlobalBasemap('auto')">自动</button>
+          <button class="segmented" :class="{ active: basemap === 'tianditu' }" @click="setGlobalBasemap('tianditu')">天地图</button>
+        </div>
+        <div class="map-token-config top-gap">
+          <div class="map-token-config__head">
+            <span>天地图 token</span>
+            <span class="pill" :class="tiandituTokenStatusClass">{{ tiandituTokenSourceLabel }}</span>
+          </div>
+          <div class="map-token-config__row">
+            <input
+              v-model.trim="tiandituTokenDraft"
+              :type="tiandituTokenVisible ? 'text' : 'password'"
+              autocomplete="off"
+              placeholder="粘贴天地图 token"
+            >
+            <button class="button" @click="saveMapTiandituToken">保存</button>
+            <button class="button button-ghost" @click="tiandituTokenVisible = !tiandituTokenVisible">
+              {{ tiandituTokenVisible ? '隐藏' : '显示' }}
+            </button>
+            <button class="button button-ghost" @click="clearMapTiandituToken">清空</button>
+          </div>
+          <p class="muted-text">当前生效：{{ effectiveTiandituTokenLabel }}</p>
+          <p v-if="tiandituTokenMessage" class="muted-text map-token-config__message">{{ tiandituTokenMessage }}</p>
         </div>
       </div>
 
       <div class="panel-group top-gap">
         <h4>地形数据</h4>
         <div class="segmented-row">
-          <button class="segmented" :class="{ active: terrainMode === 'flat' }" @click="terrainMode = 'flat'">平面</button>
-          <button class="segmented" :class="{ active: terrainMode === 'offline' }" @click="terrainMode = 'offline'">离线 DEM</button>
+          <button class="segmented" :class="{ active: terrainMode === 'flat' }" @click="setGlobalTerrainMode('flat')">平面</button>
+          <button class="segmented" :class="{ active: terrainMode === 'offline' }" @click="setGlobalTerrainMode('offline')">离线 DEM</button>
         </div>
         <div class="terrain-exaggeration-control top-gap">
           <div class="terrain-exaggeration-control__header">

@@ -204,6 +204,8 @@ const GROUPING_METHODS = [
   },
 ];
 
+const TARGET_INTELLIGENT_METHOD_KEY = 'intelligent-allocation';
+
 const TARGET_METHODS = [
   {
     key: 'hungarian',
@@ -219,6 +221,11 @@ const TARGET_METHODS = [
     key: 'multi-objective',
     label: '多目标优化分配',
     description: '基于 Pareto 候选解搜索，综合重要性、难度、风险和平台负荷平衡分配。',
+  },
+  {
+    key: TARGET_INTELLIGENT_METHOD_KEY,
+    label: '智能分配算法',
+    description: '调用本地 target_allocation Python 算法，基于前序威胁分析和作战编组结果生成目标链路化分配方案。',
   },
 ];
 
@@ -1461,7 +1468,7 @@ const ALGORITHM_DEFINITIONS = [
     name: '敌情威胁自动分析',
     category: '态势分析',
     description: '对敌情数据和上传文件进行融合分析，输出敌方作战企图、部署态势、火力覆盖、防空体系、侦察预警和反机降设施。',
-    expectedInputs: ['敌情数据源', '敌方情报记录', '环境要素', '本地 Word/PDF/Excel 文件'],
+    expectedInputs: ['敌情数据源', '敌方情报记录', '环境要素', '本地 Word/PDF/Excel/TXT 文件'],
     expectedOutputs: ['威胁模型', '敌情威胁等级评估', '作战影响分析', '三维球标注与热力图'],
     implementationStatus: 'implemented',
     supportedInputModes: ['resource-library', 'local-file'],
@@ -1483,7 +1490,7 @@ const ALGORITHM_DEFINITIONS = [
     name: '作战力量智能编组',
     category: '兵力编组',
     description: '结合我方情报、任务需求和威胁分析结果，基于规则推理或优化方法输出多套编组方案。',
-    expectedInputs: ['我方情报数据源', '我方兵力记录', '威胁分析结果', '本地 Word/PDF/Excel 文件'],
+    expectedInputs: ['我方情报数据源', '我方兵力记录', '威胁分析结果', '本地 Word/PDF/Excel/TXT 文件'],
     expectedOutputs: ['多套作战编组方案', '方案对比', '推荐结果解释'],
     implementationStatus: 'implemented',
     supportedInputModes: ['resource-library', 'local-file'],
@@ -2197,6 +2204,7 @@ function resolveImportedFileType(fileName = '', fileExtension = '') {
   if (['.doc', '.docx'].includes(extension)) return 'word';
   if (extension === '.pdf') return 'pdf';
   if (['.xls', '.xlsx', '.csv'].includes(extension)) return 'excel';
+  if (['.txt', '.text', '.md', '.markdown'].includes(extension)) return 'text';
   return '';
 }
 
@@ -2250,7 +2258,7 @@ async function normalizePlanningUpload(file = {}) {
       code: 'PLANNING_MISSING_DATA',
       type: 'missing_data',
       status: 400,
-      message: `当前仅支持上传 Word、PDF、Excel 或 CSV 文件，无法解析 ${fileName || '未命名文件'}。`,
+      message: `当前仅支持上传 Word、PDF、Excel、CSV 或 TXT 文件，无法解析 ${fileName || '未命名文件'}。`,
       details: {
         fileName: fileName || '未命名文件',
       },
@@ -7670,7 +7678,261 @@ function buildAdjustmentSuggestions(validation, plan, comparedPlans = [], valida
   }));
 }
 
-async function runBuiltinTargetAllocation(context, step, algorithm, input, dataset) {
+function isUsableMapCoordinate(value = []) {
+  if (!isCoordinateTuple(value)) return false;
+  const [longitude, latitude] = value.map(Number);
+  return Math.abs(longitude) <= 180
+    && Math.abs(latitude) <= 90
+    && !(Math.abs(longitude) < 0.000001 && Math.abs(latitude) < 0.000001);
+}
+
+function normalizeMapCoordinate(value = [], altitude = 0) {
+  const [longitude, latitude, sourceAltitude] = normalizeCoordinate(value);
+  return [longitude, latitude, Number(sourceAltitude || altitude || 0)];
+}
+
+function targetAllocationUnitSubtype(targetType = '') {
+  const normalized = String(targetType || '').toLowerCase();
+  if (normalized.includes('air-defense') || normalized.includes('防空')) return 'airDefense';
+  if (normalized.includes('recon') || normalized.includes('radar') || normalized.includes('侦察')) return 'radar';
+  if (normalized.includes('anti-airborne') || normalized.includes('engineer') || normalized.includes('反机降')) return 'engineer';
+  if (normalized.includes('command') || normalized.includes('指挥')) return 'command';
+  return 'artillery';
+}
+
+function targetAllocationGroupSubtype(role = '') {
+  const normalized = String(role || '').toLowerCase();
+  if (normalized.includes('recon') || normalized.includes('侦察')) return 'radar';
+  if (normalized.includes('support') || normalized.includes('保障')) return 'transport';
+  if (normalized.includes('cover') || normalized.includes('防空')) return 'airDefense';
+  return 'tank';
+}
+
+function buildTargetAllocationVisualization(output = {}) {
+  const targets = safeArray(output.candidateTargets);
+  const groups = safeArray(output.groups);
+  const assignments = safeArray(output.preferredPlan?.assignments);
+  const deploymentContexts = safeArray(output.deploymentContexts || output.targetClusters);
+  const targetById = new Map(targets.map((target) => [String(target.id), target]));
+  const groupById = new Map(groups.map((group) => [String(group.id), group]));
+  const groupPointById = new Map();
+  const targetPointById = new Map();
+  const entities = [];
+  const environment = [];
+
+  for (const assignment of assignments) {
+    const groupId = String(assignment.groupId || '');
+    const targetId = String(assignment.targetId || '');
+    const group = groupById.get(groupId) || {};
+    const target = targetById.get(targetId) || {};
+    const startPoint = assignment.routeStartCoordinates || assignment.groupCoordinates || group.coordinates;
+    const endPoint = assignment.routeEndCoordinates || assignment.targetCoordinates || target.coordinates;
+    if (groupId && isUsableMapCoordinate(startPoint) && !groupPointById.has(groupId)) {
+      groupPointById.set(groupId, normalizeMapCoordinate(startPoint, 80));
+    }
+    if (targetId && isUsableMapCoordinate(endPoint) && !targetPointById.has(targetId)) {
+      targetPointById.set(targetId, normalizeMapCoordinate(endPoint, 40));
+    }
+  }
+
+  for (const group of groups) {
+    const point = groupPointById.get(String(group.id)) || (isUsableMapCoordinate(group.coordinates) ? normalizeMapCoordinate(group.coordinates, 80) : null);
+    if (!point) continue;
+    entities.push({
+      id: `allocation-group-${group.id}`,
+      name: group.name || `编组 ${group.id}`,
+      type: 'unit',
+      camp: 'blue',
+      layerKey: 'units',
+      color: '#38bdf8',
+      geometryType: 'point',
+      coordinates: point,
+      radius: null,
+      annotation: `分配编组：${group.name || group.id}；角色：${group.role || group.normalizedRole || '--'}`,
+      visible: true,
+      meta: {
+        unitSubtype: targetAllocationGroupSubtype(group.role || group.normalizedRole),
+        groupId: group.id,
+      },
+    });
+  }
+
+  for (const target of targets) {
+    const point = targetPointById.get(String(target.id)) || (isUsableMapCoordinate(target.coordinates) ? normalizeMapCoordinate(target.coordinates, 40) : null);
+    if (!point) continue;
+    entities.push({
+      id: `allocation-target-${target.id}`,
+      name: target.name || `目标 ${target.id}`,
+      type: 'unit',
+      camp: 'red',
+      layerKey: 'units',
+      color: '#fb7185',
+      geometryType: 'point',
+      coordinates: point,
+      radius: null,
+      annotation: `分配目标：${target.name || target.id}；类型：${target.typeLabel || target.type || '--'}；优先级：${target.priorityLevel || '--'}`,
+      visible: true,
+      meta: {
+        unitSubtype: targetAllocationUnitSubtype(target.type || target.typeLabel),
+        targetId: target.id,
+        targetType: target.type,
+      },
+    });
+  }
+
+  for (const [index, assignment] of assignments.entries()) {
+    const groupPoint = groupPointById.get(String(assignment.groupId));
+    const targetPoint = targetPointById.get(String(assignment.targetId));
+    if (!groupPoint || !targetPoint) continue;
+    entities.push({
+      id: `allocation-order-${assignment.id || index + 1}`,
+      name: `${assignment.groupName || '编组'} -> ${assignment.targetName || '目标'}`,
+      type: 'order',
+      camp: 'blue',
+      layerKey: 'orders',
+      color: Number(assignment.wave || 1) === 1 ? '#facc15' : '#38bdf8',
+      geometryType: 'polyline',
+      coordinates: [groupPoint, targetPoint],
+      radius: null,
+      annotation: `波次 ${assignment.wave || '--'}；匹配分 ${assignment.matchScore ?? '--'}；可行性 ${assignment.feasibilityScore ?? '--'}；距离 ${assignment.distanceKm ?? '--'} km`,
+      visible: true,
+      meta: {
+        commandStyle: Number(assignment.wave || 1) === 1 ? 'assault' : 'transfer',
+        assignmentId: assignment.id,
+        groupId: assignment.groupId,
+        targetId: assignment.targetId,
+        wave: assignment.wave,
+      },
+    });
+  }
+
+  for (const context of deploymentContexts) {
+    const polygon = safeArray(context.polygon).filter(isUsableMapCoordinate).map((point) => normalizeMapCoordinate(point, 0));
+    if (polygon.length < 3) continue;
+    environment.push({
+      id: `allocation-deployment-${context.id || environment.length + 1}`,
+      name: context.name || '部署区上下文',
+      kind: 'threat-sector',
+      geometryType: 'polygon',
+      geometry: polygon,
+      riskLevel: 'medium',
+      meta: {
+        fillColor: '#f59e0b',
+        fillAlpha: 0.1,
+        outlineColor: '#f59e0b',
+        outlineAlpha: 0.8,
+      },
+    });
+  }
+
+  return {
+    entities,
+    environment,
+    summary: {
+      groupEntityCount: entities.filter((item) => item.id.startsWith('allocation-group-')).length,
+      targetEntityCount: entities.filter((item) => item.id.startsWith('allocation-target-')).length,
+      assignmentArrowCount: entities.filter((item) => item.id.startsWith('allocation-order-')).length,
+      deploymentContextCount: environment.length,
+    },
+  };
+}
+
+function mergeTargetAllocationVisualization(output = {}) {
+  const visualization = buildTargetAllocationVisualization(output);
+  const preferredPlan = safeObject(output.preferredPlan);
+  return {
+    ...output,
+    visualization,
+    preferredPlan: {
+      ...preferredPlan,
+      visualization,
+    },
+  };
+}
+
+function targetAllocationCoverageText(plan = {}) {
+  const stats = safeObject(plan.stats);
+  const metrics = safeObject(plan.metrics);
+  const objectives = safeObject(plan.objectives);
+  const value = stats.fullCoverRate
+    ?? stats.coverRate
+    ?? metrics.targetCoverageRate
+    ?? metrics.coverageRate
+    ?? objectives.fullCoverRate
+    ?? objectives.partialCoverRate
+    ?? 0;
+  return Number(value || 0);
+}
+
+async function executeIntelligentTargetAllocation(context, step, algorithm, input, appliedOptions, events, signal) {
+  const projectRoot = path.join(REPO_ROOT, 'algorithms', 'target-allocation');
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), `mission-target-allocation-${safeFileNamePart(step.id || algorithm.id)}-`));
+  try {
+    const upstreamThreat = safeObject(context.stageOutputs?.['enemy-threat-analysis']);
+    const upstreamGrouping = safeObject(context.stageOutputs?.['force-grouping']);
+    const upstreamThreatPath = await writeJsonFile(path.join(tempDir, 'inputs', 'upstream-threat.json'), upstreamThreat);
+    const upstreamGroupingPath = await writeJsonFile(path.join(tempDir, 'inputs', 'upstream-grouping.json'), upstreamGrouping);
+    const outputPath = path.join(tempDir, 'outputs', 'target-allocation.json');
+    const terrainDir = safeRuntimeText(input.options?.terrainDir || input.options?.terrainRoot || process.env.PLANNING_TERRAIN_ROOT || '');
+    const args = [
+      '-m',
+      'target_allocation.cli',
+      '--upstream-threat',
+      upstreamThreatPath,
+      '--upstream-grouping',
+      upstreamGroupingPath,
+      '--objective-preference',
+      appliedOptions.objectivePreference,
+      '--validation-mode',
+      appliedOptions.validationMode,
+      '--max-assignments-per-group',
+      String(appliedOptions.maxAssignmentsPerGroup),
+      '--output',
+      outputPath,
+    ];
+    if (terrainDir) {
+      args.push('--terrain-dir', path.isAbsolute(terrainDir) ? terrainDir : path.join(REPO_ROOT, terrainDir));
+    }
+
+    await runPythonProcess({
+      args,
+      cwd: REPO_ROOT,
+      env: appendPythonPath({}, projectRoot),
+      events,
+      signal,
+      step,
+      algorithm,
+      variant: {
+        id: 'target-allocation:builtin:intelligent-allocation',
+        name: '智能分配算法',
+      },
+      stdoutAsLlm: false,
+      terminalPrefix: '作战目标智能分配 Python 算法',
+    });
+
+    const structuredOutput = JSON.parse(await fs.readFile(outputPath, 'utf-8'));
+    if (structuredOutput?.ok === false) {
+      throw createPlanningRuntimeError({
+        code: String(structuredOutput.error?.code || 'PLANNING_ALGORITHM_FAILED'),
+        type: String(structuredOutput.error?.type || 'algorithm_failed'),
+        status: 502,
+        message: String(structuredOutput.error?.message || '智能分配算法执行失败。'),
+        details: {
+          stepId: step.id,
+          algorithmId: algorithm.id,
+          methodKey: TARGET_INTELLIGENT_METHOD_KEY,
+          error: structuredOutput.error || {},
+        },
+      });
+    }
+
+    return mergeTargetAllocationVisualization(structuredOutput);
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
+async function runBuiltinTargetAllocation(context, step, algorithm, input, dataset, events = null, signal = null) {
   const threatOutput = safeObject(context.stageOutputs['enemy-threat-analysis']);
   const forceGrouping = safeObject(context.stageOutputs['force-grouping']);
   const appliedOptions = {
@@ -7686,27 +7948,52 @@ async function runBuiltinTargetAllocation(context, step, algorithm, input, datas
     buildAntColonyPlan(platforms, groups, targets, appliedOptions, validationProfile),
     buildMultiObjectivePlan(platforms, groups, targets, appliedOptions, validationProfile),
   ];
-  const preferredPlan = plans.find((item) => item.methodKey === input.builtinMethodKey) || plans[0];
-  const systemBestPlan = sortByScore(plans, 'score')[0] || preferredPlan;
-  const validation = validateAllocationPlan(preferredPlan, targets, platforms, groups, appliedOptions, validationProfile);
-  const adjustmentSuggestions = buildAdjustmentSuggestions(validation, preferredPlan, plans, validationProfile);
+  let intelligentOutput = null;
+  let comparedPlans = plans;
+  if (input.builtinMethodKey === TARGET_INTELLIGENT_METHOD_KEY) {
+    intelligentOutput = await executeIntelligentTargetAllocation(context, step, algorithm, input, appliedOptions, events, signal);
+    const intelligentPlan = safeObject(intelligentOutput.preferredPlan);
+    comparedPlans = intelligentPlan.methodKey ? [...plans, intelligentPlan] : plans;
+  }
+
+  const preferredPlan = intelligentOutput
+    ? safeObject(intelligentOutput.preferredPlan)
+    : plans.find((item) => item.methodKey === input.builtinMethodKey) || plans[0];
+  const resolvedSystemBestPlan = sortByScore(comparedPlans, 'score')[0] || preferredPlan;
+  const validation = intelligentOutput
+    ? safeArray(intelligentOutput.validationFindings || intelligentOutput.validation)
+    : validateAllocationPlan(preferredPlan, targets, platforms, groups, appliedOptions, validationProfile);
+  const adjustmentSuggestions = intelligentOutput
+    ? safeArray(intelligentOutput.adjustmentSuggestions)
+    : buildAdjustmentSuggestions(validation, preferredPlan, plans, validationProfile);
   const validationStatus = validation.some((item) => item.level === 'fail')
     ? 'fail'
     : validation.some((item) => item.level === 'warn')
       ? 'warn'
       : 'pass';
+  const outputTargets = intelligentOutput ? safeArray(intelligentOutput.candidateTargets) : targets;
+  const outputPlatforms = intelligentOutput ? safeArray(intelligentOutput.platforms) : platforms;
+  const outputGroups = intelligentOutput ? safeArray(intelligentOutput.groups) : groups;
+  const outputValidationSummary = intelligentOutput
+    ? safeObject(intelligentOutput.validationSummary)
+    : {
+        status: validationStatus,
+        issueCount: validation.filter((item) => item.level !== 'pass').length,
+      };
+  const outputVisualization = intelligentOutput ? safeObject(intelligentOutput.visualization) : {};
 
   return {
-    summary: `已完成 ${plans.length} 种目标分配算法对比，并在 ${validationProfile.label} 下输出 ${preferredPlan.methodLabel} 推荐方案。`,
+    summary: `已完成 ${comparedPlans.length} 种目标分配算法对比，并在 ${validationProfile.label} 下输出 ${preferredPlan.methodLabel} 推荐方案。`,
     outputPreview: [
-      `候选目标 ${targets.length} 个 / 可用平台 ${platforms.length} 个 / 涉及编组 ${groups.length} 个`,
-      `推荐分配方法：${preferredPlan.methodLabel}（评分 ${preferredPlan.score}，全覆盖率 ${preferredPlan.stats?.fullCoverRate || 0}%）`,
+      `候选目标 ${outputTargets.length} 个 / 可用平台 ${outputPlatforms.length} 个 / 涉及编组 ${outputGroups.length} 个`,
+      `推荐分配方法：${preferredPlan.methodLabel}（评分 ${preferredPlan.score}，全覆盖率 ${targetAllocationCoverageText(preferredPlan)}%）`,
       validation[0] ? `合理性校核：${validation[0].title}（${validationProfile.label}）` : '合理性校核待执行',
     ],
     artifacts: [
-      createArtifact('目标分配方案集', '输出匈牙利、蚁群协同和多目标优化三类分配方案，并支持多平台、多目标协同分配。'),
+      createArtifact('目标分配方案集', '输出匈牙利、蚁群协同、多目标优化和智能分配算法方案，并支持多平台、多目标协同分配。'),
       createArtifact('合理性验证结果', '对高价值目标覆盖、打击包完整性、平台可行性、射程约束和编组负荷进行校核。'),
       createArtifact('调整建议清单', '针对覆盖缺口、协同不足和负荷风险输出可执行的调整建议。'),
+      createArtifact('目标分配态势图层', '输出蓝方编组、红方目标、部署区上下文和分配箭头，可在单算法结果页三维展示。'),
     ],
     structuredOutput: {
       implementationStatus: 'implemented',
@@ -7714,20 +8001,26 @@ async function runBuiltinTargetAllocation(context, step, algorithm, input, datas
       builtinMethodLabel: findMethodLabel(algorithm.builtinMethods, input.builtinMethodKey),
       appliedOptions,
       validationProfile,
-      candidateTargets: targets,
-      platforms,
-      groups,
-      comparedPlans: plans,
+      candidateTargets: outputTargets,
+      deploymentContexts: intelligentOutput ? safeArray(intelligentOutput.deploymentContexts) : [],
+      targetClusters: intelligentOutput ? safeArray(intelligentOutput.targetClusters) : [],
+      platforms: outputPlatforms,
+      groups: outputGroups,
+      comparedPlans,
       preferredPlanMethodKey: preferredPlan.methodKey,
-      preferredPlan,
-      systemBestPlanMethodKey: systemBestPlan.methodKey,
-      systemBestPlan,
-      validationSummary: {
+      preferredPlan: outputVisualization.entities || outputVisualization.environment
+        ? { ...preferredPlan, visualization: outputVisualization }
+        : preferredPlan,
+      systemBestPlanMethodKey: resolvedSystemBestPlan.methodKey,
+      systemBestPlan: resolvedSystemBestPlan,
+      validationSummary: outputValidationSummary.status ? outputValidationSummary : {
         status: validationStatus,
         issueCount: validation.filter((item) => item.level !== 'pass').length,
       },
       validation,
+      validationFindings: validation,
       adjustmentSuggestions,
+      ...(outputVisualization.entities || outputVisualization.environment ? { visualization: outputVisualization } : {}),
     },
   };
 }
@@ -10705,7 +10998,7 @@ function mergeExecutionContext(context, step, algorithm, stageResult) {
   };
 }
 
-async function executeBuiltinStep(step, algorithm, context, input, dataset) {
+async function executeBuiltinStep(step, algorithm, context, input, dataset, events = null, signal = null) {
   const executor = BUILTIN_EXECUTORS[algorithm.id];
   if (!executor) {
     throw createPlanningRuntimeError({
@@ -10720,7 +11013,7 @@ async function executeBuiltinStep(step, algorithm, context, input, dataset) {
       },
     });
   }
-  return executor(context, step, algorithm, input, dataset);
+  return executor(context, step, algorithm, input, dataset, events, signal);
 }
 
 async function executeExternalStep(variant, task, step, algorithm, context, payload, input, events = null, signal = null) {
@@ -10886,7 +11179,7 @@ async function executeTaskPlanning(task, template, payload = {}, dataset = {}, {
     });
     try {
       stageResult = variant.type === 'builtin'
-        ? await executeBuiltinStep(step, algorithm, context, algorithmInput, dataset)
+        ? await executeBuiltinStep(step, algorithm, context, algorithmInput, dataset, events, signal)
         : await executeExternalStep(variant, task, step, algorithm, context, { ...payload, dataset }, algorithmInput, events, signal);
     } catch (error) {
       const normalizedError = normalizePlanningRuntimeError(error, `${step.name} 执行失败。`);
@@ -11313,6 +11606,7 @@ function buildPlanningGeojsonFromThreatField(moduleKey = '', moduleLabel = '', h
 }
 
 function collectPlanningVisualizationSets(consolidatedOutputs = {}) {
+  const targetAllocationVisualization = safeObject(consolidatedOutputs.targetAllocation?.preferredPlan?.visualization || consolidatedOutputs.targetAllocation?.visualization);
   const methodVisualization = safeObject(consolidatedOutputs.methodPlanning?.preferredPlan?.visualization);
   const supportVisualization = safeObject(consolidatedOutputs.supportPlanning?.preferredPlan?.visualization);
 
@@ -11326,6 +11620,11 @@ function collectPlanningVisualizationSets(consolidatedOutputs = {}) {
       moduleKey: 'airborne-landing-site-selection',
       moduleLabel: '机降地域优化选择',
       visualization: safeObject(consolidatedOutputs.airborneLandingSiteSelection?.visualization),
+    },
+    {
+      moduleKey: 'target-allocation',
+      moduleLabel: '作战目标自动分配',
+      visualization: targetAllocationVisualization,
     },
     {
       moduleKey: 'method-planning',
@@ -11665,6 +11964,7 @@ function buildFinalResult(task, executionSteps = []) {
 export const __planningRuntimeTestHooks = {
   buildSupportPlan,
   normalizeSupportPlanningOptions,
+  runBuiltinTargetAllocation,
 };
 
 export function getPlanningTemplate() {

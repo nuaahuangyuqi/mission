@@ -7,7 +7,7 @@ param(
 
 Add-Type -AssemblyName System.Drawing
 
-$root = Join-Path $PSScriptRoot '..\apps\web\public\tiles'
+$root = Join-Path $PSScriptRoot '..\apps\web\public\dem'
 $root = [System.IO.Path]::GetFullPath($root)
 
 function Get-TileXY([double]$lon, [double]$lat, [int]$zoom) {

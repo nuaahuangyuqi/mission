@@ -16,6 +16,7 @@ const requirementFiles = [
   path.join(algorithmsDir, 'requirements.txt'),
   path.join(algorithmsDir, 'enemy-threat-analysis', 'requirements.txt'),
   path.join(algorithmsDir, 'force-grouping', 'requirements.txt'),
+  path.join(algorithmsDir, 'target-allocation', 'requirements.txt'),
 ].filter((filePath) => fs.existsSync(filePath));
 
 function run(command, args, options = {}) {
@@ -89,6 +90,7 @@ const algorithmPythonPaths = [
   algorithmsDir,
   path.join(algorithmsDir, 'enemy-threat-analysis'),
   path.join(algorithmsDir, 'force-grouping'),
+  path.join(algorithmsDir, 'target-allocation'),
   path.join(algorithmsDir, 'airlanding_zone'),
   existingPythonPath,
 ].filter(Boolean);

@@ -3,11 +3,12 @@ import 'cesium/Build/Cesium/Widgets/widgets.css';
 import * as Cesium from 'cesium';
 import { onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue';
 import { commandStyleMap, detectionSensorTypeMap, detectionSensorTypes, unitTypeMap } from '../data/situationCatalog';
+import { tiandituToken } from '../config/mapSettings';
 
 const props = defineProps({
   entities: { type: Array, default: () => [] },
   environment: { type: Array, default: () => [] },
-  basemap: { type: String, default: 'auto' },
+  basemap: { type: String, default: 'offline' },
   mapMode: { type: String, default: '3D' },
   terrainMode: { type: String, default: 'flat' },
   terrainExaggeration: { type: Number, default: 1 },
@@ -50,8 +51,11 @@ const selectionMenu = reactive({
   items: [],
 });
 
-const token = import.meta.env.VITE_TDT_TOKEN;
 const terrainUrlFromEnv = import.meta.env.VITE_TDT_TERRAIN_URL;
+
+function getTiandituToken() {
+  return String(tiandituToken.value || '').trim();
+}
 
 let viewer;
 let drawHandler;
@@ -68,6 +72,7 @@ let measurementCursorPoint = null;
 let measurementSequence = 1;
 let offlineTileConfig = {
   available: false,
+  baseUrl: '/dem',
   extension: 'png',
   minimumLevel: 0,
   maximumLevel: 10,
@@ -87,6 +92,7 @@ let offlineTerrainConfig = {
 };
 let imageOverlayLayers = [];
 let tiandituImageryProbe = {
+  token: '',
   ok: null,
   checkedAt: 0,
 };
@@ -1041,15 +1047,21 @@ function probeImage(url, timeout = 4000) {
 }
 
 async function isTiandituImageryReachable(force = false) {
+  const token = getTiandituToken();
   if (!token) return false;
   const now = Date.now();
-  if (!force && typeof tiandituImageryProbe.ok === 'boolean' && now - tiandituImageryProbe.checkedAt < 60000) {
+  if (
+    !force
+    && tiandituImageryProbe.token === token
+    && typeof tiandituImageryProbe.ok === 'boolean'
+    && now - tiandituImageryProbe.checkedAt < 60000
+  ) {
     return tiandituImageryProbe.ok;
   }
 
-  const sampleUrl = `https://t0.tianditu.gov.cn/DataServer?T=img_w&x=13&y=6&l=4&tk=${token}`;
+  const sampleUrl = `https://t0.tianditu.gov.cn/DataServer?T=img_w&x=13&y=6&l=4&tk=${encodeURIComponent(token)}`;
   const ok = await probeImage(sampleUrl, 3500);
-  tiandituImageryProbe = { ok, checkedAt: now };
+  tiandituImageryProbe = { token, ok, checkedAt: now };
   return ok;
 }
 
@@ -1174,6 +1186,7 @@ function parseOfflineTileMetadata(xmlText) {
 async function detectOfflineTiles() {
   const nextConfig = {
     available: false,
+    baseUrl: '/dem',
     extension: 'png',
     minimumLevel: 0,
     maximumLevel: 10,
@@ -1181,7 +1194,7 @@ async function detectOfflineTiles() {
   };
 
   try {
-    const response = await fetch('/tiles/tilemapresource.xml', { cache: 'no-store' });
+    const response = await fetch(`${nextConfig.baseUrl}/tilemapresource.xml`, { cache: 'no-store' });
     if (response.ok) {
       const metadata = parseOfflineTileMetadata(await response.text());
       if (metadata) {
@@ -1192,11 +1205,11 @@ async function detectOfflineTiles() {
     // ignore and continue probing by extension
   }
 
-  const candidates = [nextConfig.extension, 'png', 'jpg', 'jpeg', 'webp']
+  const candidates = [nextConfig.extension, 'png', 'jpg', 'jpeg', 'webp', 'svg']
     .filter((item, index, list) => list.indexOf(item) === index);
 
   for (const extension of candidates) {
-    const available = await probeImage(`/tiles/0/0/0.${extension}`);
+    const available = await probeImage(`${nextConfig.baseUrl}/0/0/0.${extension}`);
     if (available) {
       nextConfig.available = true;
       nextConfig.extension = extension;
@@ -1498,6 +1511,7 @@ async function resolveTerrainServiceUrl(rawUrl) {
 
 function createImageryProviders(mode) {
   const providers = [new Cesium.GridImageryProvider({ cells: 8, color: Cesium.Color.fromCssColorString('#6f8f52') })];
+  const token = getTiandituToken();
 
   if (mode === 'grid') {
     return providers;
@@ -1506,7 +1520,7 @@ function createImageryProviders(mode) {
   if (mode === 'offline' && offlineTileConfig.available) {
     const templateY = offlineTileConfig.useReverseY ? '{reverseY}' : '{y}';
     providers.push(new Cesium.UrlTemplateImageryProvider({
-      url: `/tiles/{z}/{x}/${templateY}.${offlineTileConfig.extension}`,
+      url: `${offlineTileConfig.baseUrl}/{z}/{x}/${templateY}.${offlineTileConfig.extension}`,
       minimumLevel: offlineTileConfig.minimumLevel,
       maximumLevel: offlineTileConfig.maximumLevel,
       credit: `Offline Tiles (${offlineTileConfig.extension.toUpperCase()})`,
@@ -1516,14 +1530,15 @@ function createImageryProviders(mode) {
   }
 
   if (mode === 'tianditu' && token) {
+    const encodedToken = encodeURIComponent(token);
     providers.push(
       new Cesium.UrlTemplateImageryProvider({
-        url: `https://t{s}.tianditu.gov.cn/DataServer?T=img_w&x={x}&y={y}&l={z}&tk=${token}`,
+        url: `https://t{s}.tianditu.gov.cn/DataServer?T=img_w&x={x}&y={y}&l={z}&tk=${encodedToken}`,
         subdomains: ['0', '1', '2', '3', '4', '5', '6', '7'],
         maximumLevel: 18,
       }),
       new Cesium.UrlTemplateImageryProvider({
-        url: `https://t{s}.tianditu.gov.cn/DataServer?T=cia_w&x={x}&y={y}&l={z}&tk=${token}`,
+        url: `https://t{s}.tianditu.gov.cn/DataServer?T=cia_w&x={x}&y={y}&l={z}&tk=${encodedToken}`,
         subdomains: ['0', '1', '2', '3', '4', '5', '6', '7'],
         maximumLevel: 18,
       }),
@@ -1538,6 +1553,7 @@ async function refreshBasemap() {
   if (!viewer) return;
 
   clearImageOverlays();
+  const currentToken = getTiandituToken();
   basemapState.value = {
     requested: props.basemap,
     resolved: 'grid',
@@ -1551,7 +1567,7 @@ async function refreshBasemap() {
   let fallbackMessage = '';
   if (resolvedMode === 'auto') {
     resolvedMode = offlineTileConfig.available ? 'offline' : (tiandituAvailable ? 'tianditu' : 'grid');
-    if (!offlineTileConfig.available && token && !tiandituAvailable) {
+    if (!offlineTileConfig.available && currentToken && !tiandituAvailable) {
       fallbackMessage = '天地图瓦片当前不可用，已自动回退到网格演示底图。';
     }
   }
@@ -1559,19 +1575,19 @@ async function refreshBasemap() {
   if (resolvedMode === 'offline' && !offlineTileConfig.available) {
     resolvedMode = tiandituAvailable ? 'tianditu' : 'grid';
     fallbackMessage = tiandituAvailable
-      ? '未检测到离线瓦片，已自动回退到天地图影像。'
-      : '未检测到离线瓦片，天地图瓦片也不可用，已回退到网格演示底图。';
+      ? '未检测到离线底图，已自动回退到天地图影像。'
+      : '未检测到离线底图，天地图瓦片也不可用，已回退到网格演示底图。';
   }
 
-  if (resolvedMode === 'tianditu' && !token) {
+  if (resolvedMode === 'tianditu' && !currentToken) {
     resolvedMode = offlineTileConfig.available ? 'offline' : 'grid';
     fallbackMessage = '未配置天地图令牌，已自动回退。';
   }
 
-  if (resolvedMode === 'tianditu' && token && !tiandituAvailable) {
+  if (resolvedMode === 'tianditu' && currentToken && !tiandituAvailable) {
     resolvedMode = offlineTileConfig.available ? 'offline' : 'grid';
     fallbackMessage = resolvedMode === 'offline'
-      ? '天地图瓦片当前不可用，已回退到离线瓦片。'
+      ? '天地图瓦片当前不可用，已回退到离线底图。'
       : '天地图瓦片当前不可用，已回退到网格演示底图。';
   }
 
@@ -1585,7 +1601,7 @@ async function refreshBasemap() {
     requested: props.basemap,
     resolved: resolvedMode,
     message: fallbackMessage || (resolvedMode === 'offline'
-      ? `当前底图：离线瓦片 .${offlineTileConfig.extension} / 级别 ${offlineTileConfig.minimumLevel}~${offlineTileConfig.maximumLevel}${offlineTileConfig.useReverseY ? ' / TMS' : ''}`
+      ? `当前底图：离线底图 ${offlineTileConfig.baseUrl} .${offlineTileConfig.extension} / 级别 ${offlineTileConfig.minimumLevel}~${offlineTileConfig.maximumLevel}${offlineTileConfig.useReverseY ? ' / TMS' : ''}`
       : resolvedMode === 'tianditu'
         ? '当前底图：天地图影像'
         : '当前底图：网格演示底图'),
@@ -3135,6 +3151,10 @@ onMounted(() => {
 });
 
 watch(() => props.basemap, () => {
+  void refreshBasemap();
+});
+watch(tiandituToken, () => {
+  tiandituImageryProbe = { token: '', ok: null, checkedAt: 0 };
   void refreshBasemap();
 });
 watch(() => props.terrainMode, () => {

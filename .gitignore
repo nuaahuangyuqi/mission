@@ -57,7 +57,10 @@ logs/
 # Local map and terrain assets
 apps/web/public/tiles/
 apps/web/public/terrain/
-apps/web/public/dem/
+!apps/web/public/
+!apps/web/public/dem/
+apps/web/public/dem/**
+!apps/web/public/dem/README.txt
 apps/web/tiles/
 apps/web/terrain/
 apps/web/dem/

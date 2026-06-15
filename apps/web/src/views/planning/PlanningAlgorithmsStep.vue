@@ -581,7 +581,7 @@ async function handleFileChange(algorithmId, event) {
             <span class="eyebrow">本地文件</span>
             <div class="form-grid capability-stage-form top-gap">
               <label class="full-span">
-                上传 Word / PDF / Excel / CSV
+                上传 Word / PDF / Excel / CSV / TXT
                 <input
                   type="file"
                   :accept="localFileAccept"
