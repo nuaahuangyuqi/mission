@@ -7,7 +7,13 @@ import express from 'express';
 import { evaluateAction, getActionTemplate } from './action.js';
 import { evaluateCapability, getCapabilityTemplate } from './capability.js';
 import { evaluateConsumption, getConsumptionTemplate } from './consumption.js';
-import { evaluatePlanning, getPlanningTemplate, testPlanningLlm, validatePlanning } from './planning.js';
+import {
+  evaluatePlanning,
+  evaluatePlanningRealtimeStep,
+  getPlanningTemplate,
+  testPlanningLlm,
+  validatePlanning,
+} from './planning.js';
 import {
   buildKnowledgeGraph,
   createDatabase,
@@ -20,6 +26,7 @@ import {
   mapImportBatch,
   mapImportBatchItem,
   mapIntelligence,
+  mapPlanningRealtimeArtifact,
   mapSituationEntity,
   mapTask,
   mapTaskResult,
@@ -262,6 +269,7 @@ const TASK_PLANNING_TEMPLATE_IDS = ['fire-strike-task', 'air-assault-task'];
 const TASK_RUN_STATUS_KEYS = ['created', 'running', 'succeeded', 'failed'];
 const PLANNING_STAGE_KEYS = ['library', 'flow', 'execute'];
 const PLANNING_ERROR_TYPES = ['missing_data', 'missing_upstream', 'algorithm_failed', 'permission_denied'];
+const PLANNING_REALTIME_ARTIFACT_STATUS_KEYS = ['succeeded', 'failed', 'draft'];
 
 function sanitizeNonNegativeInteger(value, fallback = 0) {
   const next = Number(value);
@@ -706,6 +714,285 @@ function buildPlanningPayloadFromTask(task, payload = {}) {
     taskCenterId: Number.isFinite(Number(payload?.taskCenterId)) ? Number(payload.taskCenterId) : null,
     taskRunId: Number.isFinite(Number(payload?.taskRunId)) ? Number(payload.taskRunId) : null,
   };
+}
+
+function normalizeRealtimeArtifactStatus(value, fallback = 'succeeded') {
+  const normalized = String(value || fallback).trim();
+  return PLANNING_REALTIME_ARTIFACT_STATUS_KEYS.includes(normalized) ? normalized : fallback;
+}
+
+function normalizeRealtimeArtifactIds(value = []) {
+  return [...new Set(safeArray(value).map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0))];
+}
+
+function canAccessRealtimeArtifact(artifact, user) {
+  if (!artifact || !user) return false;
+  return Number(artifact.ownerUserId) === Number(user.id);
+}
+
+function readPlanningRealtimeArtifactById(artifactId) {
+  const row = db.prepare('SELECT * FROM planning_realtime_artifacts WHERE id = ?').get(artifactId);
+  return row ? mapPlanningRealtimeArtifact(row) : null;
+}
+
+function listPlanningRealtimeArtifacts(user, filters = {}) {
+  const conditions = ['owner_user_id = ?'];
+  const params = [Number(user.id)];
+  const taskId = Number(filters.taskId);
+  const limit = Math.min(Math.max(Number(filters.limit) || 80, 1), 200);
+  const offset = Math.max(Number(filters.offset) || 0, 0);
+  const algorithmId = String(filters.algorithmId || '').trim();
+  const query = String(filters.query || '').trim();
+
+  if (Number.isInteger(taskId) && taskId > 0) {
+    conditions.push('task_id = ?');
+    params.push(taskId);
+  }
+  if (algorithmId) {
+    conditions.push('algorithm_id = ?');
+    params.push(algorithmId);
+  }
+  if (query) {
+    conditions.push(`(
+      display_name LIKE ?
+      OR description LIKE ?
+      OR task_name LIKE ?
+      OR algorithm_name LIKE ?
+      OR step_name LIKE ?
+    )`);
+    const token = `%${query}%`;
+    params.push(token, token, token, token, token);
+  }
+
+  const whereClause = conditions.join(' AND ');
+  const totalRow = db.prepare(`SELECT COUNT(*) AS total FROM planning_realtime_artifacts WHERE ${whereClause}`).get(...params);
+  const rows = db.prepare(`
+    SELECT *
+    FROM planning_realtime_artifacts
+    WHERE ${whereClause}
+    ORDER BY updated_at DESC, id DESC
+    LIMIT ? OFFSET ?
+  `).all(...params, limit, offset);
+
+  return {
+    artifacts: rows.map(mapPlanningRealtimeArtifact),
+    total: Number(totalRow?.total || 0),
+    limit,
+    offset,
+  };
+}
+
+function resolveRealtimeTaskAccess(taskCenterId, user) {
+  const id = Number(taskCenterId);
+  if (!Number.isInteger(id) || id <= 0) {
+    throw createPlanningError({
+      code: 'PLANNING_MISSING_DATA',
+      type: 'missing_data',
+      status: 400,
+      message: '实时生成必须挂靠一个规划任务实例。',
+      details: { taskCenterId },
+    });
+  }
+
+  const task = readTaskById(id);
+  if (!task) {
+    throw createPlanningError({
+      code: 'PLANNING_MISSING_DATA',
+      type: 'missing_data',
+      status: 404,
+      message: '未找到对应的规划任务实例。',
+      details: { taskCenterId: id },
+    });
+  }
+  if (!canAccessTask(task, user)) {
+    throw createPlanningError({
+      code: 'PLANNING_PERMISSION_DENIED',
+      type: 'permission_denied',
+      status: 403,
+      message: '当前账号无权访问该规划任务实例。',
+      details: { taskCenterId: id },
+    });
+  }
+  return task;
+}
+
+function assertUniqueRealtimeArtifactAlgorithms(artifacts = []) {
+  const seen = new Map();
+  for (const artifact of safeArray(artifacts)) {
+    const algorithmId = String(artifact.algorithmId || '').trim();
+    if (!algorithmId) continue;
+    if (seen.has(algorithmId)) {
+      throw createPlanningError({
+        code: 'PLANNING_REALTIME_DUPLICATE_INPUT',
+        type: 'missing_data',
+        status: 400,
+        message: '同一算法类型一次只能选择一个输入产物，请删除重复的上游产物后再执行。',
+        details: {
+          algorithmId,
+          artifactIds: [seen.get(algorithmId), artifact.id],
+        },
+      });
+    }
+    seen.set(algorithmId, artifact.id);
+  }
+}
+
+function readPlanningRealtimeInputArtifacts(inputArtifactIds = [], user) {
+  const ids = normalizeRealtimeArtifactIds(inputArtifactIds);
+  const artifacts = ids.map((id) => readPlanningRealtimeArtifactById(id));
+  const missingId = ids.find((id, index) => !artifacts[index]);
+  if (missingId) {
+    throw createPlanningError({
+      code: 'PLANNING_MISSING_DATA',
+      type: 'missing_data',
+      status: 404,
+      message: '选择的实时生成产物不存在。',
+      details: { artifactId: missingId },
+    });
+  }
+
+  const forbidden = artifacts.find((artifact) => !canAccessRealtimeArtifact(artifact, user));
+  if (forbidden) {
+    throw createPlanningError({
+      code: 'PLANNING_PERMISSION_DENIED',
+      type: 'permission_denied',
+      status: 403,
+      message: '当前账号无权访问所选实时生成产物。',
+      details: { artifactId: forbidden.id },
+    });
+  }
+
+  assertUniqueRealtimeArtifactAlgorithms(artifacts);
+  return artifacts;
+}
+
+function normalizeRealtimeEditablePayload(value) {
+  if (typeof value === 'undefined') {
+    return undefined;
+  }
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value);
+    } catch {
+      throw createPlanningError({
+        code: 'PLANNING_INVALID_JSON',
+        type: 'missing_data',
+        status: 400,
+        message: '保存的实时生成 JSON 不是有效格式。',
+        details: {},
+      });
+    }
+  }
+  if (value && typeof value === 'object') {
+    return value;
+  }
+  throw createPlanningError({
+    code: 'PLANNING_INVALID_JSON',
+    type: 'missing_data',
+    status: 400,
+    message: '实时生成 JSON 只能保存为对象或数组。',
+    details: {},
+  });
+}
+
+function buildRealtimeStepPayloadFromTask(task, body = {}, inputArtifacts = []) {
+  const basePayload = buildPlanningPayloadFromTask(task, {
+    ...body,
+    taskCenterId: task.id,
+  });
+  const algorithmId = String(body.algorithmId || '').trim();
+  const stepId = String(body.stepId || '').trim();
+  const algorithmInput = safeObject(body.algorithmInput);
+  const algorithmInputs = {
+    ...safeObject(basePayload.algorithmInputs),
+    ...safeObject(body.algorithmInputs),
+  };
+
+  if (algorithmId) {
+    algorithmInputs[algorithmId] = {
+      ...safeObject(algorithmInputs[algorithmId]),
+      ...algorithmInput,
+    };
+  }
+
+  return {
+    ...basePayload,
+    assessmentName: String(body.assessmentName || basePayload.assessmentName || `${task.name}实时生成`),
+    taskCenterId: task.id,
+    algorithmId,
+    stepId,
+    bindingId: String(body.bindingId || '').trim(),
+    bindings: {
+      ...safeObject(basePayload.bindings),
+      ...safeObject(body.bindings),
+      ...(stepId && body.bindingId ? { [stepId]: String(body.bindingId) } : {}),
+    },
+    algorithmInput,
+    algorithmInputs,
+    inputArtifactIds: inputArtifacts.map((artifact) => artifact.id),
+    inputArtifacts,
+  };
+}
+
+function buildRealtimeDisplayName(result = {}, fallback = '实时生成产物') {
+  const explicit = String(result.displayName || '').trim();
+  if (explicit) return explicit.slice(0, 120);
+  const stepName = String(result?.step?.stepName || fallback || '实时生成产物').trim() || '实时生成产物';
+  return `${stepName}-${nowText()}`.slice(0, 120);
+}
+
+function savePlanningRealtimeArtifact(user, task, result, inputArtifactIds = [], options = {}) {
+  const id = createIntegerId(db, 'planning_realtime_artifacts', 1);
+  const step = safeObject(result.step);
+  const algorithm = safeObject(step.algorithm);
+  const binding = safeObject(step.binding);
+  const createdAt = nowText();
+  const displayName = String(options.displayName || buildRealtimeDisplayName(result, step.stepName)).trim() || buildRealtimeDisplayName(result);
+  const description = String(options.description || '').trim();
+  const status = normalizeRealtimeArtifactStatus(options.status || 'succeeded');
+
+  db.prepare(`
+    INSERT INTO planning_realtime_artifacts (
+      id,
+      owner_user_id,
+      task_id,
+      task_name,
+      display_name,
+      description,
+      algorithm_id,
+      algorithm_name,
+      step_id,
+      step_name,
+      binding_id,
+      binding_name,
+      status,
+      input_artifact_ids,
+      result_payload,
+      created_at,
+      updated_at
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    Number(user.id),
+    Number(task.id),
+    String(task.name || result?.task?.name || ''),
+    displayName,
+    description,
+    String(algorithm.id || ''),
+    String(algorithm.name || ''),
+    String(step.stepId || ''),
+    String(step.stepName || ''),
+    String(binding.id || ''),
+    String(binding.name || ''),
+    status,
+    JSON.stringify(normalizeRealtimeArtifactIds(inputArtifactIds)),
+    JSON.stringify(result || {}),
+    createdAt,
+    createdAt,
+  );
+
+  return readPlanningRealtimeArtifactById(id);
 }
 
 function validateCredentials(username, password) {
@@ -1664,6 +1951,202 @@ app.post('/api/planning/llm/test', async (req, res) => {
     res.json(await testPlanningLlm(req.body || {}));
   } catch (error) {
     sendPlanningError(res, error, '大模型配置测试失败');
+  }
+});
+
+app.get('/api/planning/realtime/artifacts', (req, res) => {
+  try {
+    const result = listPlanningRealtimeArtifacts(req.user, {
+      taskId: req.query.taskId,
+      algorithmId: req.query.algorithmId,
+      query: req.query.query || req.query.keyword,
+      limit: req.query.limit,
+      offset: req.query.offset,
+    });
+    res.json(result);
+  } catch (error) {
+    sendPlanningError(res, error, '实时生成产物列表读取失败');
+  }
+});
+
+app.get('/api/planning/realtime/artifacts/:id', (req, res) => {
+  try {
+    const artifact = readPlanningRealtimeArtifactById(Number(req.params.id));
+    if (!artifact) {
+      throw createPlanningError({
+        code: 'PLANNING_MISSING_DATA',
+        type: 'missing_data',
+        status: 404,
+        message: '实时生成产物不存在。',
+        details: { artifactId: req.params.id },
+      });
+    }
+    if (!canAccessRealtimeArtifact(artifact, req.user)) {
+      throw createPlanningError({
+        code: 'PLANNING_PERMISSION_DENIED',
+        type: 'permission_denied',
+        status: 403,
+        message: '当前账号无权访问该实时生成产物。',
+        details: { artifactId: artifact.id },
+      });
+    }
+    res.json({ artifact });
+  } catch (error) {
+    sendPlanningError(res, error, '实时生成产物读取失败');
+  }
+});
+
+app.patch('/api/planning/realtime/artifacts/:id', (req, res) => {
+  try {
+    const artifact = readPlanningRealtimeArtifactById(Number(req.params.id));
+    if (!artifact) {
+      throw createPlanningError({
+        code: 'PLANNING_MISSING_DATA',
+        type: 'missing_data',
+        status: 404,
+        message: '实时生成产物不存在。',
+        details: { artifactId: req.params.id },
+      });
+    }
+    if (!canAccessRealtimeArtifact(artifact, req.user)) {
+      throw createPlanningError({
+        code: 'PLANNING_PERMISSION_DENIED',
+        type: 'permission_denied',
+        status: 403,
+        message: '当前账号无权编辑该实时生成产物。',
+        details: { artifactId: artifact.id },
+      });
+    }
+
+    const body = req.body || {};
+    const updates = [];
+    const params = [];
+    if (Object.prototype.hasOwnProperty.call(body, 'displayName')) {
+      const displayName = String(body.displayName || '').trim();
+      if (!displayName) {
+        throw createPlanningError({
+          code: 'PLANNING_MISSING_DATA',
+          type: 'missing_data',
+          status: 400,
+          message: '实时生成产物名称不能为空。',
+          details: { artifactId: artifact.id },
+        });
+      }
+      updates.push('display_name = ?');
+      params.push(displayName.slice(0, 120));
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'description')) {
+      updates.push('description = ?');
+      params.push(String(body.description || '').trim().slice(0, 2000));
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'resultPayload')) {
+      updates.push('result_payload = ?');
+      params.push(JSON.stringify(normalizeRealtimeEditablePayload(body.resultPayload)));
+    }
+
+    if (updates.length) {
+      updates.push('updated_at = ?');
+      params.push(nowText(), artifact.id);
+      db.prepare(`UPDATE planning_realtime_artifacts SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+    }
+
+    res.json({ artifact: readPlanningRealtimeArtifactById(artifact.id) });
+  } catch (error) {
+    sendPlanningError(res, error, '实时生成产物保存失败');
+  }
+});
+
+app.post('/api/planning/realtime/steps/evaluate', async (req, res) => {
+  const body = req.body || {};
+  try {
+    const task = resolveRealtimeTaskAccess(body.taskCenterId || body.taskId, req.user);
+    const inputArtifacts = readPlanningRealtimeInputArtifacts(body.inputArtifactIds, req.user);
+    const payload = buildRealtimeStepPayloadFromTask(task, body, inputArtifacts);
+    const result = await evaluatePlanningRealtimeStep(payload, { db });
+    const artifact = savePlanningRealtimeArtifact(req.user, task, result, result.inputArtifactIds || [], {
+      displayName: body.displayName,
+      description: body.description,
+      status: 'succeeded',
+    });
+    res.status(201).json({
+      ok: true,
+      artifact,
+      result,
+    });
+  } catch (error) {
+    sendPlanningError(res, error, '实时生成单步执行失败');
+  }
+});
+
+app.post('/api/planning/realtime/steps/evaluate/stream', async (req, res) => {
+  setupPlanningEventStream(res);
+
+  const body = req.body || {};
+  let task = null;
+  let streamFinished = false;
+  const abortController = new AbortController();
+  const events = {
+    emit(type, eventPayload) {
+      writePlanningEvent(res, type, eventPayload);
+    },
+  };
+  res.on('close', () => {
+    if (!streamFinished) {
+      abortController.abort();
+    }
+  });
+
+  try {
+    writePlanningEvent(res, 'run-start', {
+      taskCenterId: body.taskCenterId || body.taskId || null,
+      assessmentName: body.assessmentName || '',
+      phase: 'realtime-initializing',
+      realtime: true,
+    });
+
+    task = resolveRealtimeTaskAccess(body.taskCenterId || body.taskId, req.user);
+    const inputArtifacts = readPlanningRealtimeInputArtifacts(body.inputArtifactIds, req.user);
+    const payload = buildRealtimeStepPayloadFromTask(task, body, inputArtifacts);
+    const result = await evaluatePlanningRealtimeStep(payload, { db, events, signal: abortController.signal });
+    const artifact = savePlanningRealtimeArtifact(req.user, task, result, result.inputArtifactIds || [], {
+      displayName: body.displayName,
+      description: body.description,
+      status: 'succeeded',
+    });
+
+    writePlanningEvent(res, 'final', {
+      ok: true,
+      artifact,
+      result,
+      taskCenterId: task.id,
+      realtime: true,
+    });
+    writePlanningEvent(res, 'done', {
+      status: 'succeeded',
+      taskCenterId: task.id,
+      artifactId: artifact.id,
+      realtime: true,
+    });
+    streamFinished = true;
+    res.end();
+  } catch (error) {
+    const normalizedError = normalizePlanningError(error, '实时生成单步执行失败');
+    writePlanningEvent(res, 'error', {
+      taskCenterId: task?.id || body.taskCenterId || body.taskId || null,
+      code: normalizedError.code,
+      errorType: normalizedError.type,
+      status: normalizedError.status,
+      message: normalizedError.message,
+      details: normalizedError.details,
+      realtime: true,
+    });
+    writePlanningEvent(res, 'done', {
+      status: 'failed',
+      taskCenterId: task?.id || body.taskCenterId || body.taskId || null,
+      realtime: true,
+    });
+    streamFinished = true;
+    res.end();
   }
 });
 

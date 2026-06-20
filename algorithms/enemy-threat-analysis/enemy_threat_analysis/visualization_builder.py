@@ -36,6 +36,7 @@ HEATMAP_OVERLAY_ALPHA = 0.82
 def build_threat_visualization(
     target_assessments: Sequence[dict[str, Any]],
     heatmap: dict[str, Any],
+    image_overlays: Sequence[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     entities: list[dict[str, Any]] = []
     for target in target_assessments:
@@ -93,9 +94,9 @@ def build_threat_visualization(
             )
 
     bounds = heatmap.get("bounds") or {}
-    image_overlays = []
-    if bounds:
-        image_overlays.append(
+    resolved_image_overlays = list(image_overlays or [])
+    if not resolved_image_overlays and bounds:
+        resolved_image_overlays.append(
             {
                 "id": "threat-spatial-field",
                 "type": "image-overlay",
@@ -118,7 +119,18 @@ def build_threat_visualization(
         )
 
     environment = []
-    if bounds:
+    overlay_bounds = [item.get("bounds") for item in resolved_image_overlays if item.get("bounds")]
+    if overlay_bounds:
+        for index, item_bounds in enumerate(overlay_bounds, start=1):
+            environment.append(
+                {
+                    "id": f"threat-heat-{index}",
+                    "type": "threat-heat",
+                    "name": "威胁场范围" if len(overlay_bounds) == 1 else f"威胁场范围 {index}",
+                    "bounds": item_bounds,
+                }
+            )
+    elif bounds:
         environment.append(
             {
                 "id": "threat-heat",
@@ -136,11 +148,12 @@ def build_threat_visualization(
     return {
         "entities": entities,
         "environment": environment,
-        "imageOverlays": image_overlays,
+        "imageOverlays": resolved_image_overlays,
         "statistics": {
             "entityCount": len(entities),
             "targetEntityCount": len([item for item in entities if item["geometryType"] == "point"]),
             "coverageEntityCount": len([item for item in entities if item["geometryType"] == "circle"]),
             "heatmapCellCount": len(heatmap.get("grid") or []),
+            "heatmapOverlayCount": len(resolved_image_overlays),
         },
     }

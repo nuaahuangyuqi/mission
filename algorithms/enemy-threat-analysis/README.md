@@ -7,6 +7,7 @@
 - 大模型只负责从多文件中抽取 `threat-extraction-v1` 结构化 JSON。
 - 稳定算法负责威胁分、价值分、优先级、空间威胁场、热力图和平台兼容 `structuredOutput`。
 - 输出保留平台需要的 `threatScore / enemyIntentions / fireCoverage / airDefenseSystem / visualization` 等字段。
+- 热力图采用全局威胁场兼容输出加多局部贴图增强：`heatmapBase64 / heatmapGeojson` 仍表示全局威胁场，多个远距离目标群会额外生成多条 `visualization.imageOverlays` 局部透明 PNG 贴图。
 
 ## 安装
 
@@ -77,6 +78,8 @@ python3 -m enemy_threat_analysis.cli \
 - `target-map.png`：目标位置与标注图片
 - `combined-map.png`：热力图和目标覆盖范围合成图
 - `operational_assessment_*.docx`：二阶段敌方作战企图与部署态势研判报告
+
+算法结果中始终保留全局 `heatmapBase64 / heatmapGeojson`。当目标自带 `groupId / groupName` 或可按空间距离推断出多个目标群时，`visualization.imageOverlays` 会改为多条内联局部热力图，每条包含 `imageBase64`、`bounds`、`groupId`、`targetIds` 和 `displayVersion=soft-continuous-v2`；同时 `heatmap.overlayMode` 为 `clustered`，`heatmap.groupSummaries` 记录各群组摘要。单目标群仍保持旧版 `imageBase64Field=heatmapBase64` 输出。
 
 二阶段研判默认开启，会在第一阶段算法完成后再次调用大模型生成研判 JSON，再由 Python 生成 DOCX。可选参数：
 

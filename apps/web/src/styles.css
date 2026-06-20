@@ -1529,6 +1529,23 @@ tbody tr:hover, tbody tr.active { background: rgba(111, 143, 82, 0.12); }
     linear-gradient(180deg, rgba(12, 22, 17, 0.96), rgba(8, 15, 10, 0.92));
 }
 
+.planning-allocation-plan-grid .planning-grouping-scheme-card--preferred {
+  grid-column: auto;
+}
+
+.planning-allocation-plan-row--active {
+  background: rgba(56, 189, 248, 0.08);
+}
+
+.planning-allocation-plan-row--active,
+.planning-target-allocation-panel tbody tr {
+  cursor: pointer;
+}
+
+.planning-allocation-plan-row--active td {
+  color: var(--text);
+}
+
 .planning-target-allocation-list {
   display: grid;
   gap: 10px;
@@ -1555,6 +1572,144 @@ tbody tr:hover, tbody tr.active { background: rgba(111, 143, 82, 0.12); }
   margin: 0;
   color: var(--muted);
   line-height: 1.55;
+}
+
+.planning-allocation-diagram-card {
+  display: grid;
+  gap: 14px;
+  overflow: hidden;
+}
+
+.planning-allocation-diagram-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.planning-allocation-diagram-card__head h4 {
+  margin: 6px 0 4px;
+}
+
+.planning-allocation-diagram-card__head p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.planning-allocation-diagram-legend {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+  max-width: 360px;
+}
+
+.planning-allocation-diagram-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px;
+  border-radius: 999px;
+  border: 1px solid rgba(176, 214, 179, 0.13);
+  color: var(--muted);
+  background: rgba(5, 12, 10, 0.48);
+  font-size: 12px;
+}
+
+.planning-allocation-diagram-legend i {
+  width: 10px;
+  height: 10px;
+  border-radius: 999px;
+  box-shadow: 0 0 12px currentColor;
+}
+
+.planning-allocation-diagram-scroll {
+  max-height: 560px;
+  overflow: auto;
+  border: 1px solid rgba(56, 189, 248, 0.14);
+  border-radius: 16px;
+  background:
+    linear-gradient(90deg, rgba(56, 189, 248, 0.08), transparent 34%, transparent 66%, rgba(251, 113, 133, 0.07)),
+    rgba(5, 12, 10, 0.52);
+}
+
+.planning-allocation-diagram-canvas {
+  position: relative;
+  min-width: 760px;
+  min-height: 260px;
+}
+
+.planning-allocation-diagram-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: auto;
+}
+
+.planning-allocation-diagram-link {
+  fill: none;
+  stroke-width: 2.6;
+  stroke-linecap: round;
+  opacity: 0.88;
+  filter: drop-shadow(0 0 8px rgba(250, 204, 21, 0.18));
+}
+
+.planning-allocation-diagram-link--risk {
+  stroke-dasharray: 8 7;
+  opacity: 0.96;
+  filter: drop-shadow(0 0 10px rgba(251, 113, 133, 0.28));
+}
+
+.planning-allocation-diagram-node {
+  position: absolute;
+  z-index: 2;
+  display: grid;
+  gap: 4px;
+  padding: 11px 12px;
+  border-radius: 14px;
+  border: 1px solid rgba(176, 214, 179, 0.15);
+  color: var(--text);
+  background: rgba(9, 18, 12, 0.92);
+  box-shadow: 0 14px 28px rgba(0, 0, 0, 0.24);
+}
+
+.planning-allocation-diagram-node strong {
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.planning-allocation-diagram-node span,
+.planning-allocation-diagram-node small {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.planning-allocation-diagram-node--group {
+  border-color: rgba(56, 189, 248, 0.32);
+  background:
+    radial-gradient(circle at top left, rgba(56, 189, 248, 0.16), transparent 55%),
+    rgba(8, 17, 22, 0.92);
+}
+
+.planning-allocation-diagram-node--target {
+  border-color: rgba(251, 113, 133, 0.32);
+  background:
+    radial-gradient(circle at top right, rgba(251, 113, 133, 0.14), transparent 55%),
+    rgba(22, 11, 13, 0.9);
+}
+
+.planning-allocation-diagram-risk-tag {
+  position: absolute;
+  z-index: 3;
+  padding: 4px 8px;
+  border-radius: 999px;
+  border: 1px solid rgba(251, 113, 133, 0.42);
+  color: #fecdd3;
+  background: rgba(127, 29, 29, 0.74);
+  font-size: 12px;
+  box-shadow: 0 8px 18px rgba(0, 0, 0, 0.22);
 }
 
 .planning-grouping-browser {
@@ -1674,6 +1829,70 @@ tbody tr:hover, tbody tr.active { background: rgba(111, 143, 82, 0.12); }
   grid-template-columns: repeat(6, minmax(0, 1fr));
 }
 
+.planning-grouping-requirement-grid,
+.planning-grouping-load-summary,
+.planning-grouping-transport-strip {
+  display: grid;
+  gap: 12px;
+}
+
+.planning-grouping-requirement-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.planning-grouping-requirement-card,
+.planning-grouping-transport-strip article,
+.planning-grouping-load-summary > div {
+  min-width: 0;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(176, 214, 179, 0.12);
+  background: rgba(10, 18, 12, 0.68);
+}
+
+.planning-grouping-requirement-card h4 {
+  margin: 8px 0 6px;
+}
+
+.planning-grouping-requirement-card p,
+.planning-grouping-transport-strip p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+.planning-grouping-requirement-card__stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.planning-grouping-requirement-card__stats span {
+  padding: 6px 8px;
+  border-radius: 9px;
+  background: rgba(5, 12, 10, 0.56);
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.planning-grouping-load-summary {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.planning-grouping-load-summary span {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.planning-grouping-load-summary strong {
+  display: block;
+  line-height: 1.55;
+  white-space: normal;
+}
+
 .planning-grouping-metric-grid > div,
 .planning-grouping-group-metrics > div {
   padding: 12px 14px;
@@ -1718,12 +1937,22 @@ tbody tr:hover, tbody tr.active { background: rgba(111, 143, 82, 0.12); }
   background: rgba(163, 230, 53, 0.06);
 }
 
+.planning-grouping-composition--reason {
+  border-left-color: rgba(56, 189, 248, 0.62);
+  background: rgba(56, 189, 248, 0.06);
+}
+
 .planning-grouping-unit-name {
   min-width: 180px;
 }
 
 .planning-grouping-capability-summary {
   min-width: 280px;
+  white-space: normal;
+}
+
+.planning-grouping-load-cell {
+  min-width: 220px;
   white-space: normal;
 }
 
@@ -5107,6 +5336,8 @@ tbody tr:hover, tbody tr.active { background: rgba(111, 143, 82, 0.12); }
   .action-node-card__grid,
   .planning-template-builder__columns,
   .planning-runtime-parameter-grid,
+  .planning-grouping-requirement-grid,
+  .planning-grouping-load-summary,
   .consumption-model-card-grid,
   .consumption-equipment-grid,
   .consumption-casualty-grid {
@@ -5160,9 +5391,15 @@ tbody tr:hover, tbody tr.active { background: rgba(111, 143, 82, 0.12); }
 
   .planning-grouping-scheme-card__head,
   .planning-grouping-selected__head,
-  .planning-grouping-group-card__head {
+  .planning-grouping-group-card__head,
+  .planning-allocation-diagram-card__head {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .planning-allocation-diagram-legend {
+    justify-content: flex-start;
+    max-width: none;
   }
 
   .planning-algorithm-list-card__footer,

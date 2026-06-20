@@ -1013,6 +1013,14 @@ function isEntityVisible(entity) {
   return Boolean(props.layerVisibility[entity.layerKey]);
 }
 
+function shouldShowEntityLabel(entity = {}) {
+  const metaValue = entity.meta?.showLabel ?? entity.meta?.labelVisible;
+  const directValue = entity.showLabel ?? entity.labelVisible;
+  if (metaValue === false || directValue === false) return false;
+  if (metaValue === true || directValue === true) return true;
+  return true;
+}
+
 function probeImage(url, timeout = 4000) {
   return new Promise((resolve) => {
     if (!url) {
@@ -1822,6 +1830,7 @@ function addSituationEntity(entity) {
   const detectionMeta = entity.meta || {};
   const detectionSector = resolveDetectionSectorMeta(detectionMeta);
   const detectionClockRange = buildDetectionClockRange(detectionMeta);
+  const showLabel = shouldShowEntityLabel(entity);
 
   if (entity.geometryType === 'point') {
     situationSource.entities.add({
@@ -1834,17 +1843,19 @@ function addSituationEntity(entity) {
         heightReference: useGroundClamp ? Cesium.HeightReference.CLAMP_TO_GROUND : Cesium.HeightReference.NONE,
         disableDepthTestDistance: Number.POSITIVE_INFINITY,
       },
-      label: {
-        text: entity.name,
-        font: '14px sans-serif',
-        fillColor: Cesium.Color.WHITE,
-        outlineColor: Cesium.Color.BLACK,
-        outlineWidth: 2,
-        showBackground: true,
-        backgroundColor: Cesium.Color.fromCssColorString('#101611').withAlpha(0.72),
-        pixelOffset: new Cesium.Cartesian2(0, -26),
-        heightReference: useGroundClamp ? Cesium.HeightReference.CLAMP_TO_GROUND : Cesium.HeightReference.NONE,
-      },
+      ...(showLabel ? {
+        label: {
+          text: entity.name,
+          font: '14px sans-serif',
+          fillColor: Cesium.Color.WHITE,
+          outlineColor: Cesium.Color.BLACK,
+          outlineWidth: 2,
+          showBackground: true,
+          backgroundColor: Cesium.Color.fromCssColorString('#101611').withAlpha(0.72),
+          pixelOffset: new Cesium.Cartesian2(0, -26),
+          heightReference: useGroundClamp ? Cesium.HeightReference.CLAMP_TO_GROUND : Cesium.HeightReference.NONE,
+        },
+      } : {}),
       description: entity.annotation,
     });
     return;
@@ -1874,14 +1885,16 @@ function addSituationEntity(entity) {
         getColor(sensorColor, detectionProfile.shellAlpha),
         { outline: true, outlineColor: getColor(color, 0.82) },
       ),
-      label: {
-        text: entity.name,
-        font: '14px sans-serif',
-        fillColor: Cesium.Color.WHITE,
-        pixelOffset: new Cesium.Cartesian2(0, -8),
-        showBackground: true,
-        backgroundColor: Cesium.Color.fromCssColorString('#101611').withAlpha(0.62),
-      },
+      ...(showLabel ? {
+        label: {
+          text: entity.name,
+          font: '14px sans-serif',
+          fillColor: Cesium.Color.WHITE,
+          pixelOffset: new Cesium.Cartesian2(0, -8),
+          showBackground: true,
+          backgroundColor: Cesium.Color.fromCssColorString('#101611').withAlpha(0.62),
+        },
+      } : {}),
       description: entity.annotation,
     });
     fillLayers.forEach((layer, index) => {
@@ -1946,11 +1959,13 @@ function addSituationEntity(entity) {
         clampToGround: props.mapMode === '2D'
           || entity.coordinates.every((point) => Number(point[2] || 0) === 0),
       },
-      label: {
-        text: entity.name,
-        font: '14px sans-serif',
-        fillColor: Cesium.Color.WHITE,
-      },
+      ...(showLabel ? {
+        label: {
+          text: entity.name,
+          font: '14px sans-serif',
+          fillColor: Cesium.Color.WHITE,
+        },
+      } : {}),
       description: entity.annotation,
     });
     situationSource.entities.add({
@@ -1997,11 +2012,13 @@ function addSituationEntity(entity) {
         outline: true,
         outlineColor: getColor(color, 0.96),
       },
-      label: {
-        text: entity.name,
-        font: '14px sans-serif',
-        fillColor: Cesium.Color.WHITE,
-      },
+      ...(showLabel ? {
+        label: {
+          text: entity.name,
+          font: '14px sans-serif',
+          fillColor: Cesium.Color.WHITE,
+        },
+      } : {}),
       description: entity.annotation,
     });
 

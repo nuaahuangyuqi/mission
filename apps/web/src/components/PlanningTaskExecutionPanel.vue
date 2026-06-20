@@ -141,6 +141,22 @@ function formatTextList(values) {
   return items.length ? items.join('、') : '--';
 }
 
+function formatOutputValue(value) {
+  if (value === null || typeof value === 'undefined' || value === '') return '--';
+  if (typeof value === 'number') return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(2)));
+  return String(value);
+}
+
+function formatFirepowerBreakdown(value = {}) {
+  const breakdown = value && typeof value === 'object' && !Array.isArray(value) ? value : {};
+  if (!Object.keys(breakdown).length) return '';
+  return `火力构成：武装装备 ${formatOutputValue(breakdown.weaponEquipmentPower)} / 运输人员 ${formatOutputValue(breakdown.transportPersonnelPower)}`;
+}
+
+function firepowerSummary(source = {}) {
+  return source.firepowerSummary || formatFirepowerBreakdown(source.firepowerBreakdown || source.groupFirepowerBreakdown);
+}
+
 function handleSaveSnapshot() {
   try {
     saveCurrentResultSnapshot();
@@ -767,6 +783,7 @@ async function handleReplayRun(runId) {
                   <strong>{{ group.endurance }}</strong>
                 </div>
               </div>
+              <p v-if="firepowerSummary(group)" class="muted-text">{{ firepowerSummary(group) }}</p>
 
               <div class="chip-row">
                 <span v-for="item in group.units || []" :key="item.id" class="pill pill-muted">{{ item.name }}</span>
@@ -864,6 +881,7 @@ async function handleReplayRun(runId) {
                     <th>目标</th>
                     <th>类型</th>
                     <th>优先级</th>
+                    <th>火力构成</th>
                     <th>匹配分</th>
                     <th>可行性</th>
                     <th>距离</th>
@@ -878,6 +896,7 @@ async function handleReplayRun(runId) {
                     <td>{{ item.targetName }}</td>
                     <td>{{ item.targetTypeLabel || item.targetType }}</td>
                     <td>{{ item.priorityLevel }} / {{ item.priority }}</td>
+                    <td>{{ firepowerSummary(item) || '--' }}</td>
                     <td>{{ item.matchScore }}</td>
                     <td>{{ item.feasibilityScore }}</td>
                     <td>{{ item.distanceKm }} km</td>

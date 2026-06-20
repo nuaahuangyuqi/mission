@@ -1068,6 +1068,27 @@ export function createDatabase() {
       FOREIGN KEY (run_id) REFERENCES task_runs(id)
     );
 
+    CREATE TABLE IF NOT EXISTS planning_realtime_artifacts (
+      id INTEGER PRIMARY KEY,
+      owner_user_id INTEGER NOT NULL,
+      task_id INTEGER NOT NULL,
+      task_name TEXT NOT NULL DEFAULT '',
+      display_name TEXT NOT NULL DEFAULT '',
+      description TEXT NOT NULL DEFAULT '',
+      algorithm_id TEXT NOT NULL DEFAULT '',
+      algorithm_name TEXT NOT NULL DEFAULT '',
+      step_id TEXT NOT NULL DEFAULT '',
+      step_name TEXT NOT NULL DEFAULT '',
+      binding_id TEXT NOT NULL DEFAULT '',
+      binding_name TEXT NOT NULL DEFAULT '',
+      status TEXT NOT NULL DEFAULT 'succeeded',
+      input_artifact_ids TEXT NOT NULL DEFAULT '[]',
+      result_payload TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY (task_id) REFERENCES tasks(id)
+    );
+
     CREATE TABLE IF NOT EXISTS task_attachments (
       id INTEGER PRIMARY KEY,
       task_id INTEGER NOT NULL,
@@ -1137,6 +1158,22 @@ export function createDatabase() {
   ensureColumn(db, 'task_runs', 'error_code', "error_code TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'task_runs', 'error_message', "error_message TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'task_runs', 'created_at', "created_at TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'planning_realtime_artifacts', 'owner_user_id', 'owner_user_id INTEGER NOT NULL DEFAULT 1');
+  ensureColumn(db, 'planning_realtime_artifacts', 'task_id', 'task_id INTEGER NOT NULL DEFAULT 1');
+  ensureColumn(db, 'planning_realtime_artifacts', 'task_name', "task_name TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'planning_realtime_artifacts', 'display_name', "display_name TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'planning_realtime_artifacts', 'description', "description TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'planning_realtime_artifacts', 'algorithm_id', "algorithm_id TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'planning_realtime_artifacts', 'algorithm_name', "algorithm_name TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'planning_realtime_artifacts', 'step_id', "step_id TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'planning_realtime_artifacts', 'step_name', "step_name TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'planning_realtime_artifacts', 'binding_id', "binding_id TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'planning_realtime_artifacts', 'binding_name', "binding_name TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'planning_realtime_artifacts', 'status', "status TEXT NOT NULL DEFAULT 'succeeded'");
+  ensureColumn(db, 'planning_realtime_artifacts', 'input_artifact_ids', "input_artifact_ids TEXT NOT NULL DEFAULT '[]'");
+  ensureColumn(db, 'planning_realtime_artifacts', 'result_payload', "result_payload TEXT NOT NULL DEFAULT '{}'");
+  ensureColumn(db, 'planning_realtime_artifacts', 'created_at', "created_at TEXT NOT NULL DEFAULT ''");
+  ensureColumn(db, 'planning_realtime_artifacts', 'updated_at', "updated_at TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'task_attachments', 'algorithm_id', "algorithm_id TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'task_attachments', 'file_id', "file_id TEXT NOT NULL DEFAULT ''");
   ensureColumn(db, 'task_attachments', 'file_name', "file_name TEXT NOT NULL DEFAULT ''");
@@ -1169,6 +1206,9 @@ export function createDatabase() {
   db.exec('CREATE INDEX IF NOT EXISTS idx_task_runs_task_created ON task_runs(task_id, created_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_task_results_task_created ON task_results(task_id, created_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_task_results_run ON task_results(run_id)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_planning_realtime_owner_updated ON planning_realtime_artifacts(owner_user_id, updated_at DESC)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_planning_realtime_owner_task_updated ON planning_realtime_artifacts(owner_user_id, task_id, updated_at DESC)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_planning_realtime_owner_algorithm_updated ON planning_realtime_artifacts(owner_user_id, algorithm_id, updated_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_task_attachments_task_created ON task_attachments(task_id, created_at DESC)');
   db.exec('CREATE INDEX IF NOT EXISTS idx_task_attachments_task_algorithm ON task_attachments(task_id, algorithm_id)');
   db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_task_attachments_task_algorithm_file ON task_attachments(task_id, algorithm_id, file_id)');
@@ -1404,6 +1444,28 @@ export function mapTaskResult(row) {
     runId: row.run_id,
     resultPayload: deserialize(row.result_payload, {}),
     createdAt: row.created_at || '',
+  };
+}
+
+export function mapPlanningRealtimeArtifact(row) {
+  return {
+    id: row.id,
+    ownerUserId: row.owner_user_id,
+    taskId: row.task_id,
+    taskName: row.task_name || '',
+    displayName: row.display_name || '',
+    description: row.description || '',
+    algorithmId: row.algorithm_id || '',
+    algorithmName: row.algorithm_name || '',
+    stepId: row.step_id || '',
+    stepName: row.step_name || '',
+    bindingId: row.binding_id || '',
+    bindingName: row.binding_name || '',
+    status: row.status || 'succeeded',
+    inputArtifactIds: deserialize(row.input_artifact_ids, []),
+    resultPayload: deserialize(row.result_payload, {}),
+    createdAt: row.created_at || '',
+    updatedAt: row.updated_at || '',
   };
 }
 

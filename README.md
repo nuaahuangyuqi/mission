@@ -25,6 +25,18 @@
 
 ## 当前功能
 
+### 模拟直升机编组资料包
+
+根目录的 `force_grouping_dataset/raw_docs` 当前内含五份面向 `作战力量智能编组`、任务需求抽取和资源调度联调的原始自然语言 TXT 文档：
+
+- `helicopter_equipment.txt`：虚构直升机装备与可调用兵力情况说明，覆盖攻击、运输、侦察通信、医疗后送和预备训练平台
+- `weapons_supply.txt`：虚构武器弹药与任务载荷库存说明，覆盖精确打击、区域压制、自卫、标识、干扰、侦察和通信中继载荷
+- `personnel_support.txt`：虚构人员、物资与运输保障配置说明，覆盖突击班、地域控制、通信、医疗、工程、机务、油弹装卸和公共物资包
+- `grouping_rules.txt`：虚构编组与作战组织规则摘编，覆盖火力打击、机降投送、侦察通信、护航预备、后送保障和方案解释要求
+- `mission_brief.txt`：虚构复合任务简令，提供任务背景、目标摘要、我方任务要求和输出解释口径
+
+这些文件刻意保持为内部资料风格的自然语言段落，不使用 JSON、YAML、表格或 schema，适合用于测试 LLM 信息抽取、编组算法输入转换和系统级仿真联调。资料中的单位、装备、地名、库存、目标与规则均为演训模拟内容，不对应真实组织、装备、行动或地点。算法仍兼容同构 JSON 输入。
+
 ### 0. 总任务中心与顶层入口
 
 - 首页当前已调整为“任务中心优先”的工作台入口：
@@ -193,9 +205,10 @@
   - `机降地域优化选择`
   - `作战方法自动规划`
   - `作战保障自动规划`
-- 上述 `6` 个算法当前均已有内置实现；其中 3 个算法额外登记了本地 Python 扩展实现，用户可在“流程编排 / 算法实现”下拉中切换；`作战目标自动分配` 另在内置方法列表中接入本地 Python `intelligent-allocation / 智能分配算法`，默认方法仍保持 `multi-objective`：
+- 上述 `6` 个算法当前均已有内置实现；其中 4 个算法额外登记了本地 Python 扩展实现，用户可在“流程编排 / 算法实现”下拉中切换；`作战目标自动分配` 的智能算法已与内置方法分开登记，默认实现仍为内置 `multi-objective`：
   - `敌情威胁自动分析`：`基于大模型分析算法`，来自 `algorithms/enemy-threat-analysis`
-  - `作战力量智能编组`：`智能编组算法`，来自 `algorithms/force-grouping`
+  - `作战力量智能编组`：`智能编组算法`，来自 `algorithms/battle-planner`
+  - `作战目标自动分配`：`智能分配算法`，复用 `algorithms/battle-planner` 编组阶段结果
   - `机降地域优化选择`：`机降地域优化选择 Python 算法`，来自 `algorithms/airlanding_zone`
 - 旧任务中如果仍保存了已移除的外部规划绑定，前后端会在找不到对应变体时自动回退到该算法的内置实现，避免历史任务无法打开或执行
 - 当前内置 `2` 个任务模板：
@@ -211,20 +224,20 @@
 - `敌情威胁自动分析` 支持从资源库显式勾选数据源，也支持上传本地 `Word / PDF / Excel / CSV / TXT` 文件进行分析；未勾选资源库数据源时不会默认使用全部已有资源，若同时没有上传文件，执行前会提示补充输入
 - `敌情威胁自动分析` 当前使用内置规则融合实现，会结合已勾选资源库的预览、抽取条目、敌方情报、环境要素和本地上传文件，提取敌方作战企图、部署态势、火力覆盖、防空体系、侦察预警和反机降设施等结构化节点
 - `敌情威胁自动分析` 的大模型抽取结果会在 schema 校验前做安全归一化：例如模型把 `spatialContext.terrain / weather` 返回成字符串，或把 `equipment[].quantity` 返回成 `estimated / multiple / various` 等文本时，会自动转换为平台可校验的结构化字段；同时覆盖范围不再对所有目标兜底生成，指挥、机动、后勤、普通工事等点目标默认 `hasCoverage=false / radiusMeters=0`
-- `敌情威胁自动分析` 单算法结果页仍保留通用三维威胁场展示能力：当内置算法或未来新算法在结构化结果中提供 `heatmapBase64 / heatmapGeojson / bounds / targetEntities / pointThreatEvaluation` 等字段时，三维球会叠加热力图、目标卡片、覆盖圈、部署区和采样统计；其中热力图不做前端实时网格渲染，而是读取 Python 算法生成的透明 PNG 和 `visualization.imageOverlays` / `heatmap.bounds` 地理边界，以 Cesium 单幅影像层贴地加载到底图之上、单位实体之下，并受结果页“威胁场”开关联动；Python 热力图会按当前威胁场峰值做可视化归一化，再通过重采样、高斯柔化和软透明度衰减生成连续贴图，避免因全局分值偏低而出现“已加载但肉眼不可见”、放大后被地形遮挡、缩小时中间被硬阈值挖空或低分辨率网格块割裂；历史结果若仍携带旧版或无 `displayVersion` 的 `heatmapBase64`，前端会基于已有 `heatmap.grid` 一次性生成增强静态贴图作为兼容兜底；若 Python 结果未单独提供 `targetEntities`，结果页会从 `targetAssessments`、`fireCoverage`、`airDefenseSystem`、`reconEarlyWarning` 和 `antiAirborneFacilities` 中提取坐标生成可定位目标，并按单位类型选择可视化形式：火力、防空、侦察/雷达、电子对抗默认可生成覆盖圈，指挥、机动、后勤、普通工事默认只生成点/符号，显式 `visualizationType / coverageTypes / hasCoverage` 可覆盖默认规则；页面不再依赖任何已移除的外部算法工程
-- `作战力量智能编组` 会结合已勾选资源库对应的我方兵力、资源库文档、本地上传文件和敌情威胁结果，生成动态规则画像、群组蓝图和多方案编组结果
-- `作战力量智能编组` 现在会让 `expectedGroupCount` 真正参与求解，并输出实际群组数、规则权重、证据条目、遗传优化迭代信息和推荐解释
-- `作战力量智能编组` 单算法结果页现在会展示算法输出的全部候选方案，并以 `preferredSchemeId` 标记的最优解置顶和默认选中；点击不同方案卡片后，页面会切换对应评分、能力指标、约束状态、群组与单位构成
-- 每套编组方案会逐组显示“第 i 个编组由 XXX 单位构成”，并展开单位名称、类别、角色、兵力、战备状态、能力摘要和坐标等可用信息；历史归档若方案只有 `methodLabel`、没有 `name`，结果页也会使用可读方案名称回显
+- `敌情威胁自动分析` 单算法结果页仍保留通用三维威胁场展示能力：当内置算法或未来新算法在结构化结果中提供 `heatmapBase64 / heatmapGeojson / bounds / targetEntities / pointThreatEvaluation` 等字段时，三维球会叠加热力图、目标卡片、覆盖圈、部署区和采样统计；其中热力图不做前端实时网格渲染，而是读取 Python 算法生成的透明 PNG 和 `visualization.imageOverlays` / `heatmap.bounds` 地理边界，以 Cesium 单幅影像层贴地加载到底图之上、单位实体之下，并受结果页“威胁场”开关联动；Python 热力图会按当前威胁场峰值做可视化归一化，再通过重采样、高斯柔化和软透明度衰减生成连续贴图，避免因全局分值偏低而出现“已加载但肉眼不可见”、放大后被地形遮挡、缩小时中间被硬阈值挖空或低分辨率网格块割裂；当目标空间上分为多个远距离群组时，算法会保留全局 `heatmapBase64 / heatmapGeojson`，并额外按目标群生成多条内联 `visualization.imageOverlays` 局部贴图，`heatmap.overlayMode` 标记为 `clustered`，`heatmap.groupSummaries` 记录每个目标群 bounds 与目标清单；历史结果若仍携带旧版或无 `displayVersion` 的 `heatmapBase64`，前端会基于已有 `heatmap.grid` 一次性生成增强静态贴图作为兼容兜底；若 Python 结果未单独提供 `targetEntities`，结果页会从 `targetAssessments`、`fireCoverage`、`airDefenseSystem`、`reconEarlyWarning` 和 `antiAirborneFacilities` 中提取坐标生成可定位目标，并按单位类型选择可视化形式：火力、防空、侦察/雷达、电子对抗默认可生成覆盖圈，指挥、机动、后勤、普通工事默认只生成点/符号，显式 `visualizationType / coverageTypes / hasCoverage` 可覆盖默认规则；页面不再依赖任何已移除的外部算法工程
+- `作战力量智能编组` 的本地 Python `智能编组算法` 已切换为 `battle_planner`：旧 `algorithms/force-grouping` Python 智能算法目录已删除，服务端会把上一步 `enemy-threat-analysis` 输出包装为临时 `planning-artifact-export-v1` 敌情 JSON，再把智能编组阶段上传/勾选的我方资料作为 `--friendly` 文档传入
+- `作战力量智能编组` 用户侧不再上传敌情 JSON；`TXT / MD / JSON / DOCX` 会直接传入 `battle_planner`，`PDF / Excel / CSV` 会先由服务端预览解析链路转换为文本临时文件，保持当前上传入口不变
+- `作战力量智能编组` 输出会被平台适配为既有 contract：`schemes / preferredScheme / groups / importedFiles / evidenceTrace / constraintSummary`，并额外保留原始 `battlePlannerResult`，供智能分配阶段复用；适配层会围绕 `均衡 / 战损最小化 / 资源最小化` 三种策略生成可比较编组方案，武器和人员装载会同时输出编组级 `weaponSummary / personnelSummary` 与单位级 `unit.weaponLoadout / unit.personnelLoadout`，确保结果页单位表能显示实际装载
+- `作战力量智能编组` 单算法结果页现在会展示算法输出的全部候选方案，并以 `preferredSchemeId` 标记的推荐解默认选中；点击不同方案卡片后，页面会切换对应评分、能力指标、约束状态、群组与单位构成，用于对比战损更低、资源更省或综合均衡的编组结果
+- 每套编组方案会逐组显示“第 i 个编组由 XXX 单位构成”，并展开单位名称、类别、角色、兵力、战备状态、武器装载、人员/物资装载、能力摘要和坐标等可用信息；历史归档若方案只有 `methodLabel`、没有 `name`，结果页也会使用可读方案名称回显
 - 规划执行结果现已提供证据溯源入口：关键结果可回看来源名称、来源类型、文件名、抽取时间和摘要
-- `作战力量智能编组` 对本地 `CSV/Excel` 兵力文件支持按行拆解文档候选单元，即使没有结构化我方兵力，也能直接生成基础编组方案
-- `作战力量智能编组` 已预留 `约束模型` 扩展接口，当前内置默认模型为 `基础编组约束`，会输出约束得分、约束满足状态和分方案约束评估结果
 - `作战目标自动分配` 现已基于敌情威胁结果和编组结果构建平台级分配模型，不再只把编组整体当作单个平台使用
-- `作战目标自动分配` 当前内置 `匈牙利算法分配 / 蚁群协同分配 / 多目标优化分配 / 智能分配算法` 四种方法，支持多平台、多目标、多波次打击包分配，并输出方案对比
-- `作战目标自动分配` 的 `智能分配算法` 来自 `algorithms/target-allocation` Python 包；后端会把上游 `enemy-threat-analysis` 与 `force-grouping` 结构化结果写入临时 JSON，再调用 `python -m target_allocation.cli --upstream-threat ... --upstream-grouping ... --objective-preference ... --validation-mode ... --max-assignments-per-group ... --output ...`，输出仍保持平台字段 `candidateTargets / platforms / groups / comparedPlans / preferredPlan / systemBestPlan / validationFindings / adjustmentSuggestions`
-- 当选择 `智能分配算法` 时，`comparedPlans` 会同时展示原三种 Node 内置方案和 Python 智能方案；`preferredPlanMethodKey` 指向 `intelligent-allocation`，`systemBestPlan` 仍按评分从全部方案中自动选择
-- `作战目标自动分配` 会结合目标重要性、打击难度、平台能力、射程利用率、编组负荷和验证模式输出合理性校核、目标覆盖摘要和调整建议
-- `作战目标自动分配` 单算法结果页现在会额外展示“作战目标分配态势”面板，复用三维球渲染蓝方编组、红方目标、部署区上下文和分配箭头，并同步展示分配清单和方案指标
+- `作战目标自动分配` 当前内置 `匈牙利算法分配 / 蚁群协同分配 / 多目标优化分配` 三种方法，支持多平台、多目标、多波次打击包分配，并输出方案对比
+- `作战目标自动分配` 的 `智能分配算法` 不再调用旧 `target_allocation` Python 包；旧 `algorithms/target-allocation` Python 智能算法目录已删除。选择 `target-allocation:target-allocation-local / 智能分配算法` 时，后端会读取上游编组结果中的 `battlePlannerResult.task_groups`，适配输出 `candidateTargets / originalTargets / platforms / groups / comparedPlans / preferredPlan / systemBestPlan / validationFindings / adjustmentSuggestions / visualization`
+- 当选择 `智能分配算法` 本地实现时，`preferredPlanMethodKey` 指向 `intelligent-allocation`；当选择内置实现时，内置方法下拉只展示原三种 Node 分配方法。旧任务若仍保存 `builtinMethodKey=intelligent-allocation`，后端会路由到同一 Battle Planner 适配器
+- `作战目标自动分配` 会结合上游目标、编组承担目标、距离、编组负荷和验证模式输出合理性校核、目标覆盖摘要和调整建议；`智能分配算法` 当前按 Battle Planner 编组阶段已形成的任务组生成单波分配，并基于 `均衡 / 战损最小化 / 资源最小化` 三种策略输出 `comparedPlans`，每个方案都携带独立的三维态势图层。候选目标与态势图红方目标点会优先使用 `targetAssessments.location.coordinates`、`targetEntities`、`fireCoverage / airDefenseSystem / reconEarlyWarning / antiAirborneFacilities / deploymentSectors` 中的真实经纬度，并按上游目标 id/name 建立索引；只有目标缺少可用坐标时才退回算法兜底点。结果页还会对历史结果做前端兜底：若结构化结果缺少 `allocation-original-target-*`，会从 `originalTargets / candidateTargets` 临时合成原始目标点
+- `智能分配算法` 的编组火力值现在只由实际武器装载折算：没有装载武器时 `group.firepower = 0`；运输直升机和人员配置仍保留为人员投送/机动等其他指标，但不再进入火力值。若火力打击类编组未装载武器，目标分配会生成校核失败项，不再形成有效火力打击分配
+- `作战目标自动分配` 单算法结果页现在会额外展示“作战目标分配态势”面板，复用三维球渲染蓝方编组、红方目标、原始目标、部署区上下文和分配箭头，并新增二维“编组-目标分配图”卡片，用左侧编组、右侧目标和按波次着色的箭头直观展示当前查看方案的分配关系；用户可点击方案卡片或方案表格行，在 `均衡 / 战损最小化 / 资源最小化` 分配结果之间切换，三维态势、二维分配图、统计指标和分配清单会同步刷新。为避免大量编组/箭头标签造成三维球卡顿，目标分配态势默认只保留原始目标标签，编组、候选目标和分配箭头以符号/线为主显示
 - `作战方法自动规划` 支持 `A*`、`Dijkstra`、`RRT` 三类路径规划算法，当前会优先读取 `作战目标自动分配` 的实际群组-目标-波次结果生成路线任务，再在气象、地形、电磁和敌方火力约束下执行真实路径求解，而不是固定模板航点拼接
 - `作战方法自动规划` 的输出现在包含每条路线的波次、平台上下文、检查点、时间窗、场代价和三维球约束叠加层；若上游目标分配样本未形成有效分配，则会回退到目标锚点生成基础路线任务，保证流程仍可联调
 - `作战保障自动规划` 现在要求显式配置结构化战损预测输入：
@@ -339,12 +352,12 @@
 - 能力模块：`CAPABILITY_PYTHON_URL / CAPABILITY_CPP_URL / CAPABILITY_PYTHON_VERSION / CAPABILITY_CPP_VERSION / CAPABILITY_BUILTIN_VERSION`
 - 行动模块：`ACTION_PYTHON_URL / ACTION_CPP_URL / ACTION_PYTHON_VERSION / ACTION_CPP_VERSION / ACTION_BUILTIN_VERSION`
 - 消耗模块：`CONSUMPTION_PYTHON_URL / CONSUMPTION_CPP_URL / CONSUMPTION_PYTHON_VERSION / CONSUMPTION_CPP_VERSION / CONSUMPTION_BUILTIN_VERSION`
-- 规划模块：`PLANNING_BUILTIN_VERSION` 影响内置执行器版本；默认会通过 `algorithms/run-with-venv.mjs` 使用 `algorithms/.venv` 执行本地 Python 算法，`PLANNING_PYTHON_BIN` / `PLANNING_PYTHON_BOOTSTRAP_BIN` 可覆盖首次创建 venv 时的基础 Python；只有设置 `PLANNING_PYTHON_USE_VENV=0` 时，`PLANNING_PYTHON_BIN` 才会作为直接执行命令使用；当前已登记 `enemy-threat-analysis-local / force-grouping-local / airlanding-zone-local` 三个 active 本地 Python 变体，`target-allocation` 作为目标分配内置方法 `intelligent-allocation` 调用本地 Python 包，HTTP 外部工程仍可继续按 URL 与版本环境变量登记
+- 规划模块：`PLANNING_BUILTIN_VERSION` 影响内置执行器版本；默认会通过 `algorithms/run-with-venv.mjs` 使用 `algorithms/.venv` 执行本地 Python 算法，`PLANNING_PYTHON_BIN` / `PLANNING_PYTHON_BOOTSTRAP_BIN` 可覆盖首次创建 venv 时的基础 Python；只有设置 `PLANNING_PYTHON_USE_VENV=0` 时，`PLANNING_PYTHON_BIN` 才会作为直接执行命令使用；当前已登记 `enemy-threat-analysis-local / force-grouping-local / target-allocation-local / airlanding-zone-local` 四个 active 本地 Python 变体，HTTP 外部工程仍可继续按 URL 与版本环境变量登记
 
 说明：
 
 - 内置引擎与 active 本地 Python 引擎可直接执行；HTTP 外部引擎在未配置 URL 时会返回结构化“未接入”错误，不会再出现无意义空报错。
-- 本地 Python 算法不需要手动 `source algorithms/.venv/bin/activate`；第一次执行会自动创建 `algorithms/.venv` 并安装 `algorithms/requirements.txt`、`algorithms/enemy-threat-analysis/requirements.txt`、`algorithms/force-grouping/requirements.txt`、`algorithms/target-allocation/requirements.txt` 中的依赖。依赖文件变更后，下一次执行会自动重新同步；在 Python 3.9 环境下，敌情分析和兵力编组会安装 `eval_type_backport`，以兼容 Pydantic 对 `list[...] | None` 等新式类型注解的解析。
+- 本地 Python 算法不需要手动 `source algorithms/.venv/bin/activate`；第一次执行会自动创建 `algorithms/.venv` 并安装 `algorithms/requirements.txt`、`algorithms/enemy-threat-analysis/requirements.txt`、`algorithms/battle-planner/requirements.txt` 中的依赖。依赖文件变更后，下一次执行会自动重新同步；在 Python 3.9 环境下，敌情分析会安装 `eval_type_backport`，以兼容 Pydantic 对 `list[...] | None` 等新式类型注解的解析。
 - `algorithm_call_logs` 当前用于服务端归档与排障；若要做可视化运维看板，可再补充查询接口。
 - 规划模块当前真实发送的 `module/moduleKey` 为 `intelligent-task-planning`；若外部服务想兼容旧称呼，可同时兼容 `planning-calculation`
 - 规划模块扩展实现按 `algorithms` 工程名注册；新建规划任务仍默认选择内置算法，用户可在流程编排中切换到本地 Python 变体
@@ -368,12 +381,12 @@
 当前保留并新增的能力：
 
 - 外部算法网关基础契约仍可复用，未来重新集成 HTTP 算法服务时可继续走 `algorithm-gateway-v1`
-- `algorithms/enemy-threat-analysis`、`algorithms/force-grouping`、`algorithms/airlanding_zone` 已作为本地 Python 算法登记到规划模块，但不会覆盖各算法的内置默认实现；`algorithms/target-allocation` 已接入 `作战目标自动分配` 的内置方法列表，和原三种方法并列
-- `enemy-threat-analysis` 与 `force-grouping` 的大模型调用已同时支持外部 OpenAI-compatible API 和本地 Ollama；两类接口共用同一套抽取/解释提示词；Ollama 模式由前端独立选择，后端自动使用 `http://localhost:11434/api/chat`（或 `OLLAMA_HOST`）调用，不需要页面录入 API Key 或 URL；Python 正式算法调用使用官方 `ollama` 包的 `Client(host=..., trust_env=False)`，避免 `httpx` 读取系统代理后把 localhost API 请求导向异常路径；正式调用和 `POST /api/planning/llm/test` 测试调用都会发送 `think:false`，关闭 Qwen 3、DeepSeek R1 等可关闭的 thinking 输出；正式算法默认向 Ollama 发送 `options.num_ctx=262144`，并把本地文件片段上限放开到 200k 总字符 / 100k 单文件字符，若仍出现 502，可设置 `OLLAMA_NUM_CTX` 或 `LLM_OLLAMA_NUM_CTX` 后重启后端重试
+- `algorithms/enemy-threat-analysis`、`algorithms/battle-planner`、`algorithms/airlanding_zone` 已作为本地 Python 算法来源登记到规划模块；其中 `force-grouping-local / 智能编组算法` 指向 `battle_planner.cli`，`target-allocation-local / 智能分配算法` 复用编组阶段 `battlePlannerResult` 做平台适配
+- `enemy-threat-analysis` 与 `force-grouping` 的大模型调用已同时支持外部 OpenAI-compatible API 和本地 Ollama；敌情分析仍走专用抽取提示词，Battle Planner 编组阶段按其自身两段 LLM 逻辑生成目标处置规则和友方结构化资源；`POST /api/planning/llm/test` 测试调用仍会发送 `think:false`，关闭 Qwen 3、DeepSeek R1 等可关闭的 thinking 输出；若本地 Ollama 上下文不足，可设置 `OLLAMA_NUM_CTX` 或 `LLM_OLLAMA_NUM_CTX` 后重启后端重试
 - `POST /api/planning/evaluate/stream` 会把本地 Python stdout/stderr 映射为 `terminal`，把 enemy/force 的 LLM stdout 片段映射为 `llm-chunk`
 - `POST /api/planning/llm/test` 用于在执行规划前测试当前 LLM 配置是否可用
-- `敌情威胁自动分析 三维结果` 面板仍能渲染通用威胁场字段，包括 `heatmapBase64`、`heatmapGeojson`、`bounds`、`targetEntities`、`pointThreatEvaluation`、`situationMap` 和 `heatmap.matrixSummary`
-- `作战目标自动分配` 的 `structuredOutput.visualization` 或 `preferredPlan.visualization` 会被单算法结果页和最终 GeoJSON 汇总读取，用于显示蓝方编组点、红方目标点、分配箭头和部署区上下文
+- `敌情威胁自动分析 三维结果` 面板仍能渲染通用威胁场字段，包括 `heatmapBase64`、`heatmapGeojson`、`bounds`、`targetEntities`、`pointThreatEvaluation`、`situationMap`、`heatmap.matrixSummary`、`heatmap.groupSummaries` 和多条 `visualization.imageOverlays`
+- `作战目标自动分配` 的 `structuredOutput.visualization`、`preferredPlan.visualization` 或 `comparedPlans[].visualization` 会被单算法结果页和最终 GeoJSON 汇总读取，用于显示蓝方编组点、红方目标点、原始目标点、分配箭头和部署区上下文；红方目标点和 `allocation-original-target-*` 原始目标点优先沿用上游敌情解析出的真实经纬度，避免目标分配态势落到演示兜底坐标；结果页会隐藏非关键实体标签，并允许用户在不同分配方案间切换独立态势图层，避免目标密集时进入结果页卡死
 - `GeoJSON` 空间成果包仍会收集通用 `heatmapGeojson` 威胁场采样要素，前提是当前或未来算法结果中实际提供该字段
 
 ### 4.3 乱码与异常提示清理（T16）
@@ -408,7 +421,7 @@
 
 ### 4.5 规划算法设计与测试文档
 
-智能任务规划模块现已补充 7 份面向真实算法升级的 Markdown 设计与测试文档，位于 `docs/intelligent-task-planning/`：
+智能任务规划模块现已补充 9 份面向真实算法升级的 Markdown 设计、测试、实施思路与算法报告文档，位于 `docs/intelligent-task-planning/`：
 
 - `00-module-overview.md`：模块架构、统一输入输出、接口链路、注册/切换机制、通用评分体系和升级路线图。
 - `01-enemy-threat-analysis-design-test.md`：敌情威胁自动分析设计与测试。
@@ -417,6 +430,8 @@
 - `04-airborne-landing-site-selection-design-test.md`：机降地域优化选择设计与测试。
 - `05-method-planning-design-test.md`：作战方法自动规划设计与测试。
 - `06-support-planning-design-test.md`：作战保障自动规划设计与测试。
+- `07-force-grouping-implementation-idea.md`：作战力量智能编组算法前后流程、规则库、兵力配置、武器挂载、乘载装载、优化推荐和验收思路。
+- `08-battle-planner-algorithm-report.md`：Battle Planner 智能编组与智能分配算法完整报告，覆盖输入、流程、火力口径、装载接口、目标分配适配和验证结果。
 
 这些文档基于当前真实代码中的 `ALGORITHM_DEFINITIONS`、`BUILTIN_EXECUTORS`、`structuredOutput` 字段、前后端接口、现有测试和导出包格式整理。后续替换真实算法时，应先保持文档列出的平台字段兼容，再逐步重写各算法核心求解逻辑。
 
@@ -750,7 +765,8 @@ TODO.md     后续优化建议
 20. 本地大体量验证产物已清理：`apps/web/dist-check-*`、`apps/web/dist-auth-check` 和历史 `apps/web/public/tiles` 已从工作区移除，并通过 `.gitignore` 防止再次混入源码维护范围。
 21. 本地瘦身清理已进一步移除可再生成产物：根目录 `node_modules`、`apps/web/dist`，以及 `apps/web/public/terrain` 下已展开后的 `terrain1.zip` 压缩包副本和 `.tmp` 临时地形目录；正式离线 DEM 运行目录仍保留。
 22. 已移除上一版 `tactical-visualizer2.0` 敌情威胁分析外部集成：规划 Python 适配服务、相关启动脚本、默认外部绑定、专属运行参数和 DOCX 二次研判导出均已删除；三维威胁场通用渲染能力继续保留。
-23. `作战目标自动分配` 已新增 `intelligent-allocation / 智能分配算法` 内置方法，调用 `algorithms/target-allocation` Python 包并在单算法结果页展示目标分配态势图层；默认方法仍为 `multi-objective`，原三种目标分配方法不被覆盖。
+23. `作战力量智能编组` 与 `作战目标自动分配` 的智能算法已统一切换到 `algorithms/battle-planner`：编组阶段调用 `battle_planner`，分配阶段复用 `battlePlannerResult.task_groups` 适配为目标分配态势图层；旧 `algorithms/force-grouping` 和 `algorithms/target-allocation` Python 智能算法目录已删除，内置目标分配方法仍保留 `hungarian / ant-colony / multi-objective` 三种。智能编组和智能分配现在都支持 `均衡 / 战损最小化 / 资源最小化` 三类策略画像：战损最小化会倾向更多编组协同和更高生存性，资源最小化会在覆盖底线下压缩使用单位，均衡方案兼顾覆盖、风险和资源。智能分配火力值已改为实际武器装载口径：无武器装载时火力为 0，人员/运输能力只进入其他指标，火力打击类任务缺少武器会被合理性校核拦截。目标分配态势的红方目标坐标会优先沿用上游敌情真实经纬度，并额外输出 `allocation-original-target-*` 原始目标点，仅在缺坐标时使用兜底点；结果页会为旧结果兜底合成原始目标点，压制编组/箭头标签以避免卡顿，并支持点击方案卡片或表格行切换不同分配方案的三维态势、二维分配图、统计指标和分配清单。
+24. `敌情威胁自动分析` 热力图支持多目标群显示：远距离目标群会生成多条局部 `visualization.imageOverlays` 贴图，全局 `heatmapBase64 / heatmapGeojson` 继续保留用于兼容、导出和空间成果包。
 
 ### 本次 review 的正向结论
 

@@ -9,8 +9,13 @@ const props = defineProps({
 });
 
 const CATEGORY_LABELS = {
+  attack_helicopter: '攻击直升机',
+  recon_helicopter: '侦察直升机',
+  transport_helicopter: '运输直升机',
   fire: '火力',
   strike: '突击',
+  armed: '武装直升机',
+  escort: '护航',
   recon: '侦察',
   'air-defense': '防空',
   air_defense: '防空',
@@ -25,8 +30,12 @@ const CATEGORY_LABELS = {
 
 const ROLE_LABELS = {
   main_strike: '主攻',
+  armed: '武装火力',
+  escort: '护航火力',
+  transport: '运输投送',
   support_fire: '火力支援',
   recon: '侦察引导',
+  strike: '火力打击',
   cover: '掩护',
   air_defense: '防空',
   mobility: '机动投送',
@@ -34,6 +43,21 @@ const ROLE_LABELS = {
   sustain: '持续保障',
   command: '指挥通信',
   reserve: '预备力量',
+};
+
+const TARGET_CLASS_LABELS = {
+  sensor_radar: '雷达/传感器',
+  communication_node: '通信/电子节点',
+  command_post: '指挥节点',
+  air_defense_missile: '防空导弹',
+  air_defense_gun: '近程防空',
+  armor_unit: '装甲目标',
+  artillery_rocket: '炮兵/火箭炮',
+  fortified_position: '加固阵地',
+  infantry_assembly: '人员集结',
+  logistics_support: '后勤保障',
+  area_target: '区域目标',
+  generic_fire_unit: '普通火力点',
 };
 
 const READINESS_LABELS = {
@@ -176,6 +200,12 @@ function metricValue(source = {}, key = '') {
   return Number.isFinite(number) ? Number(number.toFixed(2)) : value;
 }
 
+function firepowerBreakdownText(source = {}) {
+  const breakdown = safeObject(source.firepowerBreakdown);
+  if (!Object.keys(breakdown).length) return '';
+  return `火力构成：武装装备 ${metricValue(breakdown, 'weaponEquipmentPower')} / 运输人员 ${metricValue(breakdown, 'transportPersonnelPower')}`;
+}
+
 function constraintStatus(scheme = {}) {
   const status = String(scheme.constraintEvaluation?.overallStatus || '');
   return CONSTRAINT_STATUS_LABELS[status] || scheme.constraintEvaluation?.summary || '待复核';
@@ -250,6 +280,68 @@ function groupCompositionText(group = {}, index = 0) {
     : `第 ${index + 1} 个编组暂无可展示的单位构成信息。`;
 }
 
+function targetClassLabel(profile = {}) {
+  const key = String(profile.classKey || profile.targetClass || profile.type || '');
+  return TARGET_CLASS_LABELS[key] || profile.label || key || '--';
+}
+
+function formatWeaponLoadout(unit = {}) {
+  const items = safeArray(unit.weaponLoadout);
+  if (!items.length) return '未挂载';
+  const grouped = new Map();
+  items.forEach((item) => {
+    const key = `${item.weaponId || item.weaponName || 'weapon'}::${item.targetId || ''}`;
+    const current = grouped.get(key) || {
+      name: item.weaponName || item.weaponId || '武器',
+      target: item.targetName || item.targetId || '',
+      quantity: 0,
+      damage: 0,
+    };
+    current.quantity += Number(item.quantity || 1);
+    current.damage += Number(item.damage || 0);
+    grouped.set(key, current);
+  });
+  return [...grouped.values()]
+    .map((item) => `${item.name} x${item.quantity}${item.target ? ` → ${item.target}` : ''}`)
+    .join('；');
+}
+
+function formatTransportLoadout(unit = {}) {
+  const personnel = safeArray(unit.personnelLoadout)
+    .map((item) => `${item.personnelGroupName || item.name || '人员'} ${Number(item.count || 0)}人`);
+  const cargo = safeArray(unit.cargoLoadout)
+    .map((item) => `${item.cargoItemName || item.name || '物资'} x${Number(item.quantity || 0)}`);
+  return [...personnel, ...cargo].join('；') || '未装载';
+}
+
+function summaryText(items = [], nameKey = 'name', countKey = 'quantity', suffix = '') {
+  return safeArray(items)
+    .map((item) => `${item[nameKey] || item.weaponName || item.personnelGroupName || item.cargoItemName || '--'} x${Number(item[countKey] || item.count || item.quantity || 0)}${suffix}`)
+    .join('；') || '--';
+}
+
+function topFirepowerRequirements(scheme = {}) {
+  return safeArray(scheme.targetFirepowerRequirements || props.output?.targetFirepowerRequirements || props.output?.tasks).slice(0, 8);
+}
+
+function transportCoverageRows(scheme = {}) {
+  return safeArray(scheme.transportCoverage || props.output?.transportCoverage);
+}
+
+const threatIntegration = computed(() => safeObject(props.output?.threatIntegration));
+
+function formulaBreakdownText(item = {}) {
+  const formula = safeObject(item.formulaBreakdown);
+  if (!Object.keys(formula).length) return '';
+  return `${formula.baseDamageByTargetClass ?? '--'} × ${formula.threatMultiplier ?? '--'} × ${formula.protectionMultiplier ?? '--'} × ${formula.scaleMultiplier ?? '--'} × ${formula.priorityMultiplier ?? '--'} = ${formula.requiredDamage ?? '--'}`;
+}
+
+function threatProfileText(item = {}) {
+  const profile = safeObject(item.threatProfile);
+  if (!Object.keys(profile).length) return '';
+  return `综合威胁 ${profile.compositeThreat ?? '--'} / 火力 ${profile.fireCoveragePressure ?? '--'} / 防空 ${profile.airDefensePressure ?? '--'} / 侦察 ${profile.reconPressure ?? '--'}`;
+}
+
 function selectScheme(scheme) {
   selectedSchemeId.value = scheme.__viewId;
 }
@@ -294,8 +386,8 @@ function selectScheme(scheme) {
         <div class="planning-grouping-scheme-card__stats">
           <span>群组 {{ schemeGroupCount(scheme) }}</span>
           <span>单位 {{ schemeUnitCount(scheme) }}</span>
-          <span>约束 {{ constraintStatus(scheme) }}</span>
-          <span>均衡 {{ metricValue(scheme, 'balance') }}</span>
+          <span>高威胁 {{ metricValue(scheme, 'highThreatCoverage') }}</span>
+          <span>风险 {{ metricValue(scheme, 'threatRiskControl') }}</span>
         </div>
       </button>
     </div>
@@ -332,6 +424,19 @@ function selectScheme(scheme) {
         </div>
       </div>
 
+      <div v-if="Object.keys(threatIntegration).length" class="planning-grouping-transport-strip">
+        <article>
+          <span class="eyebrow">Threat Formula</span>
+          <strong>{{ threatIntegration.threatLevel || '--' }} / 综合压力 {{ threatIntegration.threatPressure ?? '--' }}</strong>
+          <p>{{ threatIntegration.formula }}</p>
+          <div class="chip-row">
+            <span class="pill pill-active">高威胁目标 {{ threatIntegration.highThreatTargetCount ?? 0 }}</span>
+            <span class="pill pill-muted">平均乘数 {{ threatIntegration.averageThreatMultiplier ?? '--' }}</span>
+            <span class="pill pill-muted">目标 {{ threatIntegration.targetCount ?? 0 }}</span>
+          </div>
+        </article>
+      </div>
+
       <div class="planning-grouping-metric-grid">
         <div>
           <span>火力</span>
@@ -357,6 +462,60 @@ function selectScheme(scheme) {
           <span>均衡</span>
           <strong>{{ metricValue(selectedScheme, 'balance') }}</strong>
         </div>
+        <div>
+          <span>高威胁覆盖</span>
+          <strong>{{ metricValue(selectedScheme, 'highThreatCoverage') }}</strong>
+        </div>
+        <div>
+          <span>风险控制</span>
+          <strong>{{ metricValue(selectedScheme, 'threatRiskControl') }}</strong>
+        </div>
+        <div>
+          <span>毁伤满足</span>
+          <strong>{{ metricValue(selectedScheme, 'damageSatisfaction') }}</strong>
+        </div>
+        <div>
+          <span>武器效率</span>
+          <strong>{{ metricValue(selectedScheme, 'weaponEfficiency') }}</strong>
+        </div>
+      </div>
+
+      <div v-if="topFirepowerRequirements(selectedScheme).length" class="planning-grouping-requirement-grid">
+        <article
+          v-for="item in topFirepowerRequirements(selectedScheme)"
+          :key="item.taskId || item.targetId"
+          class="planning-grouping-requirement-card"
+        >
+          <div class="chip-row">
+            <span class="pill pill-active">{{ targetClassLabel(item.targetClassProfile) }}</span>
+            <span class="pill pill-muted">{{ item.typeLabel || item.type || '任务' }}</span>
+          </div>
+          <h4>{{ item.targetName || item.targetId }}</h4>
+          <p>{{ item.allocationReason || item.requiredEffect || '已生成目标火力需求。' }}</p>
+          <p v-if="formulaBreakdownText(item)" class="planning-grouping-composition planning-grouping-composition--reason">
+            {{ formulaBreakdownText(item) }}
+          </p>
+          <div class="planning-grouping-requirement-card__stats">
+            <span>所需火力 {{ metricValue(item, 'requiredDamage') }}</span>
+            <span>威胁乘数 {{ item.threatMultiplier ?? '--' }}</span>
+            <span>弹药 {{ item.requiredWeaponCount ?? '--' }}</span>
+            <span>攻击机 {{ item.estimatedAttackHelicopters ?? '--' }}</span>
+          </div>
+          <small v-if="threatProfileText(item)" class="muted-text">{{ threatProfileText(item) }}</small>
+        </article>
+      </div>
+
+      <div v-if="transportCoverageRows(selectedScheme).length" class="planning-grouping-transport-strip">
+        <article v-for="item in transportCoverageRows(selectedScheme)" :key="item.requirementId">
+          <span class="eyebrow">运输解算</span>
+          <strong>{{ item.name || item.requirementId }}</strong>
+          <p>{{ item.reason || item.risk || '人员与物资运输已纳入解算。' }}</p>
+          <div class="chip-row">
+            <span class="pill pill-active">人员 {{ item.assignedPersonnel }}/{{ item.requiredPersonnel }}</span>
+            <span class="pill pill-muted">物资 {{ item.assignedCargoKg }}/{{ item.requiredCargoKg }}kg</span>
+            <span class="pill pill-muted">{{ item.covered ? '覆盖完成' : '存在缺口' }}</span>
+          </div>
+        </article>
       </div>
 
       <div class="planning-grouping-group-list">
@@ -377,6 +536,12 @@ function selectScheme(scheme) {
           </div>
 
           <p class="planning-grouping-composition">{{ groupCompositionText(group, groupIndex) }}</p>
+          <p v-if="firepowerBreakdownText(group)" class="planning-grouping-composition">
+            {{ firepowerBreakdownText(group) }}
+          </p>
+          <p v-if="group.allocationReason" class="planning-grouping-composition planning-grouping-composition--reason">
+            {{ group.allocationReason }}
+          </p>
 
           <div class="planning-grouping-group-metrics">
             <div>
@@ -405,6 +570,17 @@ function selectScheme(scheme) {
             </div>
           </div>
 
+          <div class="planning-grouping-load-summary">
+            <div>
+              <span>武器挂载</span>
+              <strong>{{ summaryText(group.weaponSummary, 'weaponName', 'quantity') }}</strong>
+            </div>
+            <div>
+              <span>人员/物资装载</span>
+              <strong>{{ summaryText(group.personnelSummary, 'personnelGroupName', 'count') }}</strong>
+            </div>
+          </div>
+
           <div v-if="safeArray(group.units).length" class="table-shell compact-table">
             <table>
               <thead>
@@ -415,6 +591,8 @@ function selectScheme(scheme) {
                   <th>角色</th>
                   <th>兵力</th>
                   <th>战备状态</th>
+                  <th>武器装载</th>
+                  <th>人员/物资装载</th>
                   <th>能力摘要</th>
                   <th>位置</th>
                 </tr>
@@ -429,6 +607,8 @@ function selectScheme(scheme) {
                   <td>{{ roleLabel(unit.role) }}</td>
                   <td>{{ metricValue(unit, 'strength') }}</td>
                   <td>{{ readinessLabel(unit.readiness) }}</td>
+                  <td class="planning-grouping-load-cell">{{ formatWeaponLoadout(unit) }}</td>
+                  <td class="planning-grouping-load-cell">{{ formatTransportLoadout(unit) }}</td>
                   <td class="planning-grouping-capability-summary">{{ capabilitySummary(unit) }}</td>
                   <td>{{ formatLocation(unit.location || unit.coordinates) }}</td>
                 </tr>

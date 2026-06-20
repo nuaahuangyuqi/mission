@@ -1,8 +1,5 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import fs from 'node:fs';
-import path from 'node:path';
-import { fileURLToPath } from 'node:url';
 import {
   __planningRuntimeTestHooks,
   evaluatePlanning,
@@ -13,59 +10,160 @@ import {
 
 const {
   buildSupportPlan,
+  executeLocalPythonStep,
   normalizeSupportPlanningOptions,
-  runBuiltinTargetAllocation,
 } = __planningRuntimeTestHooks;
-const CURRENT_DIR = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(CURRENT_DIR, '../../..');
 
-function readRepoJson(...parts) {
-  return JSON.parse(fs.readFileSync(path.join(REPO_ROOT, ...parts), 'utf-8'));
-}
-
-function cloneJson(value) {
-  return JSON.parse(JSON.stringify(value));
-}
-
-function withTargetAllocationCoordinates(threatOutput, forceGrouping) {
-  const threat = cloneJson(threatOutput);
-  const grouping = cloneJson(forceGrouping);
-  const targetPositions = {
-    targetAssessments: [[118.105, 32.042, 0]],
-    fireCoverage: [[118.105, 32.042, 0]],
-    airDefenseSystem: [[118.228, 31.968, 0]],
-    reconEarlyWarning: [[118.036, 31.906, 0]],
-    antiAirborneFacilities: [[118.308, 32.082, 0]],
+function createBattlePlannerThreatOutput() {
+  return {
+    ok: true,
+    implementationStatus: 'implemented',
+    threatLevel: '高',
+    threatScore: 82,
+    enemyIntentions: [],
+    fireCoverage: [
+      {
+        id: 'fire-1',
+        name: '东侧防空节点',
+        threatScore: 86,
+        coordinates: [118.12, 32.04, 0],
+      },
+    ],
+    targetAssessments: [
+      {
+        id: 'target-001',
+        name: '东侧防空节点',
+        category: 'air_defense',
+        threatScore: 86,
+        valueScore: 78,
+        location: {
+          coordinates: [118.12, 32.04],
+          locationDescription: '东侧高地',
+        },
+        sourceTarget: {
+          id: 'target-001',
+          name: '东侧防空节点',
+          subCategory: 'manportable_air_defense',
+        },
+      },
+      {
+        id: 'target-002',
+        name: '北侧通信中继站',
+        category: 'command_control',
+        threatScore: 64,
+        valueScore: 88,
+        location: {
+          coordinates: [118.22, 32.1],
+          locationDescription: '北侧山脊',
+        },
+        sourceTarget: {
+          id: 'target-002',
+          name: '北侧通信中继站',
+          subCategory: 'communication_relay',
+        },
+      },
+    ],
   };
-  for (const [key, coordinates] of Object.entries(targetPositions)) {
-    (threat[key] || []).forEach((item, index) => {
-      const coordinate = coordinates[index] || coordinates[0];
-      item.center = coordinate;
-      item.coordinates = coordinate;
-    });
-  }
-
-  const groupPositions = [
-    [117.682, 31.808, 0],
-    [117.744, 31.936, 0],
-    [117.818, 31.742, 0],
-    [117.902, 32.012, 0],
-  ];
-  (grouping.preferredScheme?.groups || []).forEach((group, index) => {
-    const coordinate = groupPositions[index] || groupPositions[groupPositions.length - 1];
-    group.coordinates = coordinate;
-    (group.units || []).forEach((unit) => {
-      unit.location = unit.location || coordinate;
-    });
-  });
-  return { threat, grouping };
 }
 
-test('planning template registers three active local Python algorithm variants', () => {
+function createBattlePlannerFriendlyUpload() {
+  return {
+    fileName: 'friendly-force.txt',
+    fileExtension: '.txt',
+    fileContentBase64: Buffer.from([
+      '二型武装直升机: 8 架',
+      '运输直升机: 4 架',
+      '侦察直升机: 2 架',
+      '空地导弹: 32 枚',
+      '火箭弹: 180 发',
+      '航炮弹: 4200 发',
+      '机降突击人员: 60 名',
+    ].join('\n'), 'utf8').toString('base64'),
+  };
+}
+
+function createBattlePlannerCsvFriendlyUpload() {
+  return {
+    fileName: 'friendly-force.csv',
+    fileExtension: '.csv',
+    fileContentBase64: Buffer.from([
+      'name,count',
+      '二型武装直升机,8',
+      '运输直升机,4',
+      '空地导弹,32',
+      '火箭弹,180',
+    ].join('\n'), 'utf8').toString('base64'),
+  };
+}
+
+function createBattlePlannerNoWeaponsFriendlyUpload() {
+  return {
+    fileName: 'friendly-no-weapons.json',
+    fileExtension: '.json',
+    fileContentBase64: Buffer.from(JSON.stringify({
+      friendly_forces: {
+        helicopters: [
+          {
+            model: '二型武装直升机',
+            role: 'armed',
+            available: 4,
+            capabilities: ['防空压制', '火力打击', '火力压制', '护航'],
+            weapon_capacity: { 空地导弹: 4, 火箭弹: 16 },
+            personnel_capacity: 0,
+          },
+          {
+            model: '运输直升机',
+            role: 'transport',
+            available: 3,
+            capabilities: ['机降突击', '人员输送'],
+            weapon_capacity: {},
+            personnel_capacity: 12,
+          },
+        ],
+        weapons: [],
+        personnel: [{ role: '机降突击人员', available: 24 }],
+        constraints: { preserve_reserve: false },
+      },
+    }), 'utf8').toString('base64'),
+  };
+}
+
+async function runBattlePlannerForceGroupingForTest() {
+  const template = getPlanningTemplate();
+  const algorithm = template.algorithms.find((item) => item.id === 'force-grouping');
+  const variant = algorithm?.variants.find((item) => item.id === 'force-grouping:force-grouping-local');
+  assert.ok(algorithm);
+  assert.ok(variant);
+  const result = await executeLocalPythonStep(
+    variant,
+    { id: 'test-force-grouping-local', name: 'Battle Planner 编组本地实现测试' },
+    { id: 'step-force-grouping', name: '作战力量智能编组' },
+    algorithm,
+    {
+      stageOutputs: {
+        'enemy-threat-analysis': createBattlePlannerThreatOutput(),
+      },
+    },
+    { dataset: {} },
+    {
+      builtinMethodKey: 'hybrid-balanced',
+      uploadedFiles: [createBattlePlannerFriendlyUpload()],
+      options: {
+        llmBackend: 'mock',
+        expectedGroupCount: 4,
+      },
+    },
+    {},
+  );
+  return { result, threat: createBattlePlannerThreatOutput() };
+}
+
+test('planning template registers active local Python algorithm variants', () => {
   const template = getPlanningTemplate();
   const expectedVariants = {
     'enemy-threat-analysis': 'enemy-threat-analysis:enemy-threat-analysis-local',
     'force-grouping': 'force-grouping:force-grouping-local',
+    'target-allocation': 'target-allocation:target-allocation-local',
     'airborne-landing-site-selection': 'airborne-landing-site-selection:airlanding-zone-local',
   };
 
@@ -76,43 +174,211 @@ test('planning template registers three active local Python algorithm variants',
     assert.equal(variant.type, 'external-model');
     assert.equal(variant.executionMode, 'local-python');
     assert.equal(variant.status, 'active');
-    assert.ok(variant.parameterSchema.length > 0);
+    if (['force-grouping', 'target-allocation'].includes(algorithmId)) {
+      assert.equal(variant.projectPath, 'algorithms/battle-planner');
+      assert.equal(variant.packageName, 'battle_planner');
+    }
+    if (algorithmId !== 'target-allocation') {
+      assert.ok(variant.parameterSchema.length > 0);
+    }
   }
 });
 
-test('target allocation builtin methods include intelligent allocation without changing default', () => {
+test('target allocation separates builtin methods from intelligent local implementation', () => {
   const template = getPlanningTemplate();
   const algorithm = template.algorithms.find((item) => item.id === 'target-allocation');
   assert.ok(algorithm);
   assert.equal(algorithm.defaultConfig.builtinMethodKey, 'multi-objective');
   assert.deepEqual(
     algorithm.builtinMethods.map((item) => item.key),
-    ['hungarian', 'ant-colony', 'multi-objective', 'intelligent-allocation'],
+    ['hungarian', 'ant-colony', 'multi-objective'],
   );
-  assert.equal(
-    algorithm.builtinMethods.find((item) => item.key === 'intelligent-allocation')?.label,
-    '智能分配算法',
+  assert.equal(algorithm.builtinMethods.some((item) => item.key === 'intelligent-allocation'), false);
+  const intelligentVariant = algorithm.variants.find((item) => item.id === 'target-allocation:target-allocation-local');
+  assert.ok(intelligentVariant);
+  assert.equal(intelligentVariant.name, '智能分配算法');
+  assert.equal(intelligentVariant.executionMode, 'local-python');
+  assert.equal(intelligentVariant.status, 'active');
+  assert.equal(intelligentVariant.projectPath, 'algorithms/battle-planner');
+});
+
+test('battle planner force grouping local implementation returns platform grouping contract', async () => {
+  const { result } = await runBattlePlannerForceGroupingForTest();
+  const output = result.structuredOutput;
+
+  assert.equal(output.algorithmModel, 'battle-planner-v1');
+  assert.equal(output.builtinMethodLabel, '智能编组算法');
+  assert.ok(output.battlePlannerResult);
+  assert.ok(output.battlePlannerResult.task_groups.length > 0);
+  assert.deepEqual(
+    output.schemes.map((item) => item.strategyKey).sort(),
+    ['balanced', 'loss-minimized', 'resource-minimized'].sort(),
+  );
+  assert.ok(output.comparison.every((item) => item.strategyLabel));
+  assert.ok(output.preferredScheme.groups.length > 0);
+  assert.ok(output.preferredScheme.groups.some((group) => group.units.length > 0));
+  const assaultFirepowerGroup = output.preferredScheme.groups.find((group) => (
+    Number(group.firepowerBreakdown?.weaponEquipmentPower || 0) > 0
+    && Number(group.firepowerBreakdown?.transportPersonnelPower || 0) > 0
+  ));
+  assert.ok(assaultFirepowerGroup);
+  assert.equal(assaultFirepowerGroup.firepower, assaultFirepowerGroup.firepowerBreakdown.combinedFirepower);
+  assert.equal(assaultFirepowerGroup.firepower, assaultFirepowerGroup.firepowerBreakdown.weaponEquipmentPower);
+  assert.equal(assaultFirepowerGroup.firepowerBreakdown.weighting.transportPersonnel, 0);
+  assert.equal(assaultFirepowerGroup.firepowerBreakdown.hasLoadedWeapon, true);
+  assert.ok(Number(assaultFirepowerGroup.firepowerBreakdown.armedHelicopterCount || 0) > 0);
+  assert.ok(Number(assaultFirepowerGroup.firepowerBreakdown.transportHelicopterCount || 0) > 0);
+  assert.ok(Number(assaultFirepowerGroup.firepowerBreakdown.personnelCount || 0) > 0);
+  assert.ok(assaultFirepowerGroup.weaponSummary.length > 0);
+  assert.ok(assaultFirepowerGroup.units.some((unit) => unit.weaponLoadout?.length > 0));
+  assert.ok(assaultFirepowerGroup.units.some((unit) => unit.personnelLoadout?.length > 0));
+  const armedUnit = assaultFirepowerGroup.units.find((unit) => ['armed', 'escort'].includes(unit.role));
+  assert.ok(armedUnit?.weaponLoadout?.some((item) => item.weaponName && Number(item.quantity || 0) > 0));
+  assert.match(assaultFirepowerGroup.firepowerSummary, /武器装载/);
+  assert.ok(Number(output.preferredScheme.metrics.averageTransportPersonnelPower || 0) > 0);
+  assert.ok(output.importedFiles.some((file) => file.fileName === 'friendly-force.txt'));
+});
+
+test('battle planner force grouping keeps non-fire scores but zeroes firepower without loaded weapons', async () => {
+  const template = getPlanningTemplate();
+  const algorithm = template.algorithms.find((item) => item.id === 'force-grouping');
+  const variant = algorithm?.variants.find((item) => item.id === 'force-grouping:force-grouping-local');
+  const result = await executeLocalPythonStep(
+    variant,
+    { id: 'test-force-grouping-no-weapons', name: '无武器装载火力测试' },
+    { id: 'step-force-grouping', name: '作战力量智能编组' },
+    algorithm,
+    {
+      stageOutputs: {
+        'enemy-threat-analysis': createBattlePlannerThreatOutput(),
+      },
+    },
+    { dataset: {} },
+    {
+      uploadedFiles: [createBattlePlannerNoWeaponsFriendlyUpload()],
+      options: { llmBackend: 'mock' },
+    },
+    {},
+  );
+
+  const output = result.structuredOutput;
+  const fireGroups = output.preferredScheme.groups.filter((group) => (
+    ['防空压制', '火力打击', '火力压制', '通信压制', '破袭打击'].includes(group.taskType)
+  ));
+  assert.ok(fireGroups.length > 0);
+  assert.ok(fireGroups.every((group) => group.firepower === 0));
+  assert.ok(fireGroups.every((group) => group.firepowerBreakdown.weaponEquipmentPower === 0));
+  assert.ok(fireGroups.every((group) => group.firepowerBreakdown.hasLoadedWeapon === false));
+  assert.ok(fireGroups.every((group) => group.strikeWeaponRequirementMet === false));
+  assert.ok(fireGroups.every((group) => group.weaponSummary.length === 0));
+  assert.ok(fireGroups.every((group) => group.units.every((unit) => (unit.weaponLoadout || []).length === 0)));
+  assert.ok(fireGroups.some((group) => Number(group.mobility || 0) > 0));
+  assert.ok(fireGroups.some((group) => group.issues.some((issue) => issue.severity === 'error' && /未形成实际武器装载/.test(issue.message))));
+});
+
+test('battle planner force grouping converts csv friendly uploads to text', async () => {
+  const template = getPlanningTemplate();
+  const algorithm = template.algorithms.find((item) => item.id === 'force-grouping');
+  const variant = algorithm?.variants.find((item) => item.id === 'force-grouping:force-grouping-local');
+  const result = await executeLocalPythonStep(
+    variant,
+    { id: 'test-force-grouping-csv', name: 'CSV 友方资料转换测试' },
+    { id: 'step-force-grouping', name: '作战力量智能编组' },
+    algorithm,
+    {
+      stageOutputs: {
+        'enemy-threat-analysis': createBattlePlannerThreatOutput(),
+      },
+    },
+    { dataset: {} },
+    {
+      uploadedFiles: [createBattlePlannerCsvFriendlyUpload()],
+      options: { llmBackend: 'mock' },
+    },
+    {},
+  );
+
+  const output = result.structuredOutput;
+  const csvImport = output.importedFiles.find((file) => file.fileName === 'friendly-force.csv');
+  assert.ok(csvImport);
+  assert.equal(csvImport.convertedToText, true);
+  assert.ok(output.preferredScheme.groups.length > 0);
+});
+
+test('battle planner force grouping rejects missing upstream threat output', async () => {
+  const template = getPlanningTemplate();
+  const algorithm = template.algorithms.find((item) => item.id === 'force-grouping');
+  const variant = algorithm?.variants.find((item) => item.id === 'force-grouping:force-grouping-local');
+  await assert.rejects(
+    () => executeLocalPythonStep(
+      variant,
+      { id: 'test-force-grouping-missing-upstream', name: '缺上游测试' },
+      { id: 'step-force-grouping', name: '作战力量智能编组' },
+      algorithm,
+      { stageOutputs: {} },
+      { dataset: {} },
+      {
+        uploadedFiles: [createBattlePlannerFriendlyUpload()],
+        options: { llmBackend: 'mock' },
+      },
+      {},
+    ),
+    /缺少上一步敌情威胁分析结果/,
   );
 });
 
-test('intelligent target allocation returns platform contract and visualization entities', async () => {
+test('battle planner force grouping rejects missing friendly documents', async () => {
+  const template = getPlanningTemplate();
+  const algorithm = template.algorithms.find((item) => item.id === 'force-grouping');
+  const variant = algorithm?.variants.find((item) => item.id === 'force-grouping:force-grouping-local');
+  await assert.rejects(
+    () => executeLocalPythonStep(
+      variant,
+      { id: 'test-force-grouping-missing-docs', name: '缺文档测试' },
+      { id: 'step-force-grouping', name: '作战力量智能编组' },
+      algorithm,
+      {
+        stageOutputs: {
+          'enemy-threat-analysis': createBattlePlannerThreatOutput(),
+        },
+      },
+      { dataset: {} },
+      {
+        uploadedFiles: [],
+        options: { llmBackend: 'mock' },
+      },
+      {},
+    ),
+    /缺少我方资源库数据或上传文件/,
+  );
+});
+
+test('intelligent target allocation local implementation returns platform contract and visualization entities', async () => {
   const template = getPlanningTemplate();
   const algorithm = template.algorithms.find((item) => item.id === 'target-allocation');
-  const { threat, grouping } = withTargetAllocationCoordinates(
-    readRepoJson('algorithms', 'force-grouping', 'docs', 'sample_enemy_threat_output.json'),
-    readRepoJson('algorithms', 'force-grouping', 'result.json'),
-  );
-  const result = await runBuiltinTargetAllocation(
+  const variant = algorithm?.variants.find((item) => item.id === 'target-allocation:target-allocation-local');
+  const { result: groupingResult, threat } = await runBattlePlannerForceGroupingForTest();
+  const grouping = JSON.parse(JSON.stringify(groupingResult.structuredOutput));
+  grouping.candidateTargets = grouping.candidateTargets.map((target) => ({
+    ...target,
+    coordinates: [0, 0, 0],
+    coordinateSource: '',
+  }));
+  assert.ok(variant);
+  const result = await executeLocalPythonStep(
+    variant,
+    { id: 'test-target-allocation-local', name: '目标分配本地实现测试' },
+    { id: 'step-target-allocation', name: '作战目标自动分配' },
+    algorithm,
     {
       stageOutputs: {
         'enemy-threat-analysis': threat,
         'force-grouping': grouping,
       },
     },
-    { id: 'step-target-allocation', name: '作战目标自动分配' },
-    algorithm,
+    { dataset: {} },
     {
-      builtinMethodKey: 'intelligent-allocation',
+      builtinMethodKey: 'multi-objective',
       options: {
         objectivePreference: 'balanced',
         validationMode: 'strict',
@@ -126,19 +392,122 @@ test('intelligent target allocation returns platform contract and visualization 
   assert.equal(output.builtinMethodKey, 'intelligent-allocation');
   assert.equal(output.builtinMethodLabel, '智能分配算法');
   assert.equal(output.preferredPlanMethodKey, 'intelligent-allocation');
+  assert.equal(output.planningBasis.source, 'battlePlannerResult.task_groups');
   assert.deepEqual(
-    output.comparedPlans.map((item) => item.methodKey),
-    ['hungarian', 'ant-colony', 'multi-objective', 'intelligent-allocation'],
+    output.comparedPlans.map((item) => item.strategyKey).sort(),
+    ['balanced', 'loss-minimized', 'resource-minimized'].sort(),
   );
+  assert.ok(output.comparedPlans.every((item) => item.methodKey === 'intelligent-allocation'));
+  assert.ok(output.comparedPlans.every((item) => item.visualization?.entities?.length > 0));
+  assert.equal(output.preferredPlan.strategyKey, 'balanced');
+  assert.equal(output.preferredPlanId, output.preferredPlan.id);
   assert.ok(output.candidateTargets.length > 0);
   assert.ok(output.groups.length > 0);
+  assert.ok(output.groups.every((group) => group.firepowerBreakdown));
   assert.ok(output.preferredPlan.assignments.length > 0);
+  assert.ok(output.preferredPlan.assignments.every((assignment) => assignment.groupFirepowerBreakdown));
+  assert.ok(output.preferredPlan.assignments.some((assignment) => (
+    Number(assignment.groupFirepowerBreakdown?.weaponEquipmentPower || 0) > 0
+    && Number(assignment.groupFirepowerBreakdown?.transportPersonnelPower || 0) > 0
+  )));
+  assert.ok(output.preferredPlan.assignments.every((assignment) => (
+    assignment.groupFirepower === assignment.groupFirepowerBreakdown.combinedFirepower
+  )));
+  assert.ok(output.preferredPlan.assignments.every((assignment) => (
+    assignment.groupFirepower === assignment.groupFirepowerBreakdown.weaponEquipmentPower
+  )));
+  assert.ok(output.platforms.some((platform) => (platform.weaponLoadout || []).length > 0));
+  assert.ok(Number(output.preferredPlan.metrics.averageGroupFirepower || 0) > 0);
+  assert.ok(Number(output.preferredPlan.metrics.averageWeaponEquipmentPower || 0) > 0);
+  assert.ok(Number(output.preferredPlan.metrics.averageTransportPersonnelPower || 0) > 0);
+  assert.ok(Number(output.comparedPlans[0].metrics.averageGroupFirepower || 0) > 0);
+  const eastTarget = output.candidateTargets.find((item) => item.name === '东侧防空节点');
+  const northTarget = output.candidateTargets.find((item) => item.name === '北侧通信中继站');
+  assert.deepEqual(eastTarget?.coordinates?.slice(0, 2), [118.12, 32.04]);
+  assert.deepEqual(northTarget?.coordinates?.slice(0, 2), [118.22, 32.1]);
+  assert.ok(output.originalTargets.some((item) => item.name === '东侧防空节点'));
+  assert.ok(output.originalTargets.some((item) => item.name === '北侧通信中继站'));
   assert.ok(output.visualization.entities.some((item) => String(item.id).startsWith('allocation-group-')));
   assert.ok(output.visualization.entities.some((item) => String(item.id).startsWith('allocation-target-')));
+  assert.ok(output.visualization.entities.some((item) => String(item.id).startsWith('allocation-original-target-')));
   assert.ok(output.visualization.entities.some((item) => String(item.id).startsWith('allocation-order-')));
+  const eastTargetEntity = output.visualization.entities.find((item) => (
+    String(item.id).startsWith('allocation-target-') && item.name === '东侧防空节点'
+  ));
+  const northTargetEntity = output.visualization.entities.find((item) => (
+    String(item.id).startsWith('allocation-target-') && item.name === '北侧通信中继站'
+  ));
+  const eastOriginalTargetEntity = output.visualization.entities.find((item) => (
+    String(item.id).startsWith('allocation-original-target-') && item.name === '原始目标-东侧防空节点'
+  ));
+  const groupEntity = output.visualization.entities.find((item) => String(item.id).startsWith('allocation-group-'));
+  const orderEntity = output.visualization.entities.find((item) => String(item.id).startsWith('allocation-order-'));
+  assert.deepEqual(eastTargetEntity?.coordinates?.slice(0, 2), [118.12, 32.04]);
+  assert.deepEqual(northTargetEntity?.coordinates?.slice(0, 2), [118.22, 32.1]);
+  assert.deepEqual(eastOriginalTargetEntity?.coordinates?.slice(0, 2), [118.12, 32.04]);
+  assert.equal(eastTargetEntity?.visible, false);
+  assert.equal(eastTargetEntity?.meta?.showLabel, false);
+  assert.equal(eastOriginalTargetEntity?.visible, true);
+  assert.equal(eastOriginalTargetEntity?.meta?.showLabel, true);
+  assert.equal(groupEntity?.meta?.showLabel, false);
+  assert.equal(orderEntity?.meta?.showLabel, false);
   assert.equal(output.preferredPlan.visualization, output.visualization);
   assert.ok(Array.isArray(output.validationFindings));
   assert.ok(output.systemBestPlanMethodKey);
+});
+
+test('intelligent target allocation blocks fire strike assignments without loaded weapons', async () => {
+  const template = getPlanningTemplate();
+  const forceAlgorithm = template.algorithms.find((item) => item.id === 'force-grouping');
+  const forceVariant = forceAlgorithm?.variants.find((item) => item.id === 'force-grouping:force-grouping-local');
+  const targetAlgorithm = template.algorithms.find((item) => item.id === 'target-allocation');
+  const targetVariant = targetAlgorithm?.variants.find((item) => item.id === 'target-allocation:target-allocation-local');
+  const threat = createBattlePlannerThreatOutput();
+  const groupingResult = await executeLocalPythonStep(
+    forceVariant,
+    { id: 'test-force-grouping-no-weapons-allocation', name: '目标分配无武器编组测试' },
+    { id: 'step-force-grouping', name: '作战力量智能编组' },
+    forceAlgorithm,
+    {
+      stageOutputs: {
+        'enemy-threat-analysis': threat,
+      },
+    },
+    { dataset: {} },
+    {
+      uploadedFiles: [createBattlePlannerNoWeaponsFriendlyUpload()],
+      options: { llmBackend: 'mock' },
+    },
+    {},
+  );
+
+  const allocationResult = await executeLocalPythonStep(
+    targetVariant,
+    { id: 'test-target-allocation-no-weapons', name: '无武器目标分配测试' },
+    { id: 'step-target-allocation', name: '作战目标自动分配' },
+    targetAlgorithm,
+    {
+      stageOutputs: {
+        'enemy-threat-analysis': threat,
+        'force-grouping': groupingResult.structuredOutput,
+      },
+    },
+    { dataset: {} },
+    {
+      options: {
+        validationMode: 'strict',
+        maxAssignmentsPerGroup: 2,
+      },
+    },
+    {},
+  );
+
+  const output = allocationResult.structuredOutput;
+  assert.equal(output.validationSummary.status, 'fail');
+  assert.ok(output.validationFindings.some((item) => item.title === '火力打击缺少武器装载'));
+  assert.ok(output.preferredPlan.assignments.every((assignment) => !(assignment.groupRole === 'strike' && assignment.groupFirepower === 0)));
+  assert.ok(output.groups.some((group) => group.taskType === '防空压制' && group.firepower === 0));
+  assert.ok(Number(output.preferredPlan.stats.blockedAssignmentCount || 0) > 0);
 });
 
 test('local Python LLM parameter schema supports external API and Ollama backends', () => {

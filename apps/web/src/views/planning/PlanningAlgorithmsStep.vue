@@ -357,13 +357,13 @@ async function handleFileChange(algorithmId, event) {
               <strong>{{ selectedAlgorithm.supportedInputModes?.length || 0 }}</strong>
             </div>
             <div>
-              <span>外部工程</span>
+              <span>扩展实现</span>
               <strong>{{ selectedAlgorithm.variants?.filter((item) => item.type === 'external-model').length || 0 }}</strong>
             </div>
           </div>
 
           <div v-if="selectedExternalVariants.length" class="detail-card">
-            <span class="eyebrow">外部算法工程参数</span>
+            <span class="eyebrow">扩展算法实现参数</span>
             <div class="planning-runtime-config-list top-gap">
               <article
                 v-for="variant in selectedExternalVariants"
@@ -520,8 +520,8 @@ async function handleFileChange(algorithmId, event) {
             </div>
           </div>
 
-          <div class="detail-card">
-            <span class="eyebrow">内置方法</span>
+          <div v-if="(selectedAlgorithm.builtinMethods || []).length" class="detail-card">
+            <span class="eyebrow">内置算法方法</span>
             <div class="form-grid capability-stage-form top-gap">
               <label class="full-span">
                 当前方法
@@ -684,8 +684,8 @@ async function handleFileChange(algorithmId, event) {
                   @change="updateAlgorithmOptions(selectedAlgorithm.id, { comparisonFocus: $event.target.value })"
                 >
                   <option value="balanced">均衡</option>
-                  <option value="firepower-first">火力优先</option>
-                  <option value="survivability-first">生存优先</option>
+                  <option value="loss-minimized">战损最小化</option>
+                  <option value="resource-minimized">资源最小化</option>
                 </select>
               </label>
               <label>
@@ -711,8 +711,8 @@ async function handleFileChange(algorithmId, event) {
                   @change="updateAlgorithmOptions(selectedAlgorithm.id, { objectivePreference: $event.target.value })"
                 >
                   <option value="balanced">均衡</option>
-                  <option value="firepower-first">火力优先</option>
-                  <option value="survivability-first">生存优先</option>
+                  <option value="loss-minimized">战损最小化</option>
+                  <option value="resource-minimized">资源最小化</option>
                 </select>
               </label>
               <label>

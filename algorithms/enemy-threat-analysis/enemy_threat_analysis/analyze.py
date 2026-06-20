@@ -7,7 +7,7 @@ from typing import Any, Iterable
 
 from .assessment_report import generate_assessment_report
 from .file_loader import LoadedFile, load_files
-from .heatmap_builder import build_heatmap
+from .heatmap_builder import build_cluster_heatmaps, build_heatmap
 from .image_exporter import build_combined_map_base64, build_heatmap_base64, build_target_map_base64
 from .llm_extractor import extract_threat_json_with_llm
 from .normalize import normalize_extraction
@@ -60,8 +60,31 @@ def analyze(
         analysis_focus=options["analysisFocus"],
         impact_bias=options["impactBias"],
     )
-    visualization = build_threat_visualization(target_assessments, heatmap)
+    cluster_heatmaps = build_cluster_heatmaps(
+        target_assessments,
+        heatmap_density=options["heatmapDensity"],
+        analysis_focus=options["analysisFocus"],
+        impact_bias=options["impactBias"],
+    )
     heatmap_base64 = build_heatmap_base64(heatmap)
+    cluster_overlays = build_cluster_heatmap_overlays(cluster_heatmaps)
+    heatmap["overlayMode"] = "clustered" if len(cluster_overlays) > 1 else "single"
+    heatmap["groupSummaries"] = [
+        {
+            "groupId": item.get("groupId"),
+            "groupName": item.get("groupName"),
+            "targetIds": item.get("targetIds", []),
+            "targetCount": item.get("targetCount", 0),
+            "bounds": item.get("bounds") or {},
+            "statistics": item.get("statistics") or {},
+        }
+        for item in cluster_heatmaps
+    ]
+    visualization = build_threat_visualization(
+        target_assessments,
+        heatmap,
+        image_overlays=cluster_overlays if len(cluster_overlays) > 1 else None,
+    )
     target_map_base64 = build_target_map_base64(target_assessments, heatmap)
     combined_map_base64 = build_combined_map_base64(target_assessments, heatmap)
     structured_output = build_structured_output(
@@ -97,6 +120,41 @@ def analyze(
     return structured_output
 
 
+def build_cluster_heatmap_overlays(cluster_heatmaps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    overlays: list[dict[str, Any]] = []
+    for index, item in enumerate(cluster_heatmaps, start=1):
+        bounds = item.get("bounds") or {}
+        image_base64 = build_heatmap_base64(item)
+        if not image_base64 or not bounds:
+            continue
+        overlays.append(
+            {
+                "id": f"threat-spatial-field-{item.get('groupId') or index}",
+                "type": "image-overlay",
+                "role": "threat-heatmap",
+                "name": f"{item.get('groupName') or f'目标群 {index}'}热力图",
+                "imageBase64": image_base64,
+                "bounds": {
+                    "west": bounds["minLon"],
+                    "south": bounds["minLat"],
+                    "east": bounds["maxLon"],
+                    "north": bounds["maxLat"],
+                },
+                "groupId": item.get("groupId") or f"threat-group-{index:03d}",
+                "groupName": item.get("groupName") or f"目标群 {index}",
+                "targetIds": list(item.get("targetIds") or []),
+                "targetCount": item.get("targetCount", len(item.get("targetIds") or [])),
+                "alpha": 0.82,
+                "zIndex": 20 + index,
+                "rendering": "single-tile-image",
+                "background": "transparent",
+                "normalizedForDisplay": True,
+                "displayVersion": "soft-continuous-v2",
+            }
+        )
+    return overlays
+
+
 def build_target_assessments(
     extraction: ThreatExtractionJson,
     *,
@@ -119,6 +177,8 @@ def build_target_assessments(
         data = TargetAssessment(
             id=target.id,
             name=target.name,
+            groupId=target.groupId,
+            groupName=target.groupName,
             category=target.category,
             threatScore=threat["threatScore"],
             valueScore=value["valueScore"],

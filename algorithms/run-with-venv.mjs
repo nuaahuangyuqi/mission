@@ -15,8 +15,7 @@ const venvPython = process.platform === 'win32'
 const requirementFiles = [
   path.join(algorithmsDir, 'requirements.txt'),
   path.join(algorithmsDir, 'enemy-threat-analysis', 'requirements.txt'),
-  path.join(algorithmsDir, 'force-grouping', 'requirements.txt'),
-  path.join(algorithmsDir, 'target-allocation', 'requirements.txt'),
+  path.join(algorithmsDir, 'battle-planner', 'requirements.txt'),
 ].filter((filePath) => fs.existsSync(filePath));
 
 function run(command, args, options = {}) {
@@ -89,8 +88,7 @@ const existingPythonPath = process.env.PYTHONPATH || '';
 const algorithmPythonPaths = [
   algorithmsDir,
   path.join(algorithmsDir, 'enemy-threat-analysis'),
-  path.join(algorithmsDir, 'force-grouping'),
-  path.join(algorithmsDir, 'target-allocation'),
+  path.join(algorithmsDir, 'battle-planner'),
   path.join(algorithmsDir, 'airlanding_zone'),
   existingPythonPath,
 ].filter(Boolean);

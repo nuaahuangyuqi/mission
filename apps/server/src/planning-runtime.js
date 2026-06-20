@@ -205,6 +205,11 @@ const GROUPING_METHODS = [
 ];
 
 const TARGET_INTELLIGENT_METHOD_KEY = 'intelligent-allocation';
+const TARGET_INTELLIGENT_METHOD = {
+  key: TARGET_INTELLIGENT_METHOD_KEY,
+  label: '智能分配算法',
+  description: '读取 battle_planner 智能编组阶段产出的编组-目标关系，适配为平台目标分配方案。',
+};
 
 const TARGET_METHODS = [
   {
@@ -222,12 +227,129 @@ const TARGET_METHODS = [
     label: '多目标优化分配',
     description: '基于 Pareto 候选解搜索，综合重要性、难度、风险和平台负荷平衡分配。',
   },
-  {
-    key: TARGET_INTELLIGENT_METHOD_KEY,
-    label: '智能分配算法',
-    description: '调用本地 target_allocation Python 算法，基于前序威胁分析和作战编组结果生成目标链路化分配方案。',
-  },
 ];
+const TARGET_ALL_METHODS = [...TARGET_METHODS, TARGET_INTELLIGENT_METHOD];
+
+const PLANNING_STRATEGY_ORDER = ['balanced', 'loss-minimized', 'resource-minimized'];
+const PLANNING_STRATEGY_PROFILES = {
+  balanced: {
+    key: 'balanced',
+    label: '均衡',
+    methodSuffix: '均衡方案',
+    description: '在目标覆盖、战损风险、资源投入和编组负荷之间保持折中。',
+    aliases: ['hybrid-balanced', 'scheme-balanced-intelligent', 'firepower-first', 'firepower', 'mobility'],
+    grouping: {
+      reserveRatio: 0.15,
+      escortRatio: 0.5,
+      maxAllowedLossRate: 0.12,
+      maxGroupSize: 6,
+      includeReserve: true,
+      scoreWeights: {
+        coverage: 0.26,
+        firepower: 0.18,
+        survivability: 0.18,
+        resource: 0.14,
+        balance: 0.24,
+      },
+    },
+    allocation: {
+      extraHighRiskCoverage: 0,
+      maxAssignmentsDelta: 0,
+      reusedGroupBonus: 1,
+      newGroupPenalty: 0,
+      loadPenalty: 8,
+      resourcePenalty: 0.12,
+      lossPenalty: 10,
+      collaborationBonus: 4,
+      weights: {
+        coverage: 0.26,
+        match: 0.2,
+        feasibility: 0.2,
+        survivability: 0.14,
+        resource: 0.1,
+        balance: 0.1,
+      },
+    },
+  },
+  'loss-minimized': {
+    key: 'loss-minimized',
+    label: '战损最小化',
+    methodSuffix: '战损最小化方案',
+    description: '提高协同和冗余投入，优先降低高风险目标处置中的预计战损。',
+    aliases: ['survivability-first', 'survival-first', 'loss-aware', 'minimal-loss', 'loss-minimization'],
+    grouping: {
+      reserveRatio: 0.22,
+      escortRatio: 0.75,
+      maxAllowedLossRate: 0.08,
+      maxGroupSize: 7,
+      includeReserve: true,
+      scoreWeights: {
+        coverage: 0.2,
+        firepower: 0.14,
+        survivability: 0.36,
+        resource: 0.06,
+        balance: 0.24,
+      },
+    },
+    allocation: {
+      extraHighRiskCoverage: 1,
+      maxAssignmentsDelta: 1,
+      reusedGroupBonus: -3,
+      newGroupPenalty: -1,
+      loadPenalty: 14,
+      resourcePenalty: 0.04,
+      lossPenalty: 24,
+      collaborationBonus: 10,
+      weights: {
+        coverage: 0.22,
+        match: 0.14,
+        feasibility: 0.26,
+        survivability: 0.26,
+        resource: 0.04,
+        balance: 0.08,
+      },
+    },
+  },
+  'resource-minimized': {
+    key: 'resource-minimized',
+    label: '资源最小化',
+    methodSuffix: '资源最小化方案',
+    description: '在满足分配底线的前提下，尽量减少参战编组和单位投入。',
+    aliases: ['resource-first', 'resource-saving', 'resource-minimization', 'minimal-resource'],
+    grouping: {
+      reserveRatio: 0.08,
+      escortRatio: 0.35,
+      maxAllowedLossRate: 0.14,
+      maxGroupSize: 4,
+      includeReserve: false,
+      scoreWeights: {
+        coverage: 0.3,
+        firepower: 0.18,
+        survivability: 0.1,
+        resource: 0.34,
+        balance: 0.08,
+      },
+    },
+    allocation: {
+      extraHighRiskCoverage: 0,
+      maxAssignmentsDelta: 1,
+      reusedGroupBonus: 12,
+      newGroupPenalty: 10,
+      loadPenalty: 4,
+      resourcePenalty: 0.28,
+      lossPenalty: 6,
+      collaborationBonus: 1,
+      weights: {
+        coverage: 0.3,
+        match: 0.18,
+        feasibility: 0.16,
+        survivability: 0.08,
+        resource: 0.22,
+        balance: 0.06,
+      },
+    },
+  },
+};
 
 const TARGET_VALIDATION_PROFILES = {
   strict: {
@@ -450,657 +572,6 @@ const GROUPING_CONSTRAINT_MODELS = {
     key: 'baseline-constraints',
     label: '基础编组约束',
     description: '校验功能群完整性、关键角色覆盖和兵力负载均衡，作为默认约束模型。',
-  },
-};
-
-const GROUPING_METRIC_LABELS = {
-  firepower: '火力集中度',
-  protection: '掩护防护能力',
-  reconCoverage: '侦察覆盖能力',
-  endurance: '持续保障能力',
-  mobility: '机动转换能力',
-  balance: '群组均衡度',
-};
-
-const GROUPING_RULE_SIGNAL_DEFINITIONS = [
-  {
-    key: 'equipment-performance',
-    label: '装备性能',
-    keywords: ['装备', '性能', '射程', '航程', '防护', '装甲', '精度', '速度', '载荷', '火力'],
-    weightAdjustments: {
-      firepower: 0.02,
-      protection: 0.02,
-      mobility: 0.02,
-    },
-  },
-  {
-    key: 'personnel-configuration',
-    label: '人员配置',
-    keywords: ['人员', '编制', '满编', '机组', '操作手', '班组', '骨干', '训练', '协同', '值守'],
-    weightAdjustments: {
-      protection: 0.02,
-      endurance: 0.03,
-      balance: 0.02,
-    },
-  },
-  {
-    key: 'task-demand',
-    label: '任务需求',
-    keywords: ['任务需求', '火力打击', '机降突击', '空中突击', '伴随夺控', '侦察预警', '压制', '掩护', '警戒'],
-    weightAdjustments: {
-      firepower: 0.02,
-      reconCoverage: 0.02,
-      mobility: 0.02,
-    },
-  },
-  {
-    key: 'firepower',
-    label: '火力偏重',
-    keywords: ['火力', '导弹', '炮兵', '歼击', '压制', '打击', '装甲', '主战', '远程'],
-    weightAdjustments: {
-      firepower: 0.06,
-      balance: 0.01,
-    },
-  },
-  {
-    key: 'protection',
-    label: '防护偏重',
-    keywords: ['防空', '掩护', '护卫', '拦截', '防护', '警戒', '拒止'],
-    weightAdjustments: {
-      protection: 0.05,
-      endurance: 0.01,
-    },
-  },
-  {
-    key: 'reconCoverage',
-    label: '侦察预警偏重',
-    keywords: ['侦察', '预警', '无人', '监视', '巡察', '雷达', '引导'],
-    weightAdjustments: {
-      reconCoverage: 0.05,
-    },
-  },
-  {
-    key: 'endurance',
-    label: '持续保障偏重',
-    keywords: ['保障', '补给', '维修', '医疗', '通信', '联勤', '持续', '后勤'],
-    weightAdjustments: {
-      endurance: 0.05,
-      balance: 0.01,
-    },
-  },
-  {
-    key: 'mobility',
-    label: '机动突击偏重',
-    keywords: ['机动', '突击', '机降', '运输', '直升机', '两栖', '投送', '空中'],
-    weightAdjustments: {
-      firepower: 0.01,
-      mobility: 0.06,
-    },
-  },
-];
-
-const GROUPING_DOCUMENT_FORCE_DEFINITIONS = [
-  {
-    role: 'strike',
-    category: '文档推断火力单元',
-    roleLabel: '火力打击',
-    nameSuffix: '火力分队',
-    keywords: ['火力', '导弹', '炮兵', '歼击', '压制', '打击', '装甲', '主战', '突击'],
-  },
-  {
-    role: 'cover',
-    category: '文档推断掩护单元',
-    roleLabel: '掩护防护',
-    nameSuffix: '掩护分队',
-    keywords: ['防空', '掩护', '护卫', '拦截', '警戒', '电子', '干扰'],
-  },
-  {
-    role: 'recon',
-    category: '文档推断侦察单元',
-    roleLabel: '前沿侦察',
-    nameSuffix: '侦察分队',
-    keywords: ['侦察', '预警', '无人', '监视', '巡察', '雷达', '引导'],
-  },
-  {
-    role: 'sustain',
-    category: '文档推断保障单元',
-    roleLabel: '持续保障',
-    nameSuffix: '保障分队',
-    keywords: ['保障', '补给', '维修', '医疗', '通信', '后勤', '联勤'],
-  },
-  {
-    role: 'support',
-    category: '文档推断机动单元',
-    roleLabel: '机动投送',
-    nameSuffix: '机动分队',
-    keywords: ['机动', '运输', '机降', '空中突击', '直升机', '两栖', '投送'],
-  },
-];
-
-const GROUPING_BUCKET_BLUEPRINTS = {
-  'fire-strike-rules': {
-    3: [
-      {
-        id: 'main-strike',
-        name: '主攻火力群',
-        role: '负责主攻方向高价值目标压制',
-        preferredRoles: ['strike'],
-        supportRoles: ['cover'],
-        targetMix: {
-          firepower: 0.42,
-          protection: 0.18,
-          reconCoverage: 0.12,
-          endurance: 0.12,
-          mobility: 0.16,
-        },
-      },
-      {
-        id: 'recon-cover',
-        name: '侦察掩护群',
-        role: '负责前沿侦察、预警引导和防空掩护',
-        preferredRoles: ['recon', 'cover'],
-        supportRoles: ['support'],
-        targetMix: {
-          firepower: 0.08,
-          protection: 0.27,
-          reconCoverage: 0.37,
-          endurance: 0.12,
-          mobility: 0.16,
-        },
-      },
-      {
-        id: 'sustain-command',
-        name: '保障协同群',
-        role: '负责通信指挥、补给维修和持续协同',
-        preferredRoles: ['sustain'],
-        supportRoles: ['support', 'cover'],
-        targetMix: {
-          firepower: 0.06,
-          protection: 0.18,
-          reconCoverage: 0.12,
-          endurance: 0.46,
-          mobility: 0.18,
-        },
-      },
-    ],
-    4: [
-      {
-        id: 'main-strike',
-        name: '主攻火力群',
-        role: '负责主攻方向高价值目标压制',
-        preferredRoles: ['strike'],
-        supportRoles: ['cover'],
-        targetMix: {
-          firepower: 0.45,
-          protection: 0.16,
-          reconCoverage: 0.11,
-          endurance: 0.1,
-          mobility: 0.18,
-        },
-      },
-      {
-        id: 'fire-cover',
-        name: '火力掩护群',
-        role: '负责伴随压制、防空掩护和电子支援',
-        preferredRoles: ['cover', 'strike'],
-        supportRoles: ['support'],
-        targetMix: {
-          firepower: 0.28,
-          protection: 0.26,
-          reconCoverage: 0.12,
-          endurance: 0.14,
-          mobility: 0.2,
-        },
-      },
-      {
-        id: 'recon-warning',
-        name: '侦察预警群',
-        role: '负责前沿侦察、态势更新和打击引导',
-        preferredRoles: ['recon'],
-        supportRoles: ['cover'],
-        targetMix: {
-          firepower: 0.08,
-          protection: 0.18,
-          reconCoverage: 0.44,
-          endurance: 0.12,
-          mobility: 0.18,
-        },
-      },
-      {
-        id: 'sustain-command',
-        name: '保障协同群',
-        role: '负责通信指挥、补给维修和持续协同',
-        preferredRoles: ['sustain'],
-        supportRoles: ['support', 'cover'],
-        targetMix: {
-          firepower: 0.06,
-          protection: 0.16,
-          reconCoverage: 0.12,
-          endurance: 0.48,
-          mobility: 0.18,
-        },
-      },
-    ],
-    5: [
-      {
-        id: 'main-strike',
-        name: '主攻火力群',
-        role: '负责主攻方向集中压制与突击',
-        preferredRoles: ['strike'],
-        supportRoles: ['cover'],
-        targetMix: {
-          firepower: 0.46,
-          protection: 0.16,
-          reconCoverage: 0.1,
-          endurance: 0.1,
-          mobility: 0.18,
-        },
-      },
-      {
-        id: 'fire-support',
-        name: '纵深火力群',
-        role: '负责纵深火力打击和火力补位',
-        preferredRoles: ['strike'],
-        supportRoles: ['support'],
-        targetMix: {
-          firepower: 0.4,
-          protection: 0.14,
-          reconCoverage: 0.12,
-          endurance: 0.12,
-          mobility: 0.22,
-        },
-      },
-      {
-        id: 'air-cover',
-        name: '掩护防护群',
-        role: '负责区域防空、电子支援和护航',
-        preferredRoles: ['cover'],
-        supportRoles: ['strike', 'sustain'],
-        targetMix: {
-          firepower: 0.12,
-          protection: 0.42,
-          reconCoverage: 0.16,
-          endurance: 0.16,
-          mobility: 0.14,
-        },
-      },
-      {
-        id: 'recon-warning',
-        name: '侦察预警群',
-        role: '负责侦察预警和打击引导',
-        preferredRoles: ['recon'],
-        supportRoles: ['cover'],
-        targetMix: {
-          firepower: 0.08,
-          protection: 0.18,
-          reconCoverage: 0.46,
-          endurance: 0.1,
-          mobility: 0.18,
-        },
-      },
-      {
-        id: 'sustain-command',
-        name: '保障协同群',
-        role: '负责通信指挥、补给维修和持续协同',
-        preferredRoles: ['sustain'],
-        supportRoles: ['support', 'cover'],
-        targetMix: {
-          firepower: 0.06,
-          protection: 0.16,
-          reconCoverage: 0.1,
-          endurance: 0.5,
-          mobility: 0.18,
-        },
-      },
-    ],
-    6: [
-      {
-        id: 'main-strike',
-        name: '主攻火力群',
-        role: '负责主攻方向集中压制与突击',
-        preferredRoles: ['strike'],
-        supportRoles: ['cover'],
-        targetMix: {
-          firepower: 0.48,
-          protection: 0.15,
-          reconCoverage: 0.09,
-          endurance: 0.1,
-          mobility: 0.18,
-        },
-      },
-      {
-        id: 'fire-support',
-        name: '纵深火力群',
-        role: '负责纵深火力打击和火力补位',
-        preferredRoles: ['strike'],
-        supportRoles: ['support'],
-        targetMix: {
-          firepower: 0.42,
-          protection: 0.14,
-          reconCoverage: 0.1,
-          endurance: 0.12,
-          mobility: 0.22,
-        },
-      },
-      {
-        id: 'maneuver-reserve',
-        name: '机动预备群',
-        role: '负责机动补位、突击接续和预备处置',
-        preferredRoles: ['support', 'strike'],
-        supportRoles: ['sustain'],
-        targetMix: {
-          firepower: 0.24,
-          protection: 0.16,
-          reconCoverage: 0.12,
-          endurance: 0.16,
-          mobility: 0.32,
-        },
-      },
-      {
-        id: 'air-cover',
-        name: '掩护防护群',
-        role: '负责区域防空、电子支援和护航',
-        preferredRoles: ['cover'],
-        supportRoles: ['strike', 'sustain'],
-        targetMix: {
-          firepower: 0.12,
-          protection: 0.44,
-          reconCoverage: 0.16,
-          endurance: 0.14,
-          mobility: 0.14,
-        },
-      },
-      {
-        id: 'recon-warning',
-        name: '侦察预警群',
-        role: '负责侦察预警和打击引导',
-        preferredRoles: ['recon'],
-        supportRoles: ['cover'],
-        targetMix: {
-          firepower: 0.08,
-          protection: 0.16,
-          reconCoverage: 0.48,
-          endurance: 0.1,
-          mobility: 0.18,
-        },
-      },
-      {
-        id: 'sustain-command',
-        name: '保障协同群',
-        role: '负责通信指挥、补给维修和持续协同',
-        preferredRoles: ['sustain'],
-        supportRoles: ['support', 'cover'],
-        targetMix: {
-          firepower: 0.06,
-          protection: 0.16,
-          reconCoverage: 0.1,
-          endurance: 0.5,
-          mobility: 0.18,
-        },
-      },
-    ],
-  },
-  'air-assault-rules': {
-    3: [
-      {
-        id: 'air-assault',
-        name: '空中突击群',
-        role: '负责主突方向机降投送和快速夺控',
-        preferredRoles: ['strike', 'support'],
-        supportRoles: ['cover'],
-        targetMix: {
-          firepower: 0.24,
-          protection: 0.18,
-          reconCoverage: 0.12,
-          endurance: 0.12,
-          mobility: 0.34,
-        },
-      },
-      {
-        id: 'recon-guide',
-        name: '侦察引导群',
-        role: '负责前出侦察、空地引导和预警',
-        preferredRoles: ['recon'],
-        supportRoles: ['cover'],
-        targetMix: {
-          firepower: 0.08,
-          protection: 0.16,
-          reconCoverage: 0.48,
-          endurance: 0.12,
-          mobility: 0.16,
-        },
-      },
-      {
-        id: 'sustain-escort',
-        name: '保障护航群',
-        role: '负责补给续航、通信指挥和航路护航',
-        preferredRoles: ['sustain', 'cover'],
-        supportRoles: ['support'],
-        targetMix: {
-          firepower: 0.08,
-          protection: 0.28,
-          reconCoverage: 0.1,
-          endurance: 0.34,
-          mobility: 0.2,
-        },
-      },
-    ],
-    4: [
-      {
-        id: 'air-assault',
-        name: '空中突击群',
-        role: '负责主突方向机降投送和快速夺控',
-        preferredRoles: ['strike', 'support'],
-        supportRoles: ['cover'],
-        targetMix: {
-          firepower: 0.24,
-          protection: 0.18,
-          reconCoverage: 0.12,
-          endurance: 0.1,
-          mobility: 0.36,
-        },
-      },
-      {
-        id: 'escort-cover',
-        name: '护航掩护群',
-        role: '负责低空护航、防空拦截和火力掩护',
-        preferredRoles: ['cover'],
-        supportRoles: ['strike'],
-        targetMix: {
-          firepower: 0.18,
-          protection: 0.34,
-          reconCoverage: 0.12,
-          endurance: 0.12,
-          mobility: 0.24,
-        },
-      },
-      {
-        id: 'recon-guide',
-        name: '侦察引导群',
-        role: '负责前出侦察、空地引导和预警',
-        preferredRoles: ['recon'],
-        supportRoles: ['cover'],
-        targetMix: {
-          firepower: 0.08,
-          protection: 0.16,
-          reconCoverage: 0.48,
-          endurance: 0.1,
-          mobility: 0.18,
-        },
-      },
-      {
-        id: 'sustain-command',
-        name: '保障指挥群',
-        role: '负责补给续航、通信指挥和应急保障',
-        preferredRoles: ['sustain'],
-        supportRoles: ['support', 'cover'],
-        targetMix: {
-          firepower: 0.06,
-          protection: 0.18,
-          reconCoverage: 0.1,
-          endurance: 0.46,
-          mobility: 0.2,
-        },
-      },
-    ],
-    5: [
-      {
-        id: 'air-assault',
-        name: '空中突击群',
-        role: '负责主突方向机降投送和快速夺控',
-        preferredRoles: ['strike', 'support'],
-        supportRoles: ['cover'],
-        targetMix: {
-          firepower: 0.25,
-          protection: 0.17,
-          reconCoverage: 0.1,
-          endurance: 0.1,
-          mobility: 0.38,
-        },
-      },
-      {
-        id: 'fire-cover',
-        name: '火力压制群',
-        role: '负责突击前火力压制和火力补位',
-        preferredRoles: ['strike'],
-        supportRoles: ['cover'],
-        targetMix: {
-          firepower: 0.34,
-          protection: 0.2,
-          reconCoverage: 0.12,
-          endurance: 0.1,
-          mobility: 0.24,
-        },
-      },
-      {
-        id: 'escort-cover',
-        name: '护航掩护群',
-        role: '负责低空护航、防空拦截和掩护',
-        preferredRoles: ['cover'],
-        supportRoles: ['support'],
-        targetMix: {
-          firepower: 0.16,
-          protection: 0.36,
-          reconCoverage: 0.12,
-          endurance: 0.12,
-          mobility: 0.24,
-        },
-      },
-      {
-        id: 'recon-guide',
-        name: '侦察引导群',
-        role: '负责前出侦察、空地引导和预警',
-        preferredRoles: ['recon'],
-        supportRoles: ['cover'],
-        targetMix: {
-          firepower: 0.08,
-          protection: 0.16,
-          reconCoverage: 0.48,
-          endurance: 0.1,
-          mobility: 0.18,
-        },
-      },
-      {
-        id: 'sustain-command',
-        name: '保障指挥群',
-        role: '负责补给续航、通信指挥和应急保障',
-        preferredRoles: ['sustain'],
-        supportRoles: ['support', 'cover'],
-        targetMix: {
-          firepower: 0.06,
-          protection: 0.18,
-          reconCoverage: 0.1,
-          endurance: 0.46,
-          mobility: 0.2,
-        },
-      },
-    ],
-    6: [
-      {
-        id: 'air-assault',
-        name: '空中突击群',
-        role: '负责主突方向机降投送和快速夺控',
-        preferredRoles: ['strike', 'support'],
-        supportRoles: ['cover'],
-        targetMix: {
-          firepower: 0.24,
-          protection: 0.16,
-          reconCoverage: 0.1,
-          endurance: 0.1,
-          mobility: 0.4,
-        },
-      },
-      {
-        id: 'fire-cover',
-        name: '火力压制群',
-        role: '负责突击前火力压制和火力补位',
-        preferredRoles: ['strike'],
-        supportRoles: ['cover'],
-        targetMix: {
-          firepower: 0.36,
-          protection: 0.2,
-          reconCoverage: 0.1,
-          endurance: 0.1,
-          mobility: 0.24,
-        },
-      },
-      {
-        id: 'escort-cover',
-        name: '护航掩护群',
-        role: '负责低空护航、防空拦截和电子掩护',
-        preferredRoles: ['cover'],
-        supportRoles: ['support'],
-        targetMix: {
-          firepower: 0.14,
-          protection: 0.38,
-          reconCoverage: 0.12,
-          endurance: 0.12,
-          mobility: 0.24,
-        },
-      },
-      {
-        id: 'recon-guide',
-        name: '侦察引导群',
-        role: '负责前出侦察、空地引导和预警',
-        preferredRoles: ['recon'],
-        supportRoles: ['cover'],
-        targetMix: {
-          firepower: 0.08,
-          protection: 0.16,
-          reconCoverage: 0.48,
-          endurance: 0.1,
-          mobility: 0.18,
-        },
-      },
-      {
-        id: 'sustain-command',
-        name: '保障指挥群',
-        role: '负责补给续航、通信指挥和应急保障',
-        preferredRoles: ['sustain'],
-        supportRoles: ['support', 'cover'],
-        targetMix: {
-          firepower: 0.06,
-          protection: 0.18,
-          reconCoverage: 0.1,
-          endurance: 0.46,
-          mobility: 0.2,
-        },
-      },
-      {
-        id: 'reserve-blocking',
-        name: '机动预备群',
-        role: '负责快速补位、封控阻断和预备处置',
-        preferredRoles: ['support', 'strike'],
-        supportRoles: ['sustain'],
-        targetMix: {
-          firepower: 0.2,
-          protection: 0.16,
-          reconCoverage: 0.12,
-          endurance: 0.16,
-          mobility: 0.36,
-        },
-      },
-    ],
   },
 };
 
@@ -1332,14 +803,14 @@ const PLANNING_EXTERNAL_ALGORITHM_PROJECTS = [
     type: 'external-model',
     runtime: 'python-local',
     executionMode: 'local-python',
-    packageName: 'force_grouping',
-    cliModule: 'force_grouping.cli',
+    packageName: 'battle_planner',
+    cliModule: 'battle_planner.cli',
     projectName: '智能编组算法',
-    projectPath: 'algorithms/force-grouping',
-    description: '调用 algorithms/force-grouping 本地 Python CLI，在内置编组算法之外提供大模型辅助的作战力量智能编组实现。',
+    projectPath: 'algorithms/battle-planner',
+    description: '调用 algorithms/battle-planner 本地 Python CLI，从上游威胁结果和我方文档生成编组与目标处置关系。',
     version: '0.1.0',
     defaultStatus: 'active',
-    legacyKeys: ['force-grouping-python', 'local-force-grouping'],
+    legacyKeys: ['force-grouping-python', 'local-force-grouping', 'battle-planner'],
     supportedAlgorithmIds: ['force-grouping'],
     projectAlgorithms: [{ id: 'force-grouping', name: '作战力量智能编组' }],
     parameterSchema: [
@@ -1352,9 +823,8 @@ const PLANNING_EXTERNAL_ALGORITHM_PROJECTS = [
         defaultValue: 'balanced',
         options: [
           { value: 'balanced', label: '均衡' },
-          { value: 'firepower', label: '火力优先' },
-          { value: 'mobility', label: '机动优先' },
-          { value: 'survivability', label: '生存优先' },
+          { value: 'loss-minimized', label: '战损最小化' },
+          { value: 'resource-minimized', label: '资源最小化' },
         ],
       },
       { key: 'expectedGroupCount', label: '期望编组数量', type: 'number', defaultValue: 4, min: 1, max: 12 },
@@ -1380,6 +850,7 @@ const PLANNING_EXTERNAL_ALGORITHM_PROJECTS = [
       schemeProfileKey: 'balanced',
       ruleLibraryKey: 'fire-strike-rules',
       comparisonFocus: 'balanced',
+      planningPreference: 'balanced',
       expectedGroupCount: 4,
       useLlmExplanation: true,
       llmBackend: 'openai-compatible',
@@ -1390,6 +861,24 @@ const PLANNING_EXTERNAL_ALGORITHM_PROJECTS = [
       llmTimeout: 120,
       llmStream: true,
     },
+  },
+  {
+    key: 'target-allocation-local',
+    type: 'external-model',
+    runtime: 'python-local',
+    executionMode: 'local-python',
+    packageName: 'battle_planner',
+    cliModule: '',
+    projectName: '智能分配算法',
+    projectPath: 'algorithms/battle-planner',
+    description: '复用 battle_planner 智能编组阶段产出的编组-目标处置关系，适配为目标分配结果。',
+    version: '0.1.0',
+    defaultStatus: 'active',
+    legacyKeys: ['target-allocation-python', 'local-target-allocation', 'intelligent-allocation', 'battle-planner-allocation'],
+    supportedAlgorithmIds: ['target-allocation'],
+    projectAlgorithms: [{ id: 'target-allocation', name: '作战目标自动分配' }],
+    parameterSchema: [],
+    defaultOptions: {},
   },
   {
     key: 'airlanding-zone-local',
@@ -1489,7 +978,7 @@ const ALGORITHM_DEFINITIONS = [
     id: 'force-grouping',
     name: '作战力量智能编组',
     category: '兵力编组',
-    description: '结合我方情报、任务需求和威胁分析结果，基于规则推理或优化方法输出多套编组方案。',
+    description: '调用 battle_planner，结合上一阶段敌情威胁结果和智能编组阶段我方文档，生成编组和目标处置关系。',
     expectedInputs: ['我方情报数据源', '我方兵力记录', '威胁分析结果', '本地 Word/PDF/Excel/TXT 文件'],
     expectedOutputs: ['多套作战编组方案', '方案对比', '推荐结果解释'],
     implementationStatus: 'implemented',
@@ -1506,6 +995,7 @@ const ALGORITHM_DEFINITIONS = [
         ruleLibraryKey: 'fire-strike-rules',
         constraintModelKey: 'baseline-constraints',
         comparisonFocus: 'balanced',
+        planningPreference: 'balanced',
         expectedGroupCount: 4,
       },
     },
@@ -1514,7 +1004,7 @@ const ALGORITHM_DEFINITIONS = [
     id: 'target-allocation',
     name: '作战目标自动分配',
     category: '目标分配',
-    description: '基于敌情威胁和兵力编组结果，输出多目标、多平台的分配方案、验证结果和调整建议。',
+    description: '复用 battle_planner 编组阶段产出的编组-目标关系，适配为多目标分配方案、验证结果和调整建议。',
     expectedInputs: ['威胁分析结果', '作战编组方案', '平台能力评估'],
     expectedOutputs: ['目标分配方案', '多算法对比', '合理性验证', '调整建议'],
     implementationStatus: 'implemented',
@@ -1527,6 +1017,7 @@ const ALGORITHM_DEFINITIONS = [
       uploadedFiles: [],
       options: {
         objectivePreference: 'balanced',
+        planningPreference: 'balanced',
         validationMode: 'strict',
         maxAssignmentsPerGroup: 2,
       },
@@ -2992,6 +2483,188 @@ async function materializePlanningContextFiles({
   };
 }
 
+function buildBattlePlannerThreatArtifact(threatOutput = {}, step = {}, algorithm = {}) {
+  const output = safeObject(threatOutput);
+  if (output.schemaVersion === 'planning-artifact-export-v1' && safeObject(output.output).targetAssessments) {
+    return output;
+  }
+  return {
+    schemaVersion: 'planning-artifact-export-v1',
+    generatedAt: new Date().toISOString(),
+    step: {
+      id: step.id || 'step-threat-analysis',
+      name: step.name || '敌情威胁自动分析',
+      algorithmId: 'enemy-threat-analysis',
+      downstreamAlgorithmId: algorithm.id || 'force-grouping',
+    },
+    artifact: {
+      id: 'battle-planner-upstream-threat',
+      name: '敌情威胁结构化结果',
+      source: 'planning-runtime',
+    },
+    output,
+  };
+}
+
+function buildBattlePlannerConfig(runtimeOptions = {}) {
+  const source = safeObject(runtimeOptions);
+  const strategy = resolvePlanningStrategyProfile(
+    source.planningPreference
+      || source.comparisonFocus
+      || source.objectivePreference
+      || source.schemeProfileKey,
+  );
+  const explicitProvider = safeRuntimeText(source.llmBackend || source.provider || source.backend).toLowerCase().replace(/_/g, '-');
+  const llmOptions = normalizeLlmRuntimeOptions(runtimeOptions);
+  const provider = explicitProvider === 'mock'
+    ? 'mock'
+    : llmOptions.backend === 'ollama'
+      ? 'ollama'
+      : 'openai';
+  return {
+    llm: {
+      provider,
+      openai: {
+        api_key: llmOptions.apiKey,
+        base_url: llmOptions.baseUrl,
+        model_name: llmOptions.model,
+        temperature: 0.1,
+        timeout_seconds: llmOptions.timeoutSeconds,
+      },
+      ollama: {
+        model_name: llmOptions.model,
+        temperature: 0.1,
+        timeout_seconds: llmOptions.timeoutSeconds,
+      },
+      mock: {
+        model_name: 'mock-planner',
+        temperature: 0.1,
+        timeout_seconds: llmOptions.timeoutSeconds,
+      },
+    },
+    algorithm: {
+      reserve_ratio: clamp(Number(source.reserveRatio ?? source.reserve_ratio ?? strategy.grouping.reserveRatio), 0, 0.8),
+      escort_ratio: clamp(Number(source.escortRatio ?? source.escort_ratio ?? strategy.grouping.escortRatio), 0, 2),
+      max_group_size: clamp(Math.round(Number(source.maxGroupSize || source.expectedGroupCount || strategy.grouping.maxGroupSize)), 1, 12),
+      default_max_loss_rate: clamp(Number(source.defaultMaxLossRate ?? source.maxAllowedLossRate ?? strategy.grouping.maxAllowedLossRate), 0, 1),
+      default_air_assault_personnel: clamp(Math.round(Number(source.defaultAirAssaultPersonnel || 24)), 0, 200),
+      recon_escort_threat_threshold: clamp(Number(source.reconEscortThreatThreshold || 6), 0, 10),
+      allow_reserve_release: normalizeBooleanOption(source.allowReserveRelease, true),
+      reserve_release_priority_threshold: clamp(Math.round(Number(source.reserveReleasePriorityThreshold || 2)), 1, 5),
+      allow_cross_task_reallocation: normalizeBooleanOption(source.allowCrossTaskReallocation, false),
+    },
+  };
+}
+
+async function writeBattlePlannerFriendlyTextFile(baseDir, fileName, text, index = 0) {
+  const baseName = safeFileNamePart(path.basename(fileName || `friendly-${index + 1}`, path.extname(fileName || '')), `friendly-${index + 1}`);
+  const targetPath = path.join(baseDir, `${String(index + 1).padStart(2, '0')}-${baseName}.txt`);
+  await writeTextFile(targetPath, String(text || '').trim());
+  return targetPath;
+}
+
+async function materializeBattlePlannerUploadedFile(file = {}, uploadDir = '', algorithmName = '', index = 0) {
+  const fileName = String(file.fileName || file.name || `uploaded-${index + 1}.txt`).trim();
+  const extension = String(file.fileExtension || path.extname(fileName) || '.txt').trim().toLowerCase() || '.txt';
+  const nativeExtensions = new Set(['.txt', '.text', '.md', '.markdown', '.json', '.docx']);
+  const imported = {
+    id: String(file.id || `battle-upload-${index + 1}`),
+    fileName: fileName || `uploaded-${index + 1}${extension}`,
+    fileExtension: extension,
+    source: 'uploaded-file',
+  };
+
+  if (file.fileContentBase64 && nativeExtensions.has(extension)) {
+    const baseName = safeFileNamePart(path.basename(fileName, path.extname(fileName)), `uploaded-${index + 1}`);
+    const nativePath = path.join(uploadDir, `${String(index + 1).padStart(2, '0')}-${baseName}${extension}`);
+    await fs.writeFile(nativePath, Buffer.from(String(file.fileContentBase64), 'base64'));
+    return {
+      filePath: nativePath,
+      importedFile: {
+        ...imported,
+        path: nativePath,
+        summary: `${algorithmName || '智能编组'} 原始上传文件。`,
+      },
+    };
+  }
+
+  let text = '';
+  if (file.fileContentBase64) {
+    const importType = resolveImportedFileType(fileName, extension);
+    const preview = importType
+      ? await normalizeImportedPreview(importType, {
+          fileName,
+          fileExtension: extension,
+          fileContentBase64: file.fileContentBase64,
+          description: file.description,
+        })
+      : null;
+    text = safeArray(preview?.extractionDrafts)
+      .map((item) => [item.title, item.summary, item.text].filter(Boolean).join('\n'))
+      .filter(Boolean)
+      .join('\n\n')
+      || previewPayloadToText(preview)
+      || `${algorithmName} 上传文件：${fileName}`;
+  } else {
+    text = safeArray(file.extractionDrafts)
+      .map((item) => [item.title, item.summary, item.text].filter(Boolean).join('\n'))
+      .filter(Boolean)
+      .join('\n\n')
+      || previewPayloadToText(file.preview || file.payload || {})
+      || `${algorithmName} 上传文件：${fileName}`;
+  }
+
+  const textPath = await writeBattlePlannerFriendlyTextFile(uploadDir, fileName, text, index);
+  return {
+    filePath: textPath,
+    importedFile: {
+      ...imported,
+      path: textPath,
+      convertedToText: true,
+      summary: toShortText(text, 180),
+    },
+  };
+}
+
+async function materializeBattlePlannerFriendlyFiles({
+  input = {},
+  dataset = {},
+  baseDir = '',
+  algorithmName = '',
+} = {}) {
+  const files = [];
+  const importedFiles = [];
+  const uploadDir = path.join(baseDir, 'battle-planner-friendly');
+  await fs.mkdir(uploadDir, { recursive: true });
+
+  for (const [index, file] of safeArray(input.uploadedFiles).entries()) {
+    const materialized = await materializeBattlePlannerUploadedFile(file, uploadDir, algorithmName, index);
+    files.push(materialized.filePath);
+    importedFiles.push(materialized.importedFile);
+  }
+
+  const datasetPayload = buildExternalDatasetPayload(dataset, input.selectedSourceIds);
+  const hasSelectedDataset = Object.values(datasetPayload.summary || {}).some((value) => Number(value || 0) > 0);
+  if (hasSelectedDataset) {
+    const contextText = buildDatasetContextText(datasetPayload, algorithmName);
+    if (contextText) {
+      const contextPath = await writeBattlePlannerFriendlyTextFile(uploadDir, 'resource-context.txt', contextText, files.length);
+      files.push(contextPath);
+      importedFiles.push({
+        id: 'battle-resource-context',
+        fileName: 'resource-context.txt',
+        fileExtension: '.txt',
+        source: 'resource-library',
+        path: contextPath,
+        convertedToText: true,
+        summary: toShortText(contextText, 180),
+      });
+    }
+  }
+
+  return { files, importedFiles, datasetPayload };
+}
+
 function normalizeGeoPoint(value = null) {
   if (Array.isArray(value) && value.length >= 2) {
     const lng = Number(value[0]);
@@ -3196,10 +2869,543 @@ async function executeLocalEnemyThreatAnalysis(variant, task, step, algorithm, c
   };
 }
 
+function battlePlannerPlatformRoleLabel(role = '') {
+  const normalized = String(role || '').toLowerCase();
+  if (normalized === 'armed' || normalized === 'escort') return '火力/护航';
+  if (normalized === 'transport') return '运输投送';
+  if (normalized === 'recon') return '侦察确认';
+  if (normalized === 'reserve') return '预备';
+  return role || '任务平台';
+}
+
+function battlePlannerGroupRole(taskType = '') {
+  const text = String(taskType || '');
+  if (text.includes('侦察')) return 'recon';
+  if (text.includes('机降') || text.includes('运输')) return 'transport';
+  if (text.includes('预备')) return 'reserve';
+  if (text.includes('压制') || text.includes('打击') || text.includes('摧毁') || text.includes('破袭')) return 'strike';
+  return 'support';
+}
+
+function battlePlannerPlatformText(platform = {}) {
+  return [
+    platform.role,
+    platform.type,
+    platform.name,
+    platform.model,
+    platform.category,
+    platform.roleLabel,
+  ].map((item) => String(item || '').toLowerCase()).join(' ');
+}
+
+function isBattlePlannerArmedPlatform(platform = {}) {
+  const role = String(platform.role || platform.type || '').toLowerCase();
+  if (['armed', 'escort', 'attack', 'strike'].includes(role)) return true;
+  const text = battlePlannerPlatformText(platform);
+  return /(armed|escort|attack|strike|武装|攻击|火力|护航)/i.test(text)
+    && !/(transport|lift|运输|投送|机降)/i.test(text);
+}
+
+function isBattlePlannerTransportPlatform(platform = {}) {
+  const role = String(platform.role || platform.type || '').toLowerCase();
+  if (['transport', 'lift', 'airlift', 'air-assault'].includes(role)) return true;
+  const text = battlePlannerPlatformText(platform);
+  return /(transport|lift|airlift|运输|投送|机降)/i.test(text);
+}
+
+const BATTLE_PLANNER_FIRE_STRIKE_TASK_TYPES = new Set(['防空压制', '火力打击', '火力压制', '通信压制', '破袭打击']);
+
+function isBattlePlannerFireStrikeTask(taskType = '') {
+  return BATTLE_PLANNER_FIRE_STRIKE_TASK_TYPES.has(String(taskType || '').trim());
+}
+
+function readOptionalBoolean(source = {}, snakeKey = '', camelKey = '') {
+  if (typeof source[snakeKey] === 'boolean') return source[snakeKey];
+  if (typeof source[camelKey] === 'boolean') return source[camelKey];
+  return null;
+}
+
+function buildBattlePlannerFirepowerBreakdown(platforms = [], weapons = [], personnel = [], source = {}) {
+  const rawBreakdown = safeObject(source.firepower_breakdown || source.firepowerBreakdown);
+  const weaponQuantity = round(sumBy(weapons, (item) => item.quantity), 1);
+  const personnelCount = round(sumBy(personnel, (item) => item.count), 1);
+  const armedHelicopterCount = round(
+    sumBy(safeArray(platforms).filter(isBattlePlannerArmedPlatform), (item) => item.count || item.unitCount),
+    1,
+  );
+  const transportHelicopterCount = round(
+    sumBy(safeArray(platforms).filter(isBattlePlannerTransportPlatform), (item) => item.count || item.unitCount),
+    1,
+  );
+  const hasLoadedWeapon = readOptionalBoolean(source, 'has_loaded_weapon', 'hasLoadedWeapon')
+    ?? readOptionalBoolean(rawBreakdown, 'has_loaded_weapon', 'hasLoadedWeapon')
+    ?? weaponQuantity > 0;
+  const hasLoadedPersonnel = readOptionalBoolean(source, 'has_loaded_personnel', 'hasLoadedPersonnel')
+    ?? readOptionalBoolean(rawBreakdown, 'has_loaded_personnel', 'hasLoadedPersonnel')
+    ?? personnelCount > 0;
+  const weaponEquipmentPower = hasLoadedWeapon
+    ? round(clamp(weaponQuantity * 0.8, 0, 100), 1)
+    : 0;
+  const personnelDeliveryScore = round(clamp(personnelCount * 0.35 + transportHelicopterCount * 6, 0, 100), 1);
+  const combinedFirepower = weaponEquipmentPower;
+
+  return {
+    weaponEquipmentPower,
+    armedHelicopterCount,
+    weaponQuantity,
+    transportPersonnelPower: personnelDeliveryScore,
+    personnelDeliveryScore,
+    transportHelicopterCount,
+    personnelCount,
+    combinedFirepower,
+    hasLoadedWeapon,
+    hasLoadedPersonnel,
+    weighting: {
+      weaponEquipment: 1,
+      transportPersonnel: 0,
+    },
+    formula: '火力值 = 实际装载武器折算；未装载武器时火力为 0',
+    description: '运输平台和人员配置只进入机动投送等其他指标，不再贡献火力值。',
+  };
+}
+
+function formatBattlePlannerFirepowerSummary(breakdown = {}) {
+  return `火力构成：武器装载 ${breakdown.weaponEquipmentPower ?? '--'} / 人员投送 ${breakdown.transportPersonnelPower ?? '--'} / 综合火力 ${breakdown.combinedFirepower ?? '--'}`;
+}
+
+function battlePlannerTargetKey(value = '') {
+  return String(value || '').trim().toLowerCase();
+}
+
+function buildBattlePlannerTargetMaps(threatOutput = {}) {
+  const targets = buildCandidateTargets(threatOutput).map((target, index) => ({
+    ...target,
+    id: String(target.id || `battle-target-${index + 1}`),
+    name: String(target.name || target.label || `目标 ${index + 1}`),
+  }));
+  const byId = new Map();
+  const byName = new Map();
+  for (const target of targets) {
+    byId.set(battlePlannerTargetKey(target.id), target);
+    if (target.sourceTargetId) byId.set(battlePlannerTargetKey(target.sourceTargetId), target);
+    byName.set(battlePlannerTargetKey(target.name), target);
+    if (target.sourceTargetName) byName.set(battlePlannerTargetKey(target.sourceTargetName), target);
+  }
+  return { targets, byId, byName };
+}
+
+function resolveBattlePlannerTarget(rawTarget = '', targetMaps = {}) {
+  const key = battlePlannerTargetKey(rawTarget);
+  return targetMaps.byId?.get(key) || targetMaps.byName?.get(key) || null;
+}
+
+function buildBattlePlannerFallbackCoordinate(index = 0) {
+  return normalizeCoordinate([118.1 + (index * 0.08), 32.0 + (index * 0.035), 0]);
+}
+
+function buildBattlePlannerGroupCoordinate(group = {}, index = 0, targetMaps = {}) {
+  const target = safeArray(group.responsible_targets)
+    .map((item) => resolveBattlePlannerTarget(item, targetMaps))
+    .find(Boolean);
+  const anchor = isUsableMapCoordinate(target?.coordinates)
+    ? normalizeMapCoordinate(target.coordinates, 0)
+    : buildBattlePlannerFallbackCoordinate(index);
+  return normalizeCoordinate([
+    Number(anchor[0]) - 0.12 - (index % 3) * 0.025,
+    Number(anchor[1]) - 0.07 + (index % 4) * 0.018,
+    80,
+  ]);
+}
+
+function buildBattlePlannerWeaponLoadoutItems(weapons = [], targetNames = []) {
+  const primaryTargetName = safeArray(targetNames).map(String).filter(Boolean)[0] || '';
+  return safeArray(weapons).map((item, index) => ({
+    weaponId: String(item.name || `weapon-${index + 1}`),
+    weaponName: String(item.name || `武器 ${index + 1}`),
+    name: String(item.name || `武器 ${index + 1}`),
+    quantity: Number(item.quantity || 0),
+    targetId: '',
+    targetName: primaryTargetName,
+  })).filter((item) => item.quantity > 0);
+}
+
+function buildBattlePlannerPersonnelLoadoutItems(personnel = []) {
+  return safeArray(personnel).map((item, index) => ({
+    personnelGroupId: String(item.role || `personnel-${index + 1}`),
+    personnelGroupName: String(item.role || `人员 ${index + 1}`),
+    name: String(item.role || `人员 ${index + 1}`),
+    count: Number(item.count || 0),
+  })).filter((item) => item.count > 0);
+}
+
+function attachBattlePlannerLoadoutsToPlatforms(platforms = [], weapons = [], personnel = [], targetNames = []) {
+  const weaponLoadout = buildBattlePlannerWeaponLoadoutItems(weapons, targetNames);
+  const personnelLoadout = buildBattlePlannerPersonnelLoadoutItems(personnel);
+  const weaponHostIndex = safeArray(platforms).findIndex((item) => isBattlePlannerArmedPlatform(item));
+  const personnelHostIndex = safeArray(platforms).findIndex((item) => isBattlePlannerTransportPlatform(item));
+  const fallbackIndex = safeArray(platforms).findIndex((item) => Number(item.count || item.unitCount || 0) > 0);
+
+  return safeArray(platforms).map((platform, index) => ({
+    ...platform,
+    weaponLoadout: index === (weaponHostIndex >= 0 ? weaponHostIndex : fallbackIndex) ? weaponLoadout : [],
+    personnelLoadout: index === (personnelHostIndex >= 0 ? personnelHostIndex : fallbackIndex) ? personnelLoadout : [],
+    cargoLoadout: safeArray(platform.cargoLoadout),
+  }));
+}
+
+function normalizeBattlePlannerPlatformAllocation(item = {}, group = {}, groupIndex = 0, platformIndex = 0, coordinates = []) {
+  const count = clamp(Math.round(Number(item.count || 0)), 0, 999);
+  const role = String(item.role || group.task_type || 'task-platform');
+  return {
+    id: `${group.group_id || `battle-group-${groupIndex + 1}`}-unit-${platformIndex + 1}`,
+    name: String(item.model || `平台 ${platformIndex + 1}`),
+    model: String(item.model || `平台 ${platformIndex + 1}`),
+    category: battlePlannerPlatformRoleLabel(role),
+    type: role,
+    role,
+    roleLabel: battlePlannerPlatformRoleLabel(role),
+    count,
+    unitCount: count,
+    readiness: '可用',
+    coordinates,
+    location: coordinates,
+    capabilitySummary: `${battlePlannerPlatformRoleLabel(role)} ${count} 架`,
+  };
+}
+
+function normalizeBattlePlannerGroup(group = {}, index = 0, targetMaps = {}) {
+  const coordinates = buildBattlePlannerGroupCoordinate(group, index, targetMaps);
+  const basePlatforms = safeArray(group.platforms).map((item, platformIndex) => (
+    normalizeBattlePlannerPlatformAllocation(item, group, index, platformIndex, coordinates)
+  ));
+  const weapons = safeArray(group.weapons).map((item) => ({
+    name: String(item.name || ''),
+    quantity: Number(item.quantity || 0),
+  })).filter((item) => item.name && item.quantity > 0);
+  const personnel = safeArray(group.personnel).map((item) => ({
+    role: String(item.role || ''),
+    count: Number(item.count || 0),
+  })).filter((item) => item.role && item.count > 0);
+  const matchedTargets = safeArray(group.responsible_targets)
+    .map((item) => resolveBattlePlannerTarget(item, targetMaps))
+    .filter(Boolean);
+  const targetNames = matchedTargets.map((target) => target.name).length
+    ? matchedTargets.map((target) => target.name)
+    : safeArray(group.responsible_targets).map(String);
+  const platforms = attachBattlePlannerLoadoutsToPlatforms(basePlatforms, weapons, personnel, targetNames);
+  const unitCount = sumBy(platforms, (item) => item.count);
+  const role = battlePlannerGroupRole(group.task_type);
+  const issues = safeArray(group.issues);
+  const firepowerBreakdown = buildBattlePlannerFirepowerBreakdown(platforms, weapons, personnel, group);
+  const firepowerSummary = formatBattlePlannerFirepowerSummary(firepowerBreakdown);
+  const strikeWeaponRequirementMet = readOptionalBoolean(group, 'strike_weapon_requirement_met', 'strikeWeaponRequirementMet')
+    ?? (!isBattlePlannerFireStrikeTask(group.task_type) || firepowerBreakdown.hasLoadedWeapon);
+  const assignmentEligibleForStrike = readOptionalBoolean(group, 'assignment_eligible_for_strike', 'assignmentEligibleForStrike')
+    ?? strikeWeaponRequirementMet;
+
+  return {
+    id: String(group.group_id || `battle-group-${index + 1}`),
+    name: String(group.group_name || group.group_id || `Battle Planner 编组 ${index + 1}`),
+    methodLabel: '智能编组算法',
+    taskType: String(group.task_type || ''),
+    role,
+    normalizedRole: role,
+    responsibleTargets: safeArray(group.responsible_targets).map(String),
+    targetIds: matchedTargets.map((target) => target.id),
+    targetNames: matchedTargets.map((target) => target.name),
+    disposition: String(group.disposition || ''),
+    expectedEffect: String(group.expected_effect || ''),
+    estimatedLossRate: round(Number(group.estimated_loss_rate || 0), 3),
+    priority: Number(group.priority || 3),
+    supportRelations: safeArray(group.support_relations).map(String),
+    isReserve: Boolean(group.is_reserve),
+    unitCount,
+    platformCount: unitCount,
+    units: platforms,
+    platforms,
+    weapons,
+    weaponSummary: buildBattlePlannerWeaponLoadoutItems(weapons, targetNames),
+    personnel,
+    personnelSummary: buildBattlePlannerPersonnelLoadoutItems(personnel),
+    coordinates,
+    location: coordinates,
+    firepower: firepowerBreakdown.combinedFirepower,
+    firepowerBreakdown,
+    firepowerSummary,
+    hasLoadedWeapon: firepowerBreakdown.hasLoadedWeapon,
+    hasLoadedPersonnel: firepowerBreakdown.hasLoadedPersonnel,
+    strikeWeaponRequirementMet,
+    assignmentEligibleForStrike,
+    mobility: round(Math.min(100, unitCount * 12 + (role === 'transport' ? 28 : 10)), 1),
+    endurance: round(Math.min(100, 62 + unitCount * 2), 1),
+    readiness: issues.some((item) => item.severity === 'error') ? 55 : issues.length ? 72 : 88,
+    issues,
+    allocationReasons: [
+      group.disposition ? `处置方式：${group.disposition}` : '',
+      group.expected_effect ? `预计效果：${group.expected_effect}` : '',
+      weapons.length ? `武器：${weapons.map((item) => `${item.name} ${item.quantity}`).join('，')}` : '',
+      personnel.length ? `人员：${personnel.map((item) => `${item.role} ${item.count}`).join('，')}` : '',
+      firepowerSummary,
+    ].filter(Boolean),
+    rawBattlePlannerGroup: group,
+  };
+}
+
+function groupingTargetKey(value = '') {
+  return String(value || '').trim().toLowerCase();
+}
+
+function groupingTargetsForGroup(group = {}) {
+  return uniqueList([
+    ...safeArray(group.targetIds),
+    ...safeArray(group.targetNames),
+    ...safeArray(group.responsibleTargets),
+  ].map(groupingTargetKey).filter(Boolean));
+}
+
+function selectResourceMinimizedGroups(groups = [], targetMaps = {}, appliedOptions = {}) {
+  const targetKeys = new Set(safeArray(targetMaps.targets).flatMap((target) => [
+    target.id,
+    target.name,
+    target.sourceTargetId,
+    target.sourceTargetName,
+  ].map(groupingTargetKey).filter(Boolean)));
+  const sortedGroups = safeArray(groups)
+    .filter((group) => !group.isReserve)
+    .map((group) => {
+      const coveredKeys = groupingTargetsForGroup(group);
+      return {
+        group,
+        coveredKeys,
+        score: coveredKeys.filter((key) => targetKeys.has(key)).length * 22
+          + Number(group.firepower || 0) * 0.1
+          + Number(group.mobility || 0) * 0.08
+          - Number(group.unitCount || group.platformCount || 0) * 2.8
+          - Number(group.estimatedLossRate || 0) * 100 * 0.2
+          - safeArray(group.issues).length * 8,
+      };
+    })
+    .sort((left, right) => Number(right.score || 0) - Number(left.score || 0));
+  const selected = [];
+  const covered = new Set();
+  const expectedLimit = clamp(Math.round(Number(appliedOptions.expectedGroupCount || sortedGroups.length || 1)), 1, Math.max(sortedGroups.length, 1));
+
+  for (const item of sortedGroups) {
+    const addsCoverage = item.coveredKeys.some((key) => targetKeys.has(key) && !covered.has(key));
+    if (!addsCoverage && selected.length >= Math.min(expectedLimit, sortedGroups.length)) continue;
+    selected.push(item.group);
+    item.coveredKeys.forEach((key) => {
+      if (targetKeys.has(key)) covered.add(key);
+    });
+    if (targetKeys.size && covered.size >= targetKeys.size) break;
+  }
+
+  if (!selected.length && sortedGroups[0]) selected.push(sortedGroups[0].group);
+  return selected;
+}
+
+function buildBattlePlannerStrategyGroups(groups = [], reserveGroup = null, targetMaps = {}, profile = PLANNING_STRATEGY_PROFILES.balanced, appliedOptions = {}) {
+  const baseGroups = safeArray(groups).filter((group) => !group.isReserve);
+  let selectedGroups = baseGroups;
+
+  if (profile.key === 'resource-minimized') {
+    selectedGroups = selectResourceMinimizedGroups(baseGroups, targetMaps, appliedOptions);
+  } else if (profile.key === 'loss-minimized') {
+    selectedGroups = [...baseGroups].sort((left, right) => (
+      Number(left.estimatedLossRate || 0) - Number(right.estimatedLossRate || 0)
+      || Number(right.firepower || 0) - Number(left.firepower || 0)
+    ));
+  }
+
+  if (profile.grouping.includeReserve && reserveGroup && !selectedGroups.some((group) => group.id === reserveGroup.id)) {
+    selectedGroups = [...selectedGroups, reserveGroup];
+  }
+
+  return selectedGroups.map((group) => ({
+    ...cloneData(group),
+    strategyKey: profile.key,
+    strategyLabel: profile.label,
+    strategyDescription: profile.description,
+  }));
+}
+
+function buildBattlePlannerGroupingMetrics(planResult = {}, groups = [], warnings = [], targetMaps = {}, profile = PLANNING_STRATEGY_PROFILES.balanced) {
+  const targetCount = safeArray(targetMaps.targets).length;
+  const coveredTargets = uniqueList(safeArray(groups).flatMap((group) => [
+    ...safeArray(group.targetIds),
+    ...safeArray(group.targetNames),
+  ].map(groupingTargetKey).filter(Boolean)));
+  const unitCount = sumBy(groups, (group) => Number(group.unitCount || group.platformCount || 0));
+  const weaponQuantity = sumBy(groups, (group) => sumBy(safeArray(group.weapons), (item) => Number(item.quantity || 0)));
+  const issueCount = warnings.length + groups.reduce((total, group) => total + safeArray(group.issues).length, 0);
+  const estimatedLossPercent = average(groups.map((group) => Number(group.estimatedLossRate || 0) * 100));
+  const coverageScore = targetCount ? (coveredTargets.length / targetCount) * 100 : 100;
+  const firepowerScore = average(groups.map((group) => Number(group.firepower || 0)));
+  const survivabilityScore = clamp(100 - estimatedLossPercent * 3.2 - issueCount * 4, 0, 100);
+  const resourceScore = clamp(100 - unitCount * 2.4 - weaponQuantity * 0.035, 0, 100);
+  const groupSizes = groups.map((group) => Number(group.unitCount || group.platformCount || 0));
+  const balanceScore = clamp(100 - standardDeviation(groupSizes) * 8 - issueCount * 2, 0, 100);
+  const weights = normalizeWeights(profile.grouping.scoreWeights);
+
+  return {
+    groupCount: groups.length,
+    assignedTargetCount: coveredTargets.length,
+    warningCount: warnings.length,
+    issueCount,
+    firepower: round(firepowerScore, 1),
+    averageFirepower: round(firepowerScore, 1),
+    averageWeaponEquipmentPower: round(average(groups.map((group) => group.firepowerBreakdown?.weaponEquipmentPower)), 1),
+    averageTransportPersonnelPower: round(average(groups.map((group) => group.firepowerBreakdown?.transportPersonnelPower)), 1),
+    averageEstimatedLossRate: round(estimatedLossPercent / 100, 3),
+    estimatedLossPercent: round(estimatedLossPercent, 1),
+    resourceUnitCount: unitCount,
+    weaponQuantity,
+    targetCoverageScore: formatPlanningStrategyMetric(coverageScore),
+    survivabilityScore: formatPlanningStrategyMetric(survivabilityScore),
+    resourceScore: formatPlanningStrategyMetric(resourceScore),
+    balanceScore: formatPlanningStrategyMetric(balanceScore),
+    strategyCompositeScore: round(clamp(
+      coverageScore * Number(weights.coverage || 0)
+      + firepowerScore * Number(weights.firepower || 0)
+      + survivabilityScore * Number(weights.survivability || 0)
+      + resourceScore * Number(weights.resource || 0)
+      + balanceScore * Number(weights.balance || 0)
+      - issueCount * 2.5,
+      0,
+      100,
+    ), 1),
+    resourceRemainingKinds: Object.values(safeObject(planResult.remaining_resources || {}))
+      .reduce((total, value) => total + Object.keys(safeObject(value)).length, 0),
+  };
+}
+
+function buildBattlePlannerScheme(planResult = {}, groups = [], warnings = [], appliedOptions = {}, profile = PLANNING_STRATEGY_PROFILES.balanced, targetMaps = {}) {
+  const metrics = buildBattlePlannerGroupingMetrics(planResult, groups, warnings, targetMaps, profile);
+  const issueCount = warnings.length + groups.reduce((total, group) => total + safeArray(group.issues).length, 0);
+  const baseScore = round(clamp(92 - issueCount * 4 + Math.min(6, groups.length), 0, 100), 1);
+  const score = round(clamp((baseScore * 0.38) + (metrics.strategyCompositeScore * 0.62), 0, 100), 1);
+  return {
+    id: `battle-planner-${profile.key}`,
+    name: profile.methodSuffix,
+    methodKey: 'battle-planner',
+    methodLabel: '智能编组算法',
+    strategyKey: profile.key,
+    strategyLabel: profile.label,
+    description: profile.description,
+    summary: profile.description,
+    score,
+    actualGroupCount: groups.length,
+    expectedGroupCount: Number(appliedOptions.expectedGroupCount || groups.length || 0),
+    totalGroups: Number(planResult.total_groups || groups.length),
+    groups,
+    metrics,
+    advantages: [
+      profile.description,
+      profile.key === 'loss-minimized'
+        ? `预计平均战损 ${metrics.estimatedLossPercent}%；通过协同冗余降低高风险目标处置压力。`
+        : '',
+      profile.key === 'resource-minimized'
+        ? `投入单位 ${metrics.resourceUnitCount} 个；优先满足目标覆盖底线并保留更多资源。`
+        : '',
+    ].filter(Boolean),
+  };
+}
+
+function adaptBattlePlannerForceOutput(planResult = {}, threatOutput = {}, importedFiles = [], appliedOptions = {}) {
+  const targetMaps = buildBattlePlannerTargetMaps(threatOutput);
+  const taskGroups = safeArray(planResult.task_groups);
+  const groups = taskGroups.map((group, index) => normalizeBattlePlannerGroup(group, index, targetMaps));
+  const reserveGroup = planResult.reserve_group
+    ? normalizeBattlePlannerGroup(planResult.reserve_group, groups.length, targetMaps)
+    : null;
+  const warnings = safeArray(planResult.warnings).map(String).filter(Boolean);
+  const preferredStrategy = resolvePlanningStrategyProfile(
+    appliedOptions.planningPreference
+      || appliedOptions.comparisonFocus
+      || appliedOptions.objectivePreference
+      || appliedOptions.schemeProfileKey,
+  );
+  const schemes = resolvePlanningStrategyProfiles(preferredStrategy.key).map((profile) => {
+    const strategyGroups = buildBattlePlannerStrategyGroups(groups, reserveGroup, targetMaps, profile, appliedOptions);
+    return buildBattlePlannerScheme(planResult, strategyGroups, warnings, appliedOptions, profile, targetMaps);
+  });
+  const preferredScheme = schemes.find((scheme) => scheme.strategyKey === preferredStrategy.key) || schemes[0];
+  const systemBestScheme = sortByScore(schemes, 'score')[0] || preferredScheme;
+  const outputGroups = safeArray(preferredScheme.groups);
+  const constraintStatus = outputGroups.some((group) => safeArray(group.issues).some((item) => item.severity === 'error'))
+    ? 'fail'
+    : warnings.length
+      ? 'warn'
+      : 'pass';
+
+  return {
+    ok: true,
+    implementationStatus: 'implemented',
+    builtinMethodKey: 'intelligent-grouping',
+    builtinMethodLabel: '智能编组算法',
+    algorithmModel: 'battle-planner-v1',
+    appliedOptions,
+    inputSummary: {
+      importedFileCount: importedFiles.length,
+      upstreamThreatTargetCount: targetMaps.targets.length,
+      battlePlannerTaskGroupCount: taskGroups.length,
+    },
+    importedFiles,
+    battlePlannerResult: planResult,
+    battlePlannerMetadata: safeObject(planResult.metadata),
+    candidateTargets: targetMaps.targets,
+    targetCoverage: groups.map((group) => ({
+      groupId: group.id,
+      groupName: group.name,
+      targetIds: group.targetIds,
+      targetNames: group.targetNames.length ? group.targetNames : group.responsibleTargets,
+      disposition: group.disposition,
+      expectedEffect: group.expectedEffect,
+    })),
+    schemes,
+    comparison: schemes.map((scheme) => ({
+      schemeId: scheme.id,
+      name: scheme.name,
+      strategyKey: scheme.strategyKey,
+      strategyLabel: scheme.strategyLabel,
+      score: scheme.score,
+      groupCount: scheme.groups.length,
+      unitCount: scheme.metrics.resourceUnitCount,
+      estimatedLossPercent: scheme.metrics.estimatedLossPercent,
+      resourceScore: scheme.metrics.resourceScore,
+      warningCount: warnings.length,
+    })),
+    comparedSchemes: schemes,
+    preferredSchemeId: preferredScheme.id,
+    preferredScheme,
+    systemBestSchemeId: systemBestScheme.id,
+    systemBestScheme,
+    constraintSummary: {
+      overallStatus: constraintStatus,
+      warningCount: warnings.length,
+      issueCount: preferredScheme.metrics.issueCount,
+      messages: warnings,
+    },
+    warnings,
+    evidenceTrace: importedFiles.map((file, index) => ({
+      id: file.id || `battle-evidence-${index + 1}`,
+      sourceName: file.fileName || `输入资料 ${index + 1}`,
+      sourceType: file.source || 'uploaded-file',
+      fileName: file.fileName || '',
+      summary: file.summary || '',
+      extractedAt: new Date().toISOString(),
+    })),
+    recommendationExplanation: [
+      `battle_planner 生成 ${taskGroups.length} 个任务编组${reserveGroup ? '，并保留预备队' : ''}。`,
+      warnings.length ? `存在 ${warnings.length} 条资源或约束告警，需在后续目标分配和保障规划中复核。` : '未发现资源分配告警，可进入目标分配适配阶段。',
+    ],
+  };
+}
+
 async function executeLocalForceGrouping(variant, task, step, algorithm, context, payload, input, tempDir, events, signal) {
   const runtimeOptions = resolveRuntimeOptions(input, variant);
   const projectRoot = resolveProjectRoot(variant);
-  const { files } = await materializePlanningContextFiles({
+  const { files, importedFiles } = await materializeBattlePlannerFriendlyFiles({
     input,
     dataset: payload.dataset || {},
     baseDir: tempDir,
@@ -3216,35 +3422,39 @@ async function executeLocalForceGrouping(variant, task, step, algorithm, context
   }
 
   const upstreamThreat = safeObject(context.stageOutputs?.['enemy-threat-analysis']);
-  const upstreamPath = await writeJsonFile(path.join(tempDir, 'inputs', 'upstream-threat.json'), upstreamThreat);
-  const outputPath = path.join(tempDir, 'outputs', 'force-grouping.json');
+  if (!Object.keys(upstreamThreat).length || upstreamThreat.ok === false) {
+    throw createPlanningRuntimeError({
+      code: 'PLANNING_MISSING_UPSTREAM',
+      type: 'missing_upstream',
+      status: 400,
+      message: '智能编组算法缺少上一步敌情威胁分析结果。',
+      details: { stepId: step.id, algorithmId: algorithm.id, bindingId: variant.id },
+    });
+  }
+  const configPath = await writeJsonFile(path.join(tempDir, 'inputs', 'battle-planner-config.json'), buildBattlePlannerConfig(runtimeOptions));
+  const upstreamPath = await writeJsonFile(
+    path.join(tempDir, 'inputs', 'upstream-threat.json'),
+    buildBattlePlannerThreatArtifact(upstreamThreat, step, algorithm),
+  );
+  const outputDir = path.join(tempDir, 'outputs', 'battle-planner');
+  const outputPath = path.join(outputDir, 'grouping_result.json');
   const args = [
     '-m',
-    variant.cliModule || 'force_grouping.cli',
-    '--files',
-    ...files,
-    '--upstream-threat',
+    variant.cliModule || 'battle_planner.cli',
+    '--config',
+    configPath,
+    '--enemy',
     upstreamPath,
-    '--scheme-profile',
-    safeRuntimeText(runtimeOptions.schemeProfileKey || 'scheme-balanced-intelligent'),
-    '--rule-library',
-    safeRuntimeText(runtimeOptions.ruleLibraryKey || 'fire-strike-rules'),
-    '--comparison-focus',
-    safeRuntimeText(runtimeOptions.comparisonFocus || 'balanced'),
-    '--expected-group-count',
-    String(clamp(Math.round(Number(runtimeOptions.expectedGroupCount || 4)), 1, 12)),
-    '--output',
-    outputPath,
+    '--friendly',
+    ...files,
+    '--output-dir',
+    outputDir,
   ];
-  if (!normalizeBooleanOption(runtimeOptions.useLlmExplanation, true)) {
-    args.push('--no-llm-explanation');
-  }
 
-  const env = applyLlmRuntimeEnv(
-    appendPythonPath({}, projectRoot),
-    'FORCE_GROUPING_LLM',
-    runtimeOptions,
-  );
+  const llmOptions = normalizeLlmRuntimeOptions(runtimeOptions);
+  const env = appendPythonPath({
+    OLLAMA_HOST: llmOptions.ollamaHost,
+  }, projectRoot);
   await runPythonProcess({
     args,
     cwd: REPO_ROOT,
@@ -3254,11 +3464,12 @@ async function executeLocalForceGrouping(variant, task, step, algorithm, context
     step,
     algorithm,
     variant,
-    stdoutAsLlm: normalizeBooleanOption(runtimeOptions.llmStream, true),
-    terminalPrefix: '作战力量智能编组 Python 算法',
+    stdoutAsLlm: false,
+    terminalPrefix: 'Battle Planner 智能编组算法',
   });
 
-  const structuredOutput = JSON.parse(await fs.readFile(outputPath, 'utf-8'));
+  const planResult = JSON.parse(await fs.readFile(outputPath, 'utf-8'));
+  const structuredOutput = adaptBattlePlannerForceOutput(planResult, upstreamThreat, importedFiles, runtimeOptions);
   if (structuredOutput?.ok === false) {
     throw createPlanningRuntimeError({
       code: String(structuredOutput.error?.code || 'PLANNING_ALGORITHM_FAILED'),
@@ -3284,9 +3495,9 @@ async function executeLocalForceGrouping(variant, task, step, algorithm, context
       `约束状态：${structuredOutput.constraintSummary?.overallStatus || '--'}`,
     ],
     artifacts: [
-      createArtifact('作战力量编组方案', 'Python 算法输出的分组方案、平台能力和推荐解释。'),
-      createArtifact('方案比选与约束评估', '输出 schemes / comparison / constraintSummary 等比选结果。'),
-      createArtifact('大模型编组抽取日志', '执行页已显示 stdout/stderr 与流式片段。'),
+      createArtifact('作战力量编组方案', 'battle_planner 输出的任务编组、平台分配和目标处置关系。'),
+      createArtifact('方案比选与约束评估', '平台适配输出 schemes / comparison / constraintSummary 等结果。'),
+      createArtifact('Battle Planner 原始结果', 'structuredOutput.battlePlannerResult 保留原始 PlanResult 供智能分配复用。'),
     ],
     structuredOutput,
   };
@@ -3478,6 +3689,9 @@ async function executeLocalPythonStep(variant, task, step, algorithm, context, p
     }
     if (algorithm.id === 'force-grouping') {
       return await executeLocalForceGrouping(variant, task, step, algorithm, context, payload, input, tempDir, events, signal);
+    }
+    if (algorithm.id === 'target-allocation') {
+      return await executeLocalTargetAllocation(variant, task, step, algorithm, context, payload, input, tempDir, events, signal);
     }
     if (algorithm.id === 'airborne-landing-site-selection') {
       return await executeLocalAirlandingZone(variant, task, step, algorithm, context, payload, input, tempDir, events, signal);
@@ -4753,223 +4967,33 @@ function classifyGroupingRole(item = {}) {
   return 'support';
 }
 
-function buildUnitCapability(item = {}) {
-  const role = classifyGroupingRole(item);
-  const strength = Number(item.strength || 1);
-  const capability = {
-    firepower: strength * 4,
-    protection: strength * 2.4,
-    reconCoverage: strength * 2.2,
-    endurance: strength * 2,
-    mobility: strength * 2.5,
-  };
-
-  if (role === 'strike') capability.firepower += 14;
-  if (role === 'cover') capability.protection += 12;
-  if (role === 'recon') capability.reconCoverage += 12;
-  if (role === 'sustain') capability.endurance += 12;
-  if (includesAny(item.role, ['机动', '突击', '两栖', '升空'])) capability.mobility += 5;
-
-  return {
-    role,
-    firepower: round(clamp(capability.firepower, 0, 100), 1),
-    protection: round(clamp(capability.protection, 0, 100), 1),
-    reconCoverage: round(clamp(capability.reconCoverage, 0, 100), 1),
-    endurance: round(clamp(capability.endurance, 0, 100), 1),
-    mobility: round(clamp(capability.mobility, 0, 100), 1),
-  };
-}
-
-function createGroupingBuckets() {
-  return {
-    'main-strike': {
-      id: 'main-strike',
-      name: '主攻火力群',
-      role: '负责高价值目标压制与主突击打击',
-      units: [],
-    },
-    'cover-support': {
-      id: 'cover-support',
-      name: '掩护支援群',
-      role: '负责防空掩护、电子支援与火力补充',
-      units: [],
-    },
-    'recon-warning': {
-      id: 'recon-warning',
-      name: '侦察预警群',
-      role: '负责前沿侦察、态势更新与效果回传',
-      units: [],
-    },
-    'sustain-command': {
-      id: 'sustain-command',
-      name: '保障协同群',
-      role: '负责通信指挥、保障补给与持续协同',
-      units: [],
-    },
-  };
-}
-
-function appendToBucket(buckets, bucketKey, item) {
-  if (!buckets[bucketKey]) {
-    buckets[bucketKey] = {
-      id: bucketKey,
-      name: bucketKey,
-      role: '',
-      units: [],
-    };
-  }
-  buckets[bucketKey].units.push(item);
-}
-
-function pickBucketForUnit(methodKey, item, buckets, threatLevel = '中') {
-  const role = classifyGroupingRole(item);
-  const bucketValues = Object.values(buckets);
-
-  if (methodKey === 'rule-inference') {
-    if (role === 'strike') return 'main-strike';
-    if (role === 'recon') return 'recon-warning';
-    if (role === 'cover') return 'cover-support';
-    if (role === 'sustain') return 'sustain-command';
-    return 'cover-support';
-  }
-
-  if (methodKey === 'genetic-optimization') {
-    const scoredBuckets = bucketValues.map((bucket) => {
-      const currentStrength = sumBy(bucket.units, (unit) => unit.strength);
-      let score = 20 - currentStrength * 0.8;
-      if (bucket.id === 'main-strike' && role === 'strike') score += 18;
-      if (bucket.id === 'recon-warning' && role === 'recon') score += 16;
-      if (bucket.id === 'cover-support' && (role === 'cover' || (threatLevel === '高' && role === 'support'))) score += 14;
-      if (bucket.id === 'sustain-command' && role === 'sustain') score += 16;
-      if (bucket.units.length === 0) score += 5;
-      return { bucketKey: bucket.id, score };
-    });
-    return sortByScore(scoredBuckets, 'score')[0]?.bucketKey || 'cover-support';
-  }
-
-  const scoredBuckets = bucketValues.map((bucket) => {
-    const currentStrength = sumBy(bucket.units, (unit) => unit.strength);
-    let score = 16 - bucket.units.length * 2.6 - currentStrength * 0.35;
-    if (bucket.id === 'main-strike' && role === 'strike') score += 12;
-    if (bucket.id === 'recon-warning' && role === 'recon') score += 10;
-    if (bucket.id === 'cover-support' && role === 'cover') score += 10;
-    if (bucket.id === 'sustain-command' && role === 'sustain') score += 10;
-    if (bucket.id === 'cover-support' && role === 'support') score += 6;
-    return { bucketKey: bucket.id, score };
-  });
-  return sortByScore(scoredBuckets, 'score')[0]?.bucketKey || 'cover-support';
-}
-
-function buildGroupProfiles(groups = []) {
-  return safeArray(groups)
-    .map((group) => {
-      const capabilities = group.units.map(buildUnitCapability);
-      const normalizer = Math.max(group.units.length, 1);
-      return {
-        id: group.id,
-        name: group.name,
-        role: group.role,
-        unitCount: group.units.length,
-        totalStrength: round(sumBy(group.units, (item) => item.strength), 1),
-        firepower: round(clamp((sumBy(capabilities, (item) => item.firepower) / normalizer) * 1.16, 0, 100), 1),
-        protection: round(clamp((sumBy(capabilities, (item) => item.protection) / normalizer) * 1.12, 0, 100), 1),
-        reconCoverage: round(clamp((sumBy(capabilities, (item) => item.reconCoverage) / normalizer) * 1.12, 0, 100), 1),
-        endurance: round(clamp((sumBy(capabilities, (item) => item.endurance) / normalizer) * 1.12, 0, 100), 1),
-        mobility: round(clamp((sumBy(capabilities, (item) => item.mobility) / normalizer) * 1.08, 0, 100), 1),
-        categories: uniqueList(group.units.map((item) => item.category)).slice(0, 6),
-        units: group.units.map((item) => ({
-          id: item.id,
-          name: item.name,
-          category: item.category,
-          role: item.role,
-          strength: item.strength,
-          readiness: item.readiness,
-        })),
-      };
-    })
-    .filter((group) => group.unitCount > 0);
-}
-
 function normalizeWeights(weights = {}) {
   const total = Object.values(weights).reduce((sum, value) => sum + Number(value || 0), 0) || 1;
   return Object.fromEntries(Object.entries(weights).map(([key, value]) => [key, Number(value || 0) / total]));
 }
 
-function buildSchemeMetrics(groupProfiles = []) {
-  const groupStrengths = groupProfiles.map((item) => Number(item.totalStrength || 0));
-  return {
-    firepower: round(average(groupProfiles.map((item) => item.firepower)), 1),
-    protection: round(average(groupProfiles.map((item) => item.protection)), 1),
-    reconCoverage: round(average(groupProfiles.map((item) => item.reconCoverage)), 1),
-    endurance: round(average(groupProfiles.map((item) => item.endurance)), 1),
-    mobility: round(average(groupProfiles.map((item) => item.mobility)), 1),
-    balance: round(clamp(100 - standardDeviation(groupStrengths) * 5.5, 0, 100), 1),
-    strengthTotal: round(sumBy(groupProfiles, (item) => item.totalStrength), 1),
-  };
+function resolvePlanningStrategyKey(value = 'balanced') {
+  const normalized = String(value || 'balanced').trim().toLowerCase();
+  for (const profile of Object.values(PLANNING_STRATEGY_PROFILES)) {
+    if (profile.key === normalized || safeArray(profile.aliases).includes(normalized)) {
+      return profile.key;
+    }
+  }
+  return 'balanced';
 }
 
-function calculateSchemeScore(metrics, ruleLibrary, comparisonFocus = 'balanced', threatLevel = '中') {
-  if (!Number(metrics?.strengthTotal || 0)) {
-    return 0;
-  }
-
-  const adjustedWeights = {
-    ...safeObject(ruleLibrary?.weights),
-  };
-
-  if (comparisonFocus === 'firepower-first') {
-    adjustedWeights.firepower += 0.06;
-    adjustedWeights.protection -= 0.02;
-    adjustedWeights.balance -= 0.02;
-  }
-  if (comparisonFocus === 'survivability-first') {
-    adjustedWeights.protection += 0.05;
-    adjustedWeights.endurance += 0.03;
-    adjustedWeights.firepower -= 0.04;
-  }
-  if (threatLevel === '高') {
-    adjustedWeights.protection += 0.03;
-    adjustedWeights.endurance += 0.02;
-    adjustedWeights.firepower -= 0.02;
-  }
-
-  const weights = normalizeWeights(adjustedWeights);
-  const weightedScore = (
-    metrics.firepower * weights.firepower
-    + metrics.protection * weights.protection
-    + metrics.reconCoverage * weights.reconCoverage
-    + metrics.endurance * weights.endurance
-    + metrics.mobility * weights.mobility
-    + metrics.balance * weights.balance
-  );
-  return round(clamp(18 + weightedScore * 1.6, 0, 100), 1);
+function resolvePlanningStrategyProfile(value = 'balanced') {
+  return PLANNING_STRATEGY_PROFILES[resolvePlanningStrategyKey(value)] || PLANNING_STRATEGY_PROFILES.balanced;
 }
 
-function buildSchemeNarrative(scheme, threatLevel) {
-  const metricEntries = Object.entries(scheme.metrics)
-    .filter(([key]) => ['firepower', 'protection', 'reconCoverage', 'endurance', 'mobility', 'balance'].includes(key))
-    .map(([key, value]) => ({ key, value }));
-  const strongestMetric = sortByScore(metricEntries, 'value')[0]?.key || 'firepower';
-  const weakestMetric = [...metricEntries].sort((left, right) => left.value - right.value)[0]?.key || 'balance';
-  const metricLabels = {
-    firepower: '火力集中度',
-    protection: '掩护防护能力',
-    reconCoverage: '侦察覆盖能力',
-    endurance: '持续保障能力',
-    mobility: '机动转换能力',
-    balance: '群组均衡度',
-  };
+function resolvePlanningStrategyProfiles(preferredValue = 'balanced') {
+  const preferredKey = resolvePlanningStrategyKey(preferredValue);
+  const orderedKeys = uniqueList([preferredKey, ...PLANNING_STRATEGY_ORDER]);
+  return orderedKeys.map((key) => PLANNING_STRATEGY_PROFILES[key]).filter(Boolean);
+}
 
-  return {
-    advantages: [
-      `方案在${metricLabels[strongestMetric]}上表现最好，适合应对${threatLevel}威胁环境。`,
-      '主攻群与支援群之间保持了较稳定的任务分工和强度配置。',
-    ],
-    tradeoffs: [
-      `当前方案的${metricLabels[weakestMetric]}相对较弱，需在执行阶段补充约束校核。`,
-      '若敌情快速变化，建议优先关注侦察预警与保障协同链路的动态调整。',
-    ],
-  };
+function formatPlanningStrategyMetric(value = 0) {
+  return round(clamp(Number(value || 0), 0, 100), 1);
 }
 
 function buildGroupingSourceTextV2(item = {}) {
@@ -4981,242 +5005,6 @@ function buildGroupingSourceTextV2(item = {}) {
     safeArray(item.tags).join(' '),
     item.notes,
   ].filter(Boolean).join(' ');
-}
-
-function buildGroupingWeightSummary(weights = {}) {
-  return Object.entries(GROUPING_METRIC_LABELS)
-    .map(([key, label]) => ({
-      key,
-      label,
-      percent: round((Number(weights[key] || 0) * 100), 1),
-    }))
-    .sort((left, right) => right.percent - left.percent);
-}
-
-function buildGroupingEvidenceEntries(sourceBundle = {}, uploadedFiles = [], blueIntelligence = [], threatOutput = {}) {
-  const sourcesById = new Map(safeArray(sourceBundle.selectedSources).map((item) => [Number(item.id), item]));
-  const entries = [];
-
-  safeArray(sourceBundle.selectedPreviews).forEach((preview, index) => {
-    const source = sourcesById.get(Number(preview.sourceId));
-    const previewPayload = safeObject(preview.payload);
-    const entry = createThreatEvidenceEntry({
-      id: `group-preview-${preview.sourceId}-${index + 1}`,
-      title: source?.name || preview.title || `数据源 ${preview.sourceId}`,
-      text: previewPayloadToText(preview),
-      summary: preview.description || preview.summary || '',
-      sourceType: 'resource-preview',
-      sourceId: preview.sourceId,
-      sourceLabel: source?.name || preview.title || '资源库预览',
-      sourceName: source?.name || preview.title || '资源库预览',
-      fileName: String(previewPayload.fileName || previewPayload.title || '').trim(),
-      extractedAt: String(preview.createdAt || '').trim(),
-    });
-    if (entry) {
-      entries.push(entry);
-    }
-  });
-
-  safeArray(sourceBundle.selectedExtractions).forEach((item, index) => {
-    const source = sourcesById.get(Number(item.sourceId));
-    const entry = createThreatEvidenceEntry({
-      id: `group-extraction-${item.id || index + 1}`,
-      title: item.title || source?.name || '抽取结果',
-      text: item.text || item.summary || '',
-      summary: item.summary || '',
-      sourceType: item.sourceType || 'resource-extraction',
-      sourceId: item.sourceId,
-      sourceLabel: source?.name || item.sourceName || item.title || '资源库抽取',
-      sourceName: item.sourceName || source?.name || item.title || '资源库抽取',
-      fileName: item.fileName || '',
-      extractedAt: item.createdAt || item.extractedAt || '',
-    });
-    if (entry) {
-      entries.push(entry);
-    }
-  });
-
-  safeArray(uploadedFiles).forEach((file, fileIndex) => {
-    const previewText = previewPayloadToText({
-      previewType: file.previewType,
-      payload: file.preview,
-    });
-    const fileEntries = safeArray(file.extractionDrafts).length
-      ? file.extractionDrafts
-      : [{
-          title: file.fileName,
-          text: previewText || file.summary || '',
-          summary: file.summary || toShortText(previewText, 140),
-        }];
-
-    fileEntries.forEach((draft, draftIndex) => {
-      const entry = createThreatEvidenceEntry({
-        id: `${file.id || `group-upload-${fileIndex + 1}`}-${draftIndex + 1}`,
-        title: draft.title || file.fileName,
-        text: draft.text || draft.summary || '',
-        summary: draft.summary || file.summary || '',
-        sourceType: 'uploaded-file',
-        sourceLabel: file.fileName || '本地上传文件',
-        sourceName: draft.sourceName || file.fileName || '本地上传文件',
-        fileName: draft.fileName || file.fileName || '',
-        extractedAt: draft.extractedAt || '',
-      });
-      if (entry) {
-        entries.push(entry);
-      }
-    });
-  });
-
-  safeArray(blueIntelligence).forEach((item, index) => {
-    const entry = createThreatEvidenceEntry({
-      id: `blue-intel-${item.id || index + 1}`,
-      title: item.name || `蓝方兵力 ${index + 1}`,
-      text: buildGroupingSourceTextV2(item),
-      summary: [item.category, item.role, item.readiness].filter(Boolean).join(' / '),
-      sourceType: 'blue-intelligence',
-      sourceId: item.id,
-      sourceLabel: item.name || '蓝方兵力',
-      sourceName: item.name || '蓝方兵力',
-    });
-    if (entry) {
-      entries.push(entry);
-    }
-  });
-
-  if (threatOutput.threatLevel) {
-    const threatEntry = createThreatEvidenceEntry({
-      id: 'group-threat-handoff',
-      title: '威胁分析输入',
-      text: [
-        `威胁等级 ${threatOutput.threatLevel}`,
-        ...safeArray(threatOutput.enemyIntentions).map((item) => `${item.name} ${item.description || ''}`),
-        ...safeArray(threatOutput.impactAnalysis).map((item) => `${item.title} ${item.detail || ''}`),
-      ].join(' '),
-      summary: `威胁等级 ${threatOutput.threatLevel} / 火力覆盖 ${safeArray(threatOutput.fireCoverage).length} / 防空节点 ${safeArray(threatOutput.airDefenseSystem).length}`,
-      sourceType: 'threat-handoff',
-      sourceLabel: '敌情威胁分析结果',
-      sourceName: '敌情威胁分析结果',
-      extractedAt: String(threatOutput.generatedAt || '').trim(),
-    });
-    if (threatEntry) {
-      entries.push(threatEntry);
-    }
-  }
-
-  return entries;
-}
-
-function resolveGroupingReadinessV2(text = '') {
-  if (includesAny(text, ['持续', '轮换', '满编', '联勤', '补给'])) return '持续保障';
-  if (includesAny(text, ['升空', '装载', '机动', '突击', '投送'])) return '机动待命';
-  if (includesAny(text, ['值守', '值班', '警戒', '跟踪'])) return '值守';
-  if (includesAny(text, ['待机', '待命'])) return '待机';
-  return '待命';
-}
-
-function buildDocumentGroupingCandidates(evidenceEntries = [], maxCount = 6) {
-  const inferredUnits = safeArray(evidenceEntries)
-    .filter((entry) => ['resource-preview', 'resource-extraction', 'uploaded-file'].includes(entry.sourceType))
-    .flatMap((entry) => {
-      const segments = uniqueList([
-        ...String(entry.text || '').split(/\n+/),
-        ...String(entry.text || '').split(/[；;]+/),
-      ])
-        .map((item) => String(item || '').trim())
-        .filter((item) => item.length >= 4 && !includesAny(item, ['工作表', 'sheet']));
-
-      const resolvedSegments = segments.length ? segments : [entry.text || entry.summary || entry.title];
-
-      return resolvedSegments.map((segment, segmentIndex) => {
-        const texts = [entry.title, entry.summary, segment];
-        const bestMatch = sortByScore(GROUPING_DOCUMENT_FORCE_DEFINITIONS.map((definition) => ({
-          definition,
-          score: keywordScore(texts, definition.keywords),
-        })), 'score')[0];
-
-        if (!bestMatch?.score) {
-          return null;
-        }
-
-        const explicitName = String(segment || '').match(/(?:装备|名称|平台|单元|兵力|分队|编组)[:：]\s*([^\s；;，,]+)/)?.[1] || '';
-        const normalizedName = explicitName || toShortText(segment.replace(/^(装备|名称|平台|单元|兵力|分队|编组)[:：]/, '').trim(), 16);
-
-        return {
-          id: `doc-force-${entry.id}-${segmentIndex + 1}`,
-          name: normalizedName || resolveThreatEvidenceName(entry, bestMatch.definition.nameSuffix),
-          category: bestMatch.definition.category,
-          role: bestMatch.definition.roleLabel,
-          strength: round(clamp(1.8 + bestMatch.score * 0.9, 1, 8), 1),
-          readiness: resolveGroupingReadinessV2([entry.summary, segment].filter(Boolean).join(' ')),
-          tags: bestMatch.definition.keywords.filter((item) => includesAny(segment, [item])).slice(0, 3),
-          notes: `由 ${entry.sourceLabel} 文档内容推断的候选兵力单元。`,
-          derivedFromText: true,
-          evidence: uniqueList([
-            ...buildEvidenceReferences(entry, '文档推断兵力'),
-            toShortText(segment, 72),
-          ]).slice(0, 3),
-        };
-      }).filter(Boolean);
-    });
-
-  const merged = new Map();
-  inferredUnits.forEach((item) => {
-    const key = textOf(item.name);
-    if (!merged.has(key) || Number(merged.get(key).strength || 0) < Number(item.strength || 0)) {
-      merged.set(key, item);
-    }
-  });
-  return [...merged.values()].slice(0, maxCount);
-}
-
-function mergeGroupingCandidates(baseUnits = [], inferredUnits = [], expectedGroupCount = 4) {
-  const merged = [];
-  const seen = new Set();
-
-  safeArray(baseUnits).forEach((item) => {
-    const key = textOf(item.id || item.name);
-    if (seen.has(key)) return;
-    seen.add(key);
-    merged.push(cloneData(item));
-  });
-
-  const supplementLimit = merged.length
-    ? Math.max(0, Number(expectedGroupCount || 0) - merged.length)
-    : safeArray(inferredUnits).length;
-
-  safeArray(inferredUnits).slice(0, supplementLimit).forEach((item) => {
-    const key = textOf(item.id || item.name);
-    if (seen.has(key)) return;
-    seen.add(key);
-    merged.push(cloneData(item));
-  });
-
-  return merged;
-}
-
-function resolveActualGroupingCount(expectedGroupCount = 4, unitCount = 0) {
-  const preferredCount = clamp(Math.round(Number(expectedGroupCount || 4)), 3, 6);
-  if (!unitCount) {
-    return preferredCount;
-  }
-  return Math.max(1, Math.min(preferredCount, Number(unitCount || 0)));
-}
-
-function buildGroupingBlueprints(ruleLibraryKey = 'fire-strike-rules', groupCount = 4) {
-  const blueprintLibrary = GROUPING_BUCKET_BLUEPRINTS[ruleLibraryKey] || GROUPING_BUCKET_BLUEPRINTS['fire-strike-rules'];
-  const normalizedCount = clamp(Math.round(Number(groupCount || 4)), 3, 6);
-  const exactBlueprints = blueprintLibrary[normalizedCount] || blueprintLibrary[4] || [];
-  const targetCount = Math.max(1, Math.min(Number(groupCount || normalizedCount), exactBlueprints.length || normalizedCount));
-
-  if (targetCount >= 3) {
-    return cloneData(exactBlueprints.slice(0, targetCount));
-  }
-
-  const fallbackBlueprints = blueprintLibrary[3] || exactBlueprints;
-  if (targetCount === 2) {
-    return cloneData([fallbackBlueprints[0], fallbackBlueprints[fallbackBlueprints.length - 1]].filter(Boolean));
-  }
-  return cloneData([fallbackBlueprints[0]].filter(Boolean));
 }
 
 function buildAdvancedUnitCapability(item = {}) {
@@ -5276,263 +5064,6 @@ function buildGroupingUnitProfile(item = {}) {
   };
 }
 
-function buildResolvedGroupingRuleProfile(ruleLibrary, evidenceEntries = [], threatOutput = {}, actualGroupCount = 4) {
-  const threatLevel = String(threatOutput?.threatLevel || '中');
-  const baseWeights = normalizeWeights(safeObject(ruleLibrary?.weights));
-  const adjustedWeights = {
-    ...baseWeights,
-  };
-
-  const signals = GROUPING_RULE_SIGNAL_DEFINITIONS.map((definition) => {
-    const matchedEntries = safeArray(evidenceEntries)
-      .map((entry) => ({
-        entry,
-        score: keywordScore([entry.title, entry.summary, entry.text], definition.keywords),
-      }))
-      .filter((item) => item.score > 0)
-      .sort((left, right) => right.score - left.score);
-
-    let rawScore = sumBy(matchedEntries.slice(0, 8), (item) => item.score);
-    if (ruleLibrary?.key === 'fire-strike-rules' && definition.key === 'firepower') rawScore += 1.2;
-    if (ruleLibrary?.key === 'air-assault-rules' && definition.key === 'mobility') rawScore += 1.2;
-    if (threatLevel === '高' && ['protection', 'endurance'].includes(definition.key)) rawScore += 0.8;
-
-    const intensity = clamp(rawScore / (definition.key === 'task-demand' ? 10 : 8), 0, 1.6);
-    Object.entries(definition.weightAdjustments || {}).forEach(([metricKey, weightDelta]) => {
-      adjustedWeights[metricKey] = Number(adjustedWeights[metricKey] || 0) + (intensity * Number(weightDelta || 0));
-    });
-
-    return {
-      key: definition.key,
-      label: definition.label,
-      rawScore: round(rawScore, 2),
-      intensity: round(intensity, 2),
-      evidence: matchedEntries.slice(0, 3).map(({ entry, score }) => ({
-        id: entry.id,
-        sourceLabel: entry.sourceLabel,
-        summary: entry.summary || toShortText(entry.text || '', 72),
-        score: round(score, 2),
-      })),
-    };
-  });
-
-  if (threatLevel === '高') {
-    adjustedWeights.protection = Number(adjustedWeights.protection || 0) + 0.02;
-    adjustedWeights.endurance = Number(adjustedWeights.endurance || 0) + 0.01;
-  }
-
-  const normalizedWeights = normalizeWeights(adjustedWeights);
-  const groupBlueprints = buildGroupingBlueprints(ruleLibrary?.key, actualGroupCount);
-  const primarySignals = sortByScore(signals, 'rawScore').filter((item) => item.rawScore > 0).slice(0, 5);
-
-  return {
-    key: ruleLibrary?.key,
-    label: ruleLibrary?.label,
-    description: ruleLibrary?.description,
-    baseWeights,
-    weights: normalizedWeights,
-    weightSummary: buildGroupingWeightSummary(normalizedWeights),
-    actualGroupCount: groupBlueprints.length,
-    primarySignals,
-    signals,
-    groupBlueprints,
-  };
-}
-
-function calculateGroupingRoleAffinity(role = 'support', blueprint = {}) {
-  if (safeArray(blueprint.preferredRoles).includes(role)) return 24;
-  if (safeArray(blueprint.supportRoles).includes(role)) return 14;
-  if (role === 'support' && safeArray(blueprint.preferredRoles).includes('sustain')) return 10;
-  if (role === 'strike' && safeArray(blueprint.supportRoles).includes('strike')) return 10;
-  if (role === 'cover' && safeArray(blueprint.supportRoles).includes('cover')) return 10;
-  return 4;
-}
-
-function calculateGroupingCapabilityFit(capability = {}, targetMix = {}) {
-  const weights = normalizeWeights(targetMix);
-  return round(clamp(
-    Number(capability.firepower || 0) * Number(weights.firepower || 0)
-    + Number(capability.protection || 0) * Number(weights.protection || 0)
-    + Number(capability.reconCoverage || 0) * Number(weights.reconCoverage || 0)
-    + Number(capability.endurance || 0) * Number(weights.endurance || 0)
-    + Number(capability.mobility || 0) * Number(weights.mobility || 0),
-    0,
-    100,
-  ), 1);
-}
-
-function createGroupingState(blueprints = []) {
-  return safeArray(blueprints).map((blueprint) => ({
-    ...cloneData(blueprint),
-    units: [],
-  }));
-}
-
-function buildGroupingProfilesV2(groups = []) {
-  return safeArray(groups)
-    .map((group) => {
-      const unitProfiles = safeArray(group.units);
-      const units = unitProfiles.map((item) => item.item || item);
-      const capabilities = unitProfiles.map((item) => item.capability || buildAdvancedUnitCapability(item.item || item));
-      const normalizer = Math.max(units.length, 1);
-      const roleComposition = unitProfiles.reduce((summary, item) => {
-        const roleKey = item.role || classifyGroupingRole(item.item || item);
-        summary[roleKey] = Number(summary[roleKey] || 0) + 1;
-        return summary;
-      }, {});
-
-      return {
-        id: group.id,
-        name: group.name,
-        role: group.role,
-        unitCount: units.length,
-        totalStrength: round(sumBy(units, (item) => item.strength), 1),
-        firepower: round(clamp((sumBy(capabilities, (item) => item.firepower) / normalizer) * 1.16, 0, 100), 1),
-        protection: round(clamp((sumBy(capabilities, (item) => item.protection) / normalizer) * 1.12, 0, 100), 1),
-        reconCoverage: round(clamp((sumBy(capabilities, (item) => item.reconCoverage) / normalizer) * 1.12, 0, 100), 1),
-        endurance: round(clamp((sumBy(capabilities, (item) => item.endurance) / normalizer) * 1.12, 0, 100), 1),
-        mobility: round(clamp((sumBy(capabilities, (item) => item.mobility) / normalizer) * 1.08, 0, 100), 1),
-        readinessScore: round(average(unitProfiles.map((item) => item.readinessScore)), 1),
-        roleComposition,
-        categories: uniqueList(units.map((item) => item.category)).slice(0, 6),
-        units: units.map((item) => ({
-          id: item.id,
-          name: item.name,
-          category: item.category,
-          role: item.role,
-          strength: item.strength,
-          readiness: item.readiness,
-          derivedFromText: Boolean(item.derivedFromText),
-        })),
-      };
-    })
-    .filter((group) => group.unitCount > 0);
-}
-
-function buildGroupingSchemeMetrics(groupProfiles = []) {
-  if (!safeArray(groupProfiles).length) {
-    return {
-      firepower: 0,
-      protection: 0,
-      reconCoverage: 0,
-      endurance: 0,
-      mobility: 0,
-      balance: 0,
-      strengthTotal: 0,
-    };
-  }
-
-  const groupStrengths = groupProfiles.map((item) => Number(item.totalStrength || 0));
-  return {
-    firepower: round(average(groupProfiles.map((item) => item.firepower)), 1),
-    protection: round(average(groupProfiles.map((item) => item.protection)), 1),
-    reconCoverage: round(average(groupProfiles.map((item) => item.reconCoverage)), 1),
-    endurance: round(average(groupProfiles.map((item) => item.endurance)), 1),
-    mobility: round(average(groupProfiles.map((item) => item.mobility)), 1),
-    balance: round(clamp(100 - standardDeviation(groupStrengths) * 5.5, 0, 100), 1),
-    strengthTotal: round(sumBy(groupProfiles, (item) => item.totalStrength), 1),
-  };
-}
-
-function scoreGroupingPlacement(methodKey, unitProfile, groupState, totalStrength, groupCount, threatLevel = '中') {
-  const expectedStrength = totalStrength / Math.max(groupCount, 1);
-  const currentStrength = sumBy(groupState.units, (item) => item.item?.strength || item.strength);
-  const projectedStrength = currentStrength + Number(unitProfile.item?.strength || 0);
-  const roleAffinity = calculateGroupingRoleAffinity(unitProfile.role, groupState);
-  const capabilityFit = calculateGroupingCapabilityFit(unitProfile.capability, groupState.targetMix);
-  const balanceBonus = Math.max(0, 16 - Math.abs(projectedStrength - expectedStrength) * 2.4);
-  const emptyBonus = groupState.units.length === 0 ? 10 : 0;
-  const saturationPenalty = groupState.units.length * (methodKey === 'hybrid-balanced' ? 2.3 : 1.5);
-  const strengthPenalty = currentStrength * (methodKey === 'rule-inference' ? 0.18 : 0.28);
-  let threatBonus = 0;
-
-  if (threatLevel === '高' && ['cover', 'sustain'].includes(unitProfile.role) && (
-    safeArray(groupState.preferredRoles).includes(unitProfile.role)
-    || safeArray(groupState.supportRoles).includes(unitProfile.role)
-  )) {
-    threatBonus = 8;
-  }
-
-  if (methodKey === 'rule-inference') {
-    return round(roleAffinity * 2.8 + capabilityFit * 0.18 + emptyBonus + threatBonus - saturationPenalty - strengthPenalty, 2);
-  }
-
-  return round(roleAffinity * 2.1 + capabilityFit * 0.2 + balanceBonus + emptyBonus + threatBonus - saturationPenalty - strengthPenalty, 2);
-}
-
-function findGroupingDonorIndex(assignment = [], groupCount = 1) {
-  const counts = Array.from({ length: groupCount }, () => 0);
-  safeArray(assignment).forEach((value) => {
-    const index = clamp(Math.round(Number(value || 0)), 0, Math.max(groupCount - 1, 0));
-    counts[index] += 1;
-  });
-  let donorIndex = 0;
-  let donorCount = -1;
-  counts.forEach((count, index) => {
-    if (count > donorCount) {
-      donorCount = count;
-      donorIndex = index;
-    }
-  });
-  return donorIndex;
-}
-
-function normalizeGroupingAssignment(assignment = [], groupCount = 1, rng = Math.random) {
-  const normalized = safeArray(assignment).map((value) => clamp(Math.round(Number(value || 0)), 0, Math.max(groupCount - 1, 0)));
-  if (!normalized.length || normalized.length < groupCount) {
-    return normalized;
-  }
-
-  const counts = Array.from({ length: groupCount }, () => 0);
-  normalized.forEach((value) => {
-    counts[value] += 1;
-  });
-
-  for (let missingGroup = 0; missingGroup < groupCount; missingGroup += 1) {
-    if (counts[missingGroup] > 0) continue;
-    const donorGroup = findGroupingDonorIndex(normalized, groupCount);
-    const donorPositions = normalized
-      .map((value, index) => ({ value, index }))
-      .filter((item) => item.value === donorGroup);
-    const preferredPosition = donorPositions.find(() => counts[donorGroup] > 1) || donorPositions[0];
-    const targetIndex = preferredPosition?.index ?? Math.floor(rng() * normalized.length);
-    counts[donorGroup] = Math.max(0, counts[donorGroup] - 1);
-    normalized[targetIndex] = missingGroup;
-    counts[missingGroup] += 1;
-  }
-
-  return normalized;
-}
-
-function assignGroupingHeuristically(methodKey, unitProfiles = [], blueprints = [], threatLevel = '中') {
-  if (!safeArray(unitProfiles).length || !safeArray(blueprints).length) {
-    return [];
-  }
-
-  const assignment = new Array(unitProfiles.length).fill(0);
-  const groupStates = createGroupingState(blueprints);
-  const totalStrength = sumBy(unitProfiles, (item) => item.item?.strength || 0);
-  const sortedUnits = unitProfiles
-    .map((item, index) => ({
-      item,
-      index,
-      priority: Number(item.item?.strength || 0) * 5 + Number(item.capability?.[item.dominantMetric] || 0),
-    }))
-    .sort((left, right) => right.priority - left.priority);
-
-  sortedUnits.forEach(({ item, index }) => {
-    const scoredBuckets = groupStates.map((groupState, bucketIndex) => ({
-      bucketIndex,
-      score: scoreGroupingPlacement(methodKey, item, groupState, totalStrength, blueprints.length, threatLevel),
-    }));
-    const bestBucket = sortByScore(scoredBuckets, 'score')[0]?.bucketIndex ?? 0;
-    assignment[index] = bestBucket;
-    groupStates[bestBucket].units.push(item);
-  });
-
-  return normalizeGroupingAssignment(assignment, blueprints.length);
-}
-
 function hashGroupingSeed(value = '') {
   let hash = 2166136261;
   for (const character of String(value || '')) {
@@ -5551,719 +5082,79 @@ function createGroupingRandom(seed = 1) {
   };
 }
 
-function createRandomGroupingAssignment(unitProfiles = [], groupCount = 1, rng = Math.random) {
-  const assignment = safeArray(unitProfiles).map((_, index) => (
-    index < groupCount ? index : Math.floor(rng() * groupCount)
-  ));
-  return normalizeGroupingAssignment(assignment, groupCount, rng);
-}
-
-function crossoverGroupingAssignments(left = [], right = [], groupCount = 1, rng = Math.random) {
-  if (!safeArray(left).length || !safeArray(right).length || left.length !== right.length) {
-    return normalizeGroupingAssignment(left, groupCount, rng);
-  }
-  if (left.length < 2) {
-    return normalizeGroupingAssignment([...left], groupCount, rng);
-  }
-  const pivot = 1 + Math.floor(rng() * (left.length - 1));
-  return normalizeGroupingAssignment([
-    ...left.slice(0, pivot),
-    ...right.slice(pivot),
-  ], groupCount, rng);
-}
-
-function mutateGroupingAssignment(assignment = [], groupCount = 1, mutationRate = 0.14, rng = Math.random) {
-  const mutated = [...safeArray(assignment)];
-
-  for (let index = 0; index < mutated.length; index += 1) {
-    if (rng() < mutationRate) {
-      mutated[index] = Math.floor(rng() * groupCount);
-    }
-  }
-
-  if (mutated.length > 1 && rng() < mutationRate) {
-    const leftIndex = Math.floor(rng() * mutated.length);
-    const rightIndex = Math.floor(rng() * mutated.length);
-    [mutated[leftIndex], mutated[rightIndex]] = [mutated[rightIndex], mutated[leftIndex]];
-  }
-
-  return normalizeGroupingAssignment(mutated, groupCount, rng);
-}
-
-function calculateGroupingRoleFit(groupProfiles = [], blueprints = []) {
-  return round(average(groupProfiles.map((group) => {
-    const blueprint = safeArray(blueprints).find((item) => item.id === group.id) || {};
-    const preferredRoles = safeArray(blueprint.preferredRoles);
-    const supportRoles = safeArray(blueprint.supportRoles);
-    const preferredCoverage = preferredRoles.length
-      ? (preferredRoles.filter((role) => Number(group.roleComposition?.[role] || 0) > 0).length / preferredRoles.length) * 100
-      : 100;
-    const supportCoverage = supportRoles.length
-      ? (supportRoles.filter((role) => Number(group.roleComposition?.[role] || 0) > 0).length / supportRoles.length) * 100
-      : 100;
-    return clamp(preferredCoverage * 0.72 + supportCoverage * 0.28, 0, 100);
-  })), 1);
-}
-
-function calculateGroupingBlueprintFit(groupProfiles = [], blueprints = []) {
-  return round(average(groupProfiles.map((group) => {
-    const blueprint = safeArray(blueprints).find((item) => item.id === group.id) || {};
-    return calculateGroupingCapabilityFit({
-      firepower: group.firepower,
-      protection: group.protection,
-      reconCoverage: group.reconCoverage,
-      endurance: group.endurance,
-      mobility: group.mobility,
-    }, blueprint.targetMix);
-  })), 1);
-}
-
-function countGroupingRolesInUnits(units = []) {
-  return safeArray(units).reduce((summary, item) => {
-    const roleKey = item.role || classifyGroupingRole(item.item || item);
-    summary[roleKey] = Number(summary[roleKey] || 0) + 1;
-    return summary;
-  }, {});
-}
-
-function createGroupingConstraintCheck(id, label, status, detail, suggestion) {
-  return {
-    id,
-    label,
-    status,
-    detail,
-    suggestion,
-  };
-}
-
-function evaluateBaselineGroupingConstraints(groups = [], blueprints = [], forcePool = [], threatOutput = {}, ruleProfile = {}, options = {}) {
-  const availableRoles = countGroupingRolesInUnits(forcePool);
-  const expectedGroupCount = safeArray(blueprints).length || Number(ruleProfile.actualGroupCount || options.expectedGroupCount || 0);
-  const actualGroupCount = safeArray(groups).length;
-  const totalUnits = Math.max(sumBy(groups, (group) => group.unitCount), safeArray(forcePool).length);
-  const maxGroupUnits = Math.max(0, ...safeArray(groups).map((group) => Number(group.unitCount || 0)));
-  const maxGroupShare = totalUnits ? round((maxGroupUnits / totalUnits) * 100, 1) : 0;
-  const threatLevel = String(threatOutput?.threatLevel || '中');
-  const fireCoverageCount = safeArray(threatOutput?.fireCoverage).length;
-  const airDefenseCount = safeArray(threatOutput?.airDefenseSystem).length;
-  const checkResults = [];
-
-  if (!expectedGroupCount) {
-    checkResults.push(createGroupingConstraintCheck(
-      'group-coverage',
-      '功能群覆盖',
-      'warn',
-      '当前未声明明确的目标群组数，已跳过覆盖率强约束。',
-      '为约束模型补充目标群组数或群组蓝图，可提升编组校核强度。',
-    ));
-  } else {
-    const coverageStatus = actualGroupCount >= expectedGroupCount
-      ? 'pass'
-      : actualGroupCount >= Math.max(1, expectedGroupCount - 1)
-        ? 'warn'
-        : 'fail';
-    checkResults.push(createGroupingConstraintCheck(
-      'group-coverage',
-      '功能群覆盖',
-      coverageStatus,
-      `目标群组 ${expectedGroupCount} 个，当前形成 ${actualGroupCount} 个功能群。`,
-      '补充候选兵力或下调期望群组数，避免关键任务群缺位。',
-    ));
-  }
-
-  const strikeGroupCount = safeArray(groups).filter((group) => Number(group.roleComposition?.strike || 0) > 0).length;
-  if (!Number(availableRoles.strike || 0)) {
-    checkResults.push(createGroupingConstraintCheck(
-      'strike-coverage',
-      '主攻火力覆盖',
-      'warn',
-      '候选兵力中未识别到明显火力主攻单元，无法执行严格火力覆盖校核。',
-      '补充火炮、导弹、装甲或火力打击平台数据后重新求解。',
-    ));
-  } else {
-    checkResults.push(createGroupingConstraintCheck(
-      'strike-coverage',
-      '主攻火力覆盖',
-      strikeGroupCount >= 1 ? 'pass' : 'fail',
-      `当前包含火力主攻角色的功能群 ${strikeGroupCount} 个。`,
-      '确保至少一个功能群承载主攻火力或火力支援职责。',
-    ));
-  }
-
-  const reconRequired = fireCoverageCount > 0 || airDefenseCount > 0 || threatLevel === '高';
-  const reconGroupCount = safeArray(groups).filter((group) => Number(group.roleComposition?.recon || 0) > 0).length;
-  if (reconRequired) {
-    const reconStatus = !Number(availableRoles.recon || 0)
-      ? 'warn'
-      : reconGroupCount >= 1
-        ? 'pass'
-        : 'fail';
-    checkResults.push(createGroupingConstraintCheck(
-      'recon-chain',
-      '侦察引导链路',
-      reconStatus,
-      `高威胁/重点目标环境下已识别侦察功能群 ${reconGroupCount} 个。`,
-      '为编组补充侦察、预警或引导单元，保证压制和突击链路闭环。',
-    ));
-  }
-
-  const sustainGroupCount = safeArray(groups).filter((group) => Number(group.roleComposition?.sustain || 0) > 0).length;
-  if (totalUnits >= 4 || Number(availableRoles.sustain || 0) > 0) {
-    const sustainStatus = !Number(availableRoles.sustain || 0)
-      ? 'warn'
-      : sustainGroupCount >= 1
-        ? 'pass'
-        : 'fail';
-    checkResults.push(createGroupingConstraintCheck(
-      'sustain-chain',
-      '保障指挥链路',
-      sustainStatus,
-      `当前包含保障/指挥角色的功能群 ${sustainGroupCount} 个。`,
-      '增加通信、补给、维修或医疗单元，避免任务执行阶段保障断链。',
-    ));
-  }
-
-  if (threatLevel === '高' || fireCoverageCount > 0 || airDefenseCount > 0) {
-    const coverGroupCount = safeArray(groups).filter((group) => Number(group.roleComposition?.cover || 0) > 0).length;
-    const coverStatus = !Number(availableRoles.cover || 0)
-      ? 'warn'
-      : coverGroupCount >= 1
-        ? 'pass'
-        : 'fail';
-    checkResults.push(createGroupingConstraintCheck(
-      'protective-cover',
-      '掩护防护覆盖',
-      coverStatus,
-      `当前包含掩护/防空角色的功能群 ${coverGroupCount} 个。`,
-      '为主航路和主攻群补充掩护、防空或电子支援单元。',
-    ));
-  }
-
-  if (totalUnits > 0) {
-    const balanceStatus = maxGroupShare <= 42
-      ? 'pass'
-      : maxGroupShare <= 58
-        ? 'warn'
-        : 'fail';
-    checkResults.push(createGroupingConstraintCheck(
-      'load-balance',
-      '兵力负载均衡',
-      balanceStatus,
-      `最大功能群承载 ${maxGroupUnits} 个单元，占候选兵力 ${maxGroupShare}%。`,
-      '避免将过多兵力集中到单一群组，可通过增加预备群或支援群分散负载。',
-    ));
-  }
-
-  const totalChecks = checkResults.length;
-  const passedCount = checkResults.filter((item) => item.status === 'pass').length;
-  const warnCount = checkResults.filter((item) => item.status === 'warn').length;
-  const failedCount = checkResults.filter((item) => item.status === 'fail').length;
-  const score = round(clamp(100 - failedCount * 18 - warnCount * 8, 0, 100), 1);
-  const penalty = round(failedCount * 3.6 + warnCount * 1.4, 1);
-  const overallStatus = failedCount ? 'fail' : warnCount ? 'warn' : 'pass';
-
-  return {
-    modelKey: 'baseline-constraints',
-    modelLabel: GROUPING_CONSTRAINT_MODELS['baseline-constraints'].label,
-    totalChecks,
-    passedCount,
-    warnCount,
-    failedCount,
-    score,
-    penalty,
-    overallStatus,
-    summary: failedCount
-      ? `发现 ${failedCount} 项未满足约束和 ${warnCount} 项待关注约束。`
-      : warnCount
-        ? `关键约束基本满足，仍有 ${warnCount} 项待人工复核。`
-        : '关键约束均满足，可直接进入后续任务规划步骤。',
-    checks: checkResults,
-    suggestions: uniqueList(checkResults.filter((item) => item.status !== 'pass').map((item) => item.suggestion)),
-  };
-}
-
-const GROUPING_CONSTRAINT_EVALUATORS = {
-  'baseline-constraints': evaluateBaselineGroupingConstraints,
-};
-
-function resolveGroupingConstraintModel(constraintModelKey = '') {
-  return GROUPING_CONSTRAINT_MODELS[constraintModelKey] || GROUPING_CONSTRAINT_MODELS['baseline-constraints'];
-}
-
-function evaluateGroupingConstraintModel(constraintModelKey = '', groups = [], blueprints = [], forcePool = [], threatOutput = {}, ruleProfile = {}, options = {}) {
-  const constraintModel = resolveGroupingConstraintModel(constraintModelKey);
-  const evaluator = GROUPING_CONSTRAINT_EVALUATORS[constraintModel.key];
-  if (!evaluator) {
-    return {
-      modelKey: constraintModel.key,
-      modelLabel: constraintModel.label,
-      totalChecks: 0,
-      passedCount: 0,
-      warnCount: 1,
-      failedCount: 0,
-      score: 100,
-      penalty: 0,
-      overallStatus: 'warn',
-      summary: '当前约束模型尚未注册执行器，已跳过约束校核。',
-      checks: [
-        createGroupingConstraintCheck(
-          'constraint-evaluator-missing',
-          '约束模型执行器',
-          'warn',
-          `未找到 ${constraintModel.label} 的执行器注册，当前未执行约束校核。`,
-          '在 GROUPING_CONSTRAINT_EVALUATORS 中注册执行器函数后重新计算。',
-        ),
-      ],
-      suggestions: ['补充约束执行器后重新计算，以便将约束结果纳入方案评估。'],
-    };
-  }
-
-  return evaluator(groups, blueprints, forcePool, threatOutput, ruleProfile, options);
-}
-
-function evaluateGroupingAssignmentV2(
-  assignment = [],
-  unitProfiles = [],
-  blueprints = [],
-  ruleProfile = {},
-  comparisonFocus = 'balanced',
-  threatLevel = '中',
-  constraintContext = {},
-) {
-  const groupStates = createGroupingState(blueprints);
-  safeArray(assignment).forEach((bucketIndex, unitIndex) => {
-    const normalizedBucketIndex = clamp(Math.round(Number(bucketIndex || 0)), 0, Math.max(groupStates.length - 1, 0));
-    if (!groupStates[normalizedBucketIndex]) return;
-    groupStates[normalizedBucketIndex].units.push(unitProfiles[unitIndex]);
-  });
-
-  const groups = buildGroupingProfilesV2(groupStates);
-  const metrics = buildGroupingSchemeMetrics(groups);
-  const roleFit = calculateGroupingRoleFit(groups, blueprints);
-  const blueprintFit = calculateGroupingBlueprintFit(groups, blueprints);
-  const readinessScore = round(average(groups.map((item) => item.readinessScore)), 1);
-  const filledGroupCount = groups.length;
-  const emptyGroupCount = Math.max(0, safeArray(blueprints).length - filledGroupCount);
-  const groupCoverage = round((filledGroupCount / Math.max(safeArray(blueprints).length, 1)) * 100, 1);
-  const structuralPenalty = round(
-    emptyGroupCount * 10 + Math.max(0, standardDeviation(groups.map((item) => item.unitCount)) * 4.2 - 2),
-    1,
-  );
-  const baseScore = calculateSchemeScore(metrics, ruleProfile, comparisonFocus, threatLevel);
-  const constraintEvaluation = evaluateGroupingConstraintModel(
-    constraintContext.constraintModelKey,
-    groups,
-    blueprints,
-    safeArray(unitProfiles).map((item) => item.item || item),
-    constraintContext.threatOutput,
-    ruleProfile,
-    constraintContext.options,
-  );
-  const score = round(clamp(
-    baseScore * 0.6
-    + roleFit * 0.14
-    + blueprintFit * 0.1
-    + readinessScore * 0.04
-    + groupCoverage * 0.04
-    + Number(constraintEvaluation.score || 0) * 0.08
-    - structuralPenalty
-    - Number(constraintEvaluation.penalty || 0),
-    0,
-    100,
-  ), 1);
-
-  return {
-    groups,
-    metrics: {
-      ...metrics,
-      roleFit,
-      blueprintFit,
-      readinessScore,
-      groupCoverage,
-      constraintSatisfaction: constraintEvaluation.score,
-    },
-    baseScore: round(baseScore, 1),
-    score,
-    fitness: score,
-    filledGroupCount,
-    emptyGroupCount,
-    structuralPenalty,
-    constraintEvaluation,
-  };
-}
-
-function selectGroupingTournament(evaluatedPopulation = [], rng = Math.random, tournamentSize = 3) {
-  const candidates = [];
-  for (let index = 0; index < tournamentSize; index += 1) {
-    candidates.push(evaluatedPopulation[Math.floor(rng() * evaluatedPopulation.length)]);
-  }
-  return sortByScore(candidates, 'fitness')[0];
-}
-
-function runGeneticGroupingV2(
-  unitProfiles = [],
-  blueprints = [],
-  ruleProfile = {},
-  comparisonFocus = 'balanced',
-  threatLevel = '中',
-  seedInput = '',
-  constraintContext = {},
-) {
-  if (!safeArray(unitProfiles).length || !safeArray(blueprints).length) {
-    return {
-      ...evaluateGroupingAssignmentV2([], unitProfiles, blueprints, ruleProfile, comparisonFocus, threatLevel, constraintContext),
-      optimizationMeta: null,
-      optimizationTrace: [],
-    };
-  }
-
-  const groupCount = blueprints.length;
-  const rng = createGroupingRandom(hashGroupingSeed(seedInput));
-  const populationSize = Math.max(18, Math.min(36, groupCount * 6));
-  const generations = Math.max(16, Math.min(32, unitProfiles.length * 2));
-  const mutationRate = round(0.12 + Math.min(0.08, groupCount * 0.01), 2);
-  const crossoverRate = 0.78;
-  const heuristicSeeds = [
-    assignGroupingHeuristically('rule-inference', unitProfiles, blueprints, threatLevel),
-    assignGroupingHeuristically('hybrid-balanced', unitProfiles, blueprints, threatLevel),
-  ].filter((item) => safeArray(item).length);
-  const population = [...heuristicSeeds];
-
-  while (population.length < populationSize) {
-    population.push(createRandomGroupingAssignment(unitProfiles, groupCount, rng));
-  }
-
-  let evaluatedPopulation = population.map((candidate) => ({
-    assignment: candidate,
-    ...evaluateGroupingAssignmentV2(candidate, unitProfiles, blueprints, ruleProfile, comparisonFocus, threatLevel, constraintContext),
-  }));
-  let bestInitial = sortByScore(evaluatedPopulation, 'fitness')[0];
-  const optimizationTrace = [{
-    generation: 0,
-    bestScore: bestInitial?.score || 0,
-    averageScore: round(average(evaluatedPopulation.map((item) => item.score)), 1),
-  }];
-
-  for (let generation = 1; generation <= generations; generation += 1) {
-    const rankedPopulation = sortByScore(evaluatedPopulation, 'fitness');
-    const nextPopulation = rankedPopulation.slice(0, 2).map((item) => [...item.assignment]);
-
-    while (nextPopulation.length < populationSize) {
-      const parentA = selectGroupingTournament(rankedPopulation, rng);
-      const parentB = selectGroupingTournament(rankedPopulation, rng);
-      const crossed = rng() < crossoverRate
-        ? crossoverGroupingAssignments(parentA.assignment, parentB.assignment, groupCount, rng)
-        : [...parentA.assignment];
-      nextPopulation.push(mutateGroupingAssignment(crossed, groupCount, mutationRate, rng));
-    }
-
-    evaluatedPopulation = nextPopulation.map((candidate) => ({
-      assignment: candidate,
-      ...evaluateGroupingAssignmentV2(candidate, unitProfiles, blueprints, ruleProfile, comparisonFocus, threatLevel, constraintContext),
-    }));
-
-    if (generation === 1 || generation === generations || generation % 4 === 0) {
-      const bestCandidate = sortByScore(evaluatedPopulation, 'fitness')[0];
-      optimizationTrace.push({
-        generation,
-        bestScore: bestCandidate?.score || 0,
-        averageScore: round(average(evaluatedPopulation.map((item) => item.score)), 1),
-      });
-    }
-  }
-
-  const bestCandidate = sortByScore(evaluatedPopulation, 'fitness')[0] || bestInitial;
-  bestInitial = bestInitial || bestCandidate;
-
-  return {
-    groups: bestCandidate.groups,
-    metrics: bestCandidate.metrics,
-    score: bestCandidate.score,
-    fitness: bestCandidate.fitness,
-    filledGroupCount: bestCandidate.filledGroupCount,
-    emptyGroupCount: bestCandidate.emptyGroupCount,
-    structuralPenalty: bestCandidate.structuralPenalty,
-    optimizationMeta: {
-      populationSize,
-      generations,
-      mutationRate,
-      crossoverRate,
-      initialBestScore: bestInitial?.score || 0,
-      finalBestScore: bestCandidate?.score || 0,
-    },
-    optimizationTrace,
-  };
-}
-
-function buildGroupingSchemeNarrativeV2(scheme, threatLevel, ruleProfile = {}) {
-  if (!safeArray(scheme.groups).length) {
-    return {
-      advantages: [
-        '当前已完成规则画像解析，但尚未识别到足够的可编组兵力单元。',
-        '可继续从数据服务选择我方情报或上传装备/兵力文档补充分析。',
-      ],
-      tradeoffs: [
-        '在候选兵力不足时，编组评分仅能反映规则适配度，无法代表完整执行方案。',
-        '建议先补充我方兵力、装备性能和人员编配数据后再重新计算。',
-      ],
-    };
-  }
-
-  const metricEntries = Object.entries(scheme.metrics)
-    .filter(([key]) => ['firepower', 'protection', 'reconCoverage', 'endurance', 'mobility', 'balance'].includes(key))
-    .map(([key, value]) => ({ key, value }));
-  const strongestMetric = sortByScore(metricEntries, 'value')[0]?.key || 'firepower';
-  const weakestMetric = [...metricEntries].sort((left, right) => left.value - right.value)[0]?.key || 'balance';
-  const primarySignal = safeArray(ruleProfile.primarySignals)[0];
-
-  return {
-    advantages: [
-      `方案在${GROUPING_METRIC_LABELS[strongestMetric] || strongestMetric}上表现最好，适合应对${threatLevel}威胁环境。`,
-      primarySignal
-        ? `规则画像当前突出“${primarySignal.label}”，与情报/文档证据的匹配度较高。`
-        : '主攻群、支援群与保障群之间保持了较稳定的任务分工和强度配置。',
-    ],
-    tradeoffs: [
-      `当前方案的${GROUPING_METRIC_LABELS[weakestMetric] || weakestMetric}相对较弱，需在执行阶段补充约束校核。`,
-      `当前实际形成 ${safeArray(scheme.groups).length} 个功能群，仍需结合指挥链和资源上限做人工复核。`,
-    ],
-  };
-}
-
-function buildGroupingScheme(methodKey, forcePool = [], threatOutput = {}, ruleProfile = {}, input = {}, constraintModel = {}) {
-  const threatLevel = String(threatOutput?.threatLevel || '中');
-  const blueprints = safeArray(ruleProfile.groupBlueprints);
-  const unitProfiles = safeArray(forcePool).map(buildGroupingUnitProfile);
-  const constraintContext = {
-    constraintModelKey: constraintModel.key || input.options?.constraintModelKey,
-    threatOutput,
-    options: input.options,
-  };
-  let evaluatedScheme;
-
-  if (methodKey === 'genetic-optimization') {
-    evaluatedScheme = runGeneticGroupingV2(
-      unitProfiles,
-      blueprints,
-      ruleProfile,
-      input.options?.comparisonFocus,
-      threatLevel,
-      JSON.stringify({
-        methodKey,
-        ruleLibraryKey: ruleProfile.key,
-        forcePool: forcePool.map((item) => [item.id, item.name, item.strength].join(':')).join('|'),
-        comparisonFocus: input.options?.comparisonFocus,
-      }),
-      constraintContext,
-    );
-  } else {
-    const assignment = assignGroupingHeuristically(
-      methodKey === 'rule-inference' ? 'rule-inference' : 'hybrid-balanced',
-      unitProfiles,
-      blueprints,
-      threatLevel,
-    );
-    evaluatedScheme = {
-      ...evaluateGroupingAssignmentV2(
-        assignment,
-        unitProfiles,
-        blueprints,
-        ruleProfile,
-        input.options?.comparisonFocus,
-        threatLevel,
-        constraintContext,
-      ),
-      optimizationMeta: null,
-      optimizationTrace: [],
-    };
-  }
-
-  const narrative = buildGroupingSchemeNarrativeV2(evaluatedScheme, threatLevel, ruleProfile);
-
-  return {
-    id: `scheme-${methodKey}`,
-    methodKey,
-    methodLabel: findMethodLabel(GROUPING_METHODS, methodKey),
-    baseScore: evaluatedScheme.baseScore,
-    score: evaluatedScheme.score,
-    metrics: evaluatedScheme.metrics,
-    groups: evaluatedScheme.groups,
-    actualGroupCount: evaluatedScheme.filledGroupCount,
-    emptyGroupCount: evaluatedScheme.emptyGroupCount,
-    structuralPenalty: evaluatedScheme.structuralPenalty,
-    constraintEvaluation: evaluatedScheme.constraintEvaluation,
-    optimizationMeta: evaluatedScheme.optimizationMeta,
-    optimizationTrace: evaluatedScheme.optimizationTrace,
-    advantages: narrative.advantages,
-    tradeoffs: narrative.tradeoffs,
-  };
-}
-
-async function runBuiltinForceGrouping(context, step, algorithm, input, dataset) {
-  const sourceBundle = buildSourceBundle(dataset, input.selectedSourceIds);
-  const uploadedFiles = await normalizeUploadedFiles(input.uploadedFiles);
-  const blueIntelligence = buildSelectedIntelligence(dataset, 'blue', sourceBundle.sourceIdSet);
-  const threatOutput = safeObject(context.stageOutputs['enemy-threat-analysis']);
+async function runBuiltinForceGrouping(context, step, algorithm, input, dataset, events = null, signal = null) {
   const appliedOptions = cloneData(input.options || {});
-  const requestedGroupCount = clamp(Math.round(Number(appliedOptions.expectedGroupCount || 4)), 3, 6);
-  const ruleLibrary = GROUPING_RULE_LIBRARIES[appliedOptions.ruleLibraryKey] || GROUPING_RULE_LIBRARIES['fire-strike-rules'];
-  const constraintModel = resolveGroupingConstraintModel(appliedOptions.constraintModelKey);
-  const evidenceEntries = buildGroupingEvidenceEntries(sourceBundle, uploadedFiles, blueIntelligence, threatOutput);
-  const documentCandidates = buildDocumentGroupingCandidates(evidenceEntries, Math.max(6, requestedGroupCount));
-  const forcePool = mergeGroupingCandidates(blueIntelligence, documentCandidates, requestedGroupCount);
-  const actualGroupCount = resolveActualGroupingCount(requestedGroupCount, forcePool.length);
-  const ruleProfile = buildResolvedGroupingRuleProfile(ruleLibrary, evidenceEntries, threatOutput, actualGroupCount);
-  const schemes = GROUPING_METHODS.map((method) => buildGroupingScheme(
-    method.key,
-    forcePool,
-    threatOutput,
-    ruleProfile,
-    {
-      ...input,
-      options: {
-        ...appliedOptions,
-        constraintModelKey: constraintModel.key,
-        expectedGroupCount: requestedGroupCount,
-      },
+  const comparisonFocus = resolvePlanningStrategyKey(appliedOptions.planningPreference || appliedOptions.comparisonFocus || 'balanced');
+  const methodToSchemeProfile = {
+    'rule-inference': 'scheme-balanced-intelligent',
+    'genetic-optimization': 'scheme-firepower-priority',
+    'hybrid-balanced': 'scheme-balanced-intelligent',
+  };
+  const bridgeVariant = {
+    id: 'force-grouping:force-grouping-local',
+    runtimeKey: 'force-grouping-local',
+    type: 'external-model',
+    source: 'external',
+    runtime: 'python-local',
+    version: '0.1.0',
+    contractVersion: 'algorithm-gateway-v1',
+    name: '智能编组算法',
+    projectName: '智能编组算法',
+    projectPath: 'algorithms/battle-planner',
+    executionMode: 'local-python',
+    packageName: 'battle_planner',
+    cliModule: 'battle_planner.cli',
+    defaultOptions: {
+      schemeProfileKey: methodToSchemeProfile[input.builtinMethodKey] || 'scheme-balanced-intelligent',
+      ruleLibraryKey: appliedOptions.ruleLibraryKey || 'fire-strike-rules',
+      comparisonFocus,
+      planningPreference: comparisonFocus,
+      expectedGroupCount: clamp(Math.round(Number(appliedOptions.expectedGroupCount || 4)), 1, 12),
+      useLlmExplanation: false,
+      llmBackend: 'mock',
+      llmStream: false,
     },
-    constraintModel,
-  ));
-  const preferredScheme = schemes.find((item) => item.methodKey === input.builtinMethodKey) || schemes[0];
-  const systemBestScheme = sortByScore(schemes, 'score')[0] || preferredScheme;
-  const preferredConstraintSummary = safeObject(preferredScheme.constraintEvaluation);
-  const topSignal = safeArray(ruleProfile.primarySignals)[0];
-  const ruleEvidence = safeArray(ruleProfile.primarySignals)
-    .flatMap((signal) => safeArray(signal.evidence).map((item) => ({
-      ...item,
-      signalLabel: signal.label,
-    })))
-    .slice(0, 8);
-
-  const explanation = [
-    `当前选中的内置方法为“${preferredScheme.methodLabel}”，在 ${ruleProfile.actualGroupCount} 个功能群约束下推荐评分 ${preferredScheme.score}。`,
-    `规则库使用“${ruleLibrary.label}”，共融合 ${evidenceEntries.length} 条规则证据与 ${forcePool.length} 个候选兵力单元。`,
-    `约束模型使用“${constraintModel.label}”，当前约束评分 ${preferredConstraintSummary.score || 0}，结论为${preferredConstraintSummary.summary || '待复核'}。`,
-    topSignal
-      ? `当前规则画像最强信号为“${topSignal.label}”，主要证据来自 ${safeArray(topSignal.evidence).map((item) => item.sourceLabel).join('、') || '当前任务基础规则'}。`
-      : '当前规则画像主要沿用任务基础规则库权重，并结合威胁结果做轻量调整。',
-    preferredScheme.id !== systemBestScheme.id
-      ? `系统自动评分最高的方案为“${systemBestScheme.methodLabel}”，评分 ${systemBestScheme.score}，可作为对照参考。`
-      : '当前选中方案与系统自动评分最高方案一致，可直接作为默认推荐结果。',
-  ];
-
-  if (requestedGroupCount !== ruleProfile.actualGroupCount) {
-    explanation.splice(2, 0, `受候选兵力数量限制，期望 ${requestedGroupCount} 个功能群，实际输出 ${ruleProfile.actualGroupCount} 个功能群。`);
-  }
-
+  };
+  const bridgeInput = {
+    ...cloneData(input),
+    builtinMethodKey: 'intelligent-grouping',
+    options: {
+      ...appliedOptions,
+      schemeProfileKey: appliedOptions.schemeProfileKey || methodToSchemeProfile[input.builtinMethodKey] || 'scheme-balanced-intelligent',
+      ruleLibraryKey: appliedOptions.ruleLibraryKey || 'fire-strike-rules',
+      comparisonFocus,
+      planningPreference: comparisonFocus,
+      expectedGroupCount: clamp(Math.round(Number(appliedOptions.expectedGroupCount || 4)), 1, 12),
+      useLlmExplanation: false,
+      llmBackend: appliedOptions.llmBackend || 'mock',
+      llmStream: false,
+    },
+  };
+  const bridgeTask = {
+    id: context.taskId || 'force-grouping-builtin-task',
+    name: context.taskName || '作战力量智能编组任务',
+    category: '兵力编组',
+  };
+  const result = await executeLocalPythonStep(
+    bridgeVariant,
+    bridgeTask,
+    step,
+    algorithm,
+    context,
+    {
+      assessmentName: context.assessmentName || `${bridgeTask.name}规划任务`,
+      dataset,
+    },
+    bridgeInput,
+    events,
+    signal,
+  );
   return {
-    summary: `已生成 ${schemes.length} 套作战力量编组方案，并根据 ${preferredScheme.methodLabel} 输出推荐结果。`,
-    outputPreview: [
-      `规则库：${ruleLibrary.label}`,
-      `候选兵力 ${forcePool.length} 个（结构化 ${blueIntelligence.length} / 文档推断 ${documentCandidates.length}），生成方案 ${schemes.length} 套`,
-      `推荐方案：${preferredScheme.methodLabel}（评分 ${preferredScheme.score}）`,
-    ],
-    artifacts: [
-      createArtifact('作战编组方案集', '输出规则推理、遗传优化和混合均衡三类编组方案。'),
-      createArtifact('方案对比表', '从火力、防护、侦察、保障、规则匹配和均衡度维度进行多方案对比。'),
-      createArtifact('推荐结果解释', '说明规则依据、文档证据、优化过程与方案调整方向。'),
-    ],
-    structuredOutput: {
-      implementationStatus: 'implemented',
-      builtinMethodKey: input.builtinMethodKey,
-      builtinMethodLabel: findMethodLabel(algorithm.builtinMethods, input.builtinMethodKey),
-      ruleLibrary: {
-        key: ruleLibrary.key,
-        label: ruleLibrary.label,
-        description: ruleLibrary.description,
-      },
-      constraintModel,
-      appliedOptions: {
-        ruleLibraryKey: ruleLibrary.key,
-        constraintModelKey: constraintModel.key,
-        comparisonFocus: appliedOptions.comparisonFocus || 'balanced',
-        expectedGroupCount: requestedGroupCount,
-        actualGroupCount: ruleProfile.actualGroupCount,
-      },
-      inputSummary: {
-        selectedSourceCount: sourceBundle.selectedSources.length,
-        uploadedFileCount: uploadedFiles.length,
-        blueIntelligenceCount: blueIntelligence.length,
-        documentCandidateCount: documentCandidates.length,
-        candidateCount: forcePool.length,
-        evidenceEntryCount: evidenceEntries.length,
-      },
-      selectedSources: sourceBundle.selectedSources.map((item) => ({
-        id: item.id,
-        name: item.name,
-        type: item.type,
-      })),
-      importedFiles: uploadedFiles.map((item) => ({
-        id: item.id,
-        fileName: item.fileName,
-        fileExtension: item.fileExtension,
-        summary: item.summary,
-      })),
-      evidenceTrace: buildEvidenceTraceEntries(evidenceEntries, 80),
-      resolvedRuleProfile: {
-        key: ruleProfile.key,
-        label: ruleProfile.label,
-        description: ruleProfile.description,
-        actualGroupCount: ruleProfile.actualGroupCount,
-        weightSummary: ruleProfile.weightSummary,
-        primarySignals: safeArray(ruleProfile.primarySignals).map((item) => ({
-          key: item.key,
-          label: item.label,
-          intensity: item.intensity,
-          evidenceCount: safeArray(item.evidence).length,
-        })),
-        groupBlueprints: safeArray(ruleProfile.groupBlueprints).map((item) => ({
-          id: item.id,
-          name: item.name,
-          role: item.role,
-          preferredRoles: item.preferredRoles,
-        })),
-      },
-      constraintSummary: {
-        modelKey: constraintModel.key,
-        modelLabel: constraintModel.label,
-        score: preferredConstraintSummary.score || 0,
-        totalChecks: preferredConstraintSummary.totalChecks || 0,
-        passedCount: preferredConstraintSummary.passedCount || 0,
-        warnCount: preferredConstraintSummary.warnCount || 0,
-        failedCount: preferredConstraintSummary.failedCount || 0,
-        overallStatus: preferredConstraintSummary.overallStatus || 'warn',
-        summary: preferredConstraintSummary.summary || '待人工复核约束结果。',
-        checks: safeArray(preferredConstraintSummary.checks),
-        suggestions: safeArray(preferredConstraintSummary.suggestions),
-      },
-      ruleEvidence,
-      schemes,
-      comparison: schemes.map((item) => ({
-        schemeId: item.id,
-        methodKey: item.methodKey,
-        methodLabel: item.methodLabel,
-        baseScore: item.baseScore,
-        score: item.score,
-        actualGroupCount: item.actualGroupCount,
-        firepower: item.metrics.firepower,
-        protection: item.metrics.protection,
-        reconCoverage: item.metrics.reconCoverage,
-        endurance: item.metrics.endurance,
-        mobility: item.metrics.mobility,
-        balance: item.metrics.balance,
-        roleFit: item.metrics.roleFit,
-        constraintScore: item.constraintEvaluation?.score || 0,
-        constraintStatus: item.constraintEvaluation?.overallStatus || 'warn',
-        advantage: item.advantages[0] || '',
-        tradeoff: item.tradeoffs[0] || '',
-        optimizationNote: item.optimizationMeta
-          ? `种群 ${item.optimizationMeta.populationSize} / 迭代 ${item.optimizationMeta.generations}`
-          : '',
-      })),
-      preferredSchemeId: preferredScheme.id,
-      preferredScheme,
-      systemBestSchemeId: systemBestScheme.id,
-      explanation,
+    ...result,
+    gateway: {
+      ...safeObject(result.gateway),
+      source: 'builtin-python-bridge',
+      runtimeKey: bridgeVariant.runtimeKey,
     },
   };
 }
@@ -6292,6 +5183,8 @@ function buildTargetCandidate(payload = {}) {
   const profile = TARGET_TYPE_PROFILES[type] || TARGET_TYPE_PROFILES.default;
   const importance = round(clamp(Number(payload.importance || 0), 0, 100), 1);
   const difficulty = round(clamp(Number(payload.difficulty || 0), 0, 100), 1);
+  const coordinate = normalizeTargetCandidateCoordinate(payload.coordinates)
+    || normalizeTargetCandidateCoordinate(payload);
   const requiredPlatformCount = clamp(
     Number(payload.requiredPlatformCount || resolveTargetRequiredPlatformCount(type, importance, difficulty)),
     1,
@@ -6303,7 +5196,10 @@ function buildTargetCandidate(payload = {}) {
     name: String(payload.name || profile.label),
     type,
     typeLabel: profile.label,
-    coordinates: normalizeCoordinate(payload.coordinates || [0, 0, 0]),
+    coordinates: coordinate || normalizeCoordinate([0, 0, 0]),
+    sourceTargetId: payload.sourceTargetId ? String(payload.sourceTargetId) : '',
+    sourceTargetName: payload.sourceTargetName ? String(payload.sourceTargetName) : '',
+    coordinateSource: payload.coordinateSource ? String(payload.coordinateSource) : '',
     importance,
     difficulty,
     priorityLevel: payload.priorityLevel || resolveTargetPriorityLevel(importance),
@@ -6315,13 +5211,164 @@ function buildTargetCandidate(payload = {}) {
   };
 }
 
+function normalizeTargetCandidateCoordinate(value = null) {
+  const source = safeObject(value);
+  const point = normalizeGeoPoint(value)
+    || normalizeGeoPoint(source.sourceTarget)
+    || normalizeGeoPoint(source.target)
+    || normalizeGeoPoint(source.meta);
+  return point ? normalizeCoordinate([round(point.lng, 6), round(point.lat, 6), 0]) : null;
+}
+
+function targetSourceLookupKeys(raw = {}) {
+  const keys = [];
+  const containers = [
+    safeObject(raw),
+    safeObject(raw.sourceTarget),
+    safeObject(raw.target),
+    safeObject(raw.meta),
+  ];
+  for (const container of containers) {
+    for (const field of [
+      'id',
+      'targetId',
+      'target_id',
+      'sourceUnitId',
+      'sourceTargetId',
+      'sourceTargetID',
+      'name',
+      'targetName',
+      'label',
+      'title',
+    ]) {
+      const key = battlePlannerTargetKey(container[field]);
+      if (key) keys.push(key);
+    }
+  }
+  return uniqueList(keys);
+}
+
+function buildThreatTargetCoordinateIndex(threatOutput = {}) {
+  const sources = [
+    ...safeArray(threatOutput.targetAssessments),
+    ...safeArray(threatOutput.targetEntities),
+    ...safeArray(threatOutput.fireCoverage),
+    ...safeArray(threatOutput.airDefenseSystem),
+    ...safeArray(threatOutput.reconEarlyWarning),
+    ...safeArray(threatOutput.antiAirborneFacilities),
+    ...safeArray(threatOutput.deploymentSectors),
+    ...safeArray(threatOutput.visualization?.entities)
+      .filter((item) => String(item.camp || '').toLowerCase() === 'red' && item.geometryType !== 'polyline'),
+  ];
+  const coordinateIndex = new Map();
+  for (const source of sources) {
+    const coordinate = normalizeTargetCandidateCoordinate(source);
+    if (!coordinate || !isUsableMapCoordinate(coordinate)) continue;
+    for (const key of targetSourceLookupKeys(source)) {
+      if (!coordinateIndex.has(key)) coordinateIndex.set(key, coordinate);
+    }
+  }
+  return coordinateIndex;
+}
+
+function resolveThreatTargetCoordinate(raw = {}, coordinateIndex = new Map()) {
+  const direct = normalizeTargetCandidateCoordinate(raw);
+  if (direct && isUsableMapCoordinate(direct)) return direct;
+  for (const key of targetSourceLookupKeys(raw)) {
+    const indexed = coordinateIndex.get(key);
+    if (indexed && isUsableMapCoordinate(indexed)) return cloneData(indexed);
+  }
+  return null;
+}
+
+function normalizeTargetAssessmentAllocationType(raw = {}) {
+  const category = String(raw.category || raw.sourceTarget?.category || raw.type || '').toLowerCase();
+  const subCategory = String(raw.subCategory || raw.sourceTarget?.subCategory || raw.targetType || '').toLowerCase();
+  const name = String(raw.name || raw.label || raw.title || '').toLowerCase();
+  const text = `${category} ${subCategory} ${name}`;
+  if (/(fire|artillery|rocket|mortar|indirect|火力|炮|火箭|迫击)/i.test(text)) return 'fire-coverage';
+  if (/(air[_-]?defense|manportable|防空|高炮|拦截)/i.test(text)) return 'air-defense';
+  if (/(recon|sensor|radar|warning|electronic|侦察|预警|雷达|传感|电子)/i.test(text)) return 'recon-warning';
+  if (/(fortification|obstacle|anti[_-]?airborne|engineer|障碍|工事|反机降|工程|雷场)/i.test(text)) return 'anti-airborne';
+  if (/(mobility|reserve|assembly|personnel|机动|预备|集结|人员)/i.test(text)) return 'deployment-sector';
+  return 'default';
+}
+
+function buildTargetAssessmentCandidate(item = {}, index = 0, coordinateIndex = new Map(), sourceLabel = '敌情目标评估') {
+  const type = normalizeTargetAssessmentAllocationType(item);
+  const coverage = safeObject(item.coverage || item.sourceTarget?.coverage);
+  const radiusKm = Number(coverage.radiusMeters || coverage.maxRadiusMeters || 0) / 1000;
+  const importance = round(clamp(Number(
+    item.valueScore
+    ?? item.priorityScore
+    ?? item.threatScore
+    ?? item.score
+    ?? 60,
+  ), 0, 100), 1);
+  const difficulty = round(clamp(
+    38 + Number(item.threatScore ?? item.confidenceScore ?? 0) * 0.28 + radiusKm * 1.4,
+    0,
+    100,
+  ), 1);
+  const sourceTarget = safeObject(item.sourceTarget);
+  const sourceTargetId = item.id || item.sourceUnitId || item.sourceTargetId || sourceTarget.id || '';
+  return buildTargetCandidate({
+    id: String(item.id || item.targetId || sourceTarget.id || `target-assessment-${index + 1}`),
+    name: item.name || item.label || sourceTarget.name || `敌情目标 ${index + 1}`,
+    type,
+    coordinates: resolveThreatTargetCoordinate(item, coordinateIndex),
+    sourceTargetId,
+    sourceTargetName: item.name || sourceTarget.name || '',
+    coordinateSource: sourceLabel,
+    importance,
+    difficulty,
+    priorityLevel: item.priorityLevel,
+    rationale: `${sourceLabel}提供的目标点，优先保留上游解析出的真实经纬度。`,
+  });
+}
+
+function dedupeTargetCandidates(targets = []) {
+  const seen = new Set();
+  const result = [];
+  for (const target of safeArray(targets)) {
+    const coordinates = normalizeTargetCandidateCoordinate(target.coordinates);
+    const coordinateKey = coordinates && isUsableMapCoordinate(coordinates)
+      ? `${round(coordinates[0], 4)}:${round(coordinates[1], 4)}`
+      : '';
+    const keys = [
+      target.sourceTargetId ? `source:${target.sourceTargetId}` : '',
+      target.id ? `id:${target.id}` : '',
+      target.name && coordinateKey ? `name-coordinate:${target.name}:${coordinateKey}` : '',
+    ].map(battlePlannerTargetKey).filter(Boolean);
+    if (keys.some((key) => seen.has(key))) continue;
+    keys.forEach((key) => seen.add(key));
+    result.push(target);
+  }
+  return result;
+}
+
 function buildCandidateTargets(threatOutput = {}) {
+  const coordinateIndex = buildThreatTargetCoordinateIndex(threatOutput);
   const targets = [
+    ...safeArray(threatOutput.targetAssessments).map((item, index) => (
+      buildTargetAssessmentCandidate(item, index, coordinateIndex, '敌情目标评估')
+    )),
+    ...safeArray(threatOutput.targetEntities).map((item, index) => (
+      buildTargetAssessmentCandidate(item, index, coordinateIndex, '敌情目标实体')
+    )),
+    ...safeArray(threatOutput.visualization?.entities)
+      .filter((item) => String(item.camp || '').toLowerCase() === 'red' && item.geometryType !== 'polyline')
+      .map((item, index) => (
+        buildTargetAssessmentCandidate(item, index, coordinateIndex, '敌情三维标注')
+      )),
     ...safeArray(threatOutput.fireCoverage).map((item, index) => buildTargetCandidate({
       id: `target-fire-${index + 1}`,
       name: item.name,
       type: 'fire-coverage',
-      coordinates: item.center,
+      coordinates: resolveThreatTargetCoordinate(item, coordinateIndex),
+      sourceTargetId: item.sourceUnitId || item.sourceTargetId || item.targetId || item.id || '',
+      sourceTargetName: item.name || '',
+      coordinateSource: '敌情火力覆盖',
       importance: round(clamp(Number(item.threatValue || 0), 0, 100), 1),
       difficulty: round(clamp(42 + Number(item.coverageKm || 0) * 2.2, 0, 100), 1),
       rationale: '优先压制敌火力覆盖范围，降低主攻方向受压制风险。',
@@ -6330,7 +5377,10 @@ function buildCandidateTargets(threatOutput = {}) {
       id: `target-airdef-${index + 1}`,
       name: item.name,
       type: 'air-defense',
-      coordinates: item.location,
+      coordinates: resolveThreatTargetCoordinate(item, coordinateIndex),
+      sourceTargetId: item.sourceUnitId || item.sourceTargetId || item.targetId || item.id || '',
+      sourceTargetName: item.name || '',
+      coordinateSource: '敌情防空体系',
       importance: round(clamp(68 + Number(item.strength || 0) * 0.22, 0, 100), 1),
       difficulty: round(clamp(58 + Number(item.coverageKm || 0) * 1.6, 0, 100), 1),
       rationale: '压制敌防空节点，释放我方平台突防与火力运用空间。',
@@ -6339,7 +5389,10 @@ function buildCandidateTargets(threatOutput = {}) {
       id: `target-recon-${index + 1}`,
       name: item.name,
       type: 'recon-warning',
-      coordinates: item.location,
+      coordinates: resolveThreatTargetCoordinate(item, coordinateIndex),
+      sourceTargetId: item.sourceUnitId || item.sourceTargetId || item.targetId || item.id || '',
+      sourceTargetName: item.name || '',
+      coordinateSource: '敌情侦察预警',
       importance: round(clamp(60 + Number(item.confidence || 0) * 0.18, 0, 100), 1),
       difficulty: round(clamp(44 + Number(item.coverageKm || 0) * 1.5, 0, 100), 1),
       rationale: '削弱敌侦察预警网络，减少我方行动暴露概率。',
@@ -6348,7 +5401,10 @@ function buildCandidateTargets(threatOutput = {}) {
       id: `target-anti-${index + 1}`,
       name: item.name,
       type: 'anti-airborne',
-      coordinates: item.location,
+      coordinates: resolveThreatTargetCoordinate(item, coordinateIndex),
+      sourceTargetId: item.sourceUnitId || item.sourceTargetId || item.targetId || item.id || '',
+      sourceTargetName: item.name || '',
+      coordinateSource: '敌情反机降设施',
       importance: round(clamp(54 + Number(item.confidence || 0) * 0.18, 0, 100), 1),
       difficulty: round(clamp(40 + Number(item.confidence || 0) * 0.16, 0, 100), 1),
       rationale: '打击重点阻滞设施，有利于打开机动和渗透通道。',
@@ -6357,14 +5413,18 @@ function buildCandidateTargets(threatOutput = {}) {
       id: `target-sector-${index + 1}`,
       name: `${item.name}集结区`,
       type: 'deployment-sector',
-      coordinates: item.center,
+      coordinates: resolveThreatTargetCoordinate(item, coordinateIndex),
+      sourceTargetId: item.sourceUnitId || item.sourceTargetId || item.targetId || item.id || '',
+      sourceTargetName: item.name || '',
+      coordinateSource: '敌情部署区',
       importance: round(clamp(50 + Number(item.unitCount || 0) * 4 + Number(item.averageStrength || 0) * 2, 0, 100), 1),
       difficulty: round(clamp(48 + Number(item.unitCount || 0) * 3, 0, 100), 1),
       rationale: '压制集结区能够破坏敌后续兵力展开与补充节奏。',
     })),
   ];
 
-  return [...targets].sort((left, right) => Number(right.compositePriority || 0) - Number(left.compositePriority || 0));
+  return dedupeTargetCandidates(targets)
+    .sort((left, right) => Number(right.compositePriority || 0) - Number(left.compositePriority || 0));
 }
 
 function buildTargetEntityKey(value = '') {
@@ -6403,10 +5463,34 @@ function resolvePlatformIntelligenceRecord(unit = {}, lookup = {}) {
   return null;
 }
 
-function resolvePlatformCoordinate(groupAnchor = [120.18, 30.28, 0], intelligenceItem = null, groupIndex = 0, unitIndex = 0) {
+function resolveCalculationCoordinate(item = null) {
+  const source = safeObject(item || {});
+  for (const key of ['operationalLocation', 'baseLocation']) {
+    const value = source[key];
+    if (Array.isArray(value) && value.length >= 2) {
+      return normalizeCoordinate(value);
+    }
+  }
+  return null;
+}
+
+function resolveDisplayCoordinate(item = null) {
+  const source = safeObject(item || {});
+  for (const key of ['displayLocation', 'location', 'coordinates']) {
+    const value = source[key];
+    if (Array.isArray(value) && value.length >= 2) {
+      return normalizeCoordinate(value);
+    }
+  }
+  return null;
+}
+
+function resolvePlatformCoordinate(groupAnchor = [120.18, 30.28, 0], intelligenceItem = null, groupIndex = 0, unitIndex = 0, unit = null) {
   if (intelligenceItem && (Number(intelligenceItem.longitude || 0) || Number(intelligenceItem.latitude || 0))) {
     return normalizeCoordinate([intelligenceItem.longitude, intelligenceItem.latitude, 0]);
   }
+  const calculationCoordinate = resolveCalculationCoordinate(unit);
+  if (calculationCoordinate) return calculationCoordinate;
   const lonOffset = ((unitIndex % 3) - 1) * 0.012 + ((groupIndex % 2) ? 0.004 : -0.004);
   const latOffset = (Math.floor(unitIndex / 3) * 0.008) - 0.006;
   return normalizeCoordinate(offsetCoordinate(groupAnchor, lonOffset, latOffset, 0));
@@ -6443,22 +5527,27 @@ function buildPlatformProfiles(forceGrouping = {}, dataset = {}, options = {}) {
     const matchedEntries = units
       .map((unit) => {
         const intelligenceItem = resolvePlatformIntelligenceRecord(unit, lookup);
-        if (!intelligenceItem) return null;
+        const calculatedCoordinate = intelligenceItem
+          ? normalizeCoordinate([intelligenceItem.longitude, intelligenceItem.latitude, 0])
+          : resolveCalculationCoordinate(unit);
+        if (!calculatedCoordinate) return null;
         return {
-          coordinates: [Number(intelligenceItem.longitude || 0), Number(intelligenceItem.latitude || 0), 0],
-          weight: Math.max(1, Number(unit.strength || intelligenceItem.strength || 1)),
+          coordinates: calculatedCoordinate,
+          weight: Math.max(1, Number(unit.strength || intelligenceItem?.strength || 1)),
         };
       })
       .filter(Boolean);
 
-    const groupAnchor = matchedEntries.length
+    const groupCalculationCoordinate = resolveCalculationCoordinate(group);
+    const groupDisplayCoordinate = resolveDisplayCoordinate(group);
+    const groupAnchor = groupCalculationCoordinate || (matchedEntries.length
       ? buildWeightedCenter(matchedEntries, fallbackAnchor)
       : normalizeCoordinate(offsetCoordinate(
         fallbackAnchor,
         ((groupIndex % 3) - 1) * 0.045,
         (Math.floor(groupIndex / 3) - 0.5) * 0.04,
         0,
-      ));
+      )));
 
     const groupPlatforms = units.map((unit, unitIndex) => {
       const intelligenceItem = resolvePlatformIntelligenceRecord(unit, lookup);
@@ -6501,7 +5590,11 @@ function buildPlatformProfiles(forceGrouping = {}, dataset = {}, options = {}) {
         mobility: round(Number(unitProfile.capability.mobility || 0), 1),
         readinessScore: round(Number(unitProfile.readinessScore || 0), 1),
         dominantMetric: unitProfile.dominantMetric,
-        coordinates: resolvePlatformCoordinate(groupAnchor, intelligenceItem, groupIndex, unitIndex),
+        coordinates: resolvePlatformCoordinate(groupAnchor, intelligenceItem, groupIndex, unitIndex, mergedUnit),
+        baseLocation: resolveCalculationCoordinate({ baseLocation: mergedUnit.baseLocation || group.baseLocation }) || groupAnchor,
+        operationalLocation: resolveCalculationCoordinate(mergedUnit) || resolveCalculationCoordinate(group) || groupAnchor,
+        displayLocation: resolveDisplayCoordinate(mergedUnit) || groupDisplayCoordinate || groupAnchor,
+        displayLocationKind: mergedUnit.displayLocationKind || group.displayLocationKind || '',
         engagementRangeKm: round(clamp(engagementRangeKm, 18, 150), 1),
         maxAssignments: clamp(Math.round((unitProfile.readinessScore + unitProfile.capability.endurance) / 100), 1, 2),
         groupMaxAssignments: requestedGroupLimit,
@@ -6533,6 +5626,8 @@ function buildPlatformProfiles(forceGrouping = {}, dataset = {}, options = {}) {
       mobility: round(Number(group.mobility || average(groupPlatforms.map((item) => item.mobility))), 1),
       readinessScore: round(average(groupPlatforms.map((item) => item.readinessScore)), 1),
       anchor: groupAnchor,
+      displayLocation: groupDisplayCoordinate || groupAnchor,
+      displayLocationKind: group.displayLocationKind || '',
       maxAssignments: requestedGroupLimit,
       units: groupPlatforms.map((item) => ({
         id: item.sourceUnitId || item.id,
@@ -7708,8 +6803,28 @@ function targetAllocationGroupSubtype(role = '') {
   return 'tank';
 }
 
+function buildTargetAllocationOriginalTargets(threatOutput = {}) {
+  return buildCandidateTargets(threatOutput)
+    .filter((target) => isUsableMapCoordinate(target.coordinates))
+    .map((target, index) => ({
+      id: String(target.sourceTargetId || target.id || `original-target-${index + 1}`),
+      allocationTargetId: String(target.id || ''),
+      name: String(target.name || target.sourceTargetName || `原始目标 ${index + 1}`),
+      type: String(target.type || ''),
+      typeLabel: String(target.typeLabel || target.type || '原始目标'),
+      coordinates: normalizeMapCoordinate(target.coordinates, 40),
+      priorityLevel: target.priorityLevel || '',
+      importance: target.importance,
+      difficulty: target.difficulty,
+      sourceTargetId: String(target.sourceTargetId || target.id || ''),
+      sourceTargetName: String(target.sourceTargetName || target.name || ''),
+      coordinateSource: target.coordinateSource || 'enemy-threat-analysis',
+    }));
+}
+
 function buildTargetAllocationVisualization(output = {}) {
   const targets = safeArray(output.candidateTargets);
+  const originalTargets = safeArray(output.originalTargets);
   const groups = safeArray(output.groups);
   const assignments = safeArray(output.preferredPlan?.assignments);
   const deploymentContexts = safeArray(output.deploymentContexts || output.targetClusters);
@@ -7719,6 +6834,21 @@ function buildTargetAllocationVisualization(output = {}) {
   const targetPointById = new Map();
   const entities = [];
   const environment = [];
+  const mapCoordinateKey = (coordinates = []) => (
+    isUsableMapCoordinate(coordinates)
+      ? `${round(Number(coordinates[0]), 5)}:${round(Number(coordinates[1]), 5)}`
+      : ''
+  );
+  const originalTargetKeys = new Set(originalTargets.flatMap((target) => [
+    String(target.id || ''),
+    String(target.allocationTargetId || ''),
+    String(target.sourceTargetId || ''),
+    String(target.name || ''),
+    String(target.sourceTargetName || ''),
+  ].filter(Boolean).map(battlePlannerTargetKey)));
+  const originalCoordinateKeys = new Set(originalTargets
+    .map((target) => mapCoordinateKey(target.coordinates))
+    .filter(Boolean));
 
   for (const assignment of assignments) {
     const groupId = String(assignment.groupId || '');
@@ -7748,11 +6878,14 @@ function buildTargetAllocationVisualization(output = {}) {
       geometryType: 'point',
       coordinates: point,
       radius: null,
-      annotation: `分配编组：${group.name || group.id}；角色：${group.role || group.normalizedRole || '--'}`,
+      annotation: `分配编组：${group.name || group.id}；角色：${group.role || group.normalizedRole || '--'}；${group.firepowerSummary || formatBattlePlannerFirepowerSummary(group.firepowerBreakdown || {})}`,
       visible: true,
       meta: {
         unitSubtype: targetAllocationGroupSubtype(group.role || group.normalizedRole),
         groupId: group.id,
+        firepower: group.firepower,
+        firepowerBreakdown: group.firepowerBreakdown || null,
+        showLabel: false,
       },
     });
   }
@@ -7760,6 +6893,10 @@ function buildTargetAllocationVisualization(output = {}) {
   for (const target of targets) {
     const point = targetPointById.get(String(target.id)) || (isUsableMapCoordinate(target.coordinates) ? normalizeMapCoordinate(target.coordinates, 40) : null);
     if (!point) continue;
+    const matchedOriginal = originalTargetKeys.has(battlePlannerTargetKey(target.id))
+      || originalTargetKeys.has(battlePlannerTargetKey(target.sourceTargetId))
+      || originalTargetKeys.has(battlePlannerTargetKey(target.name))
+      || originalCoordinateKeys.has(mapCoordinateKey(point));
     entities.push({
       id: `allocation-target-${target.id}`,
       name: target.name || `目标 ${target.id}`,
@@ -7771,11 +6908,39 @@ function buildTargetAllocationVisualization(output = {}) {
       coordinates: point,
       radius: null,
       annotation: `分配目标：${target.name || target.id}；类型：${target.typeLabel || target.type || '--'}；优先级：${target.priorityLevel || '--'}`,
-      visible: true,
+      visible: !matchedOriginal,
       meta: {
         unitSubtype: targetAllocationUnitSubtype(target.type || target.typeLabel),
         targetId: target.id,
         targetType: target.type,
+        showLabel: false,
+        coveredByOriginalTarget: matchedOriginal,
+      },
+    });
+  }
+
+  for (const target of originalTargets) {
+    const point = isUsableMapCoordinate(target.coordinates) ? normalizeMapCoordinate(target.coordinates, 70) : null;
+    if (!point) continue;
+    entities.push({
+      id: `allocation-original-target-${target.id}`,
+      name: `原始目标-${target.name || target.id}`,
+      type: 'unit',
+      camp: 'red',
+      layerKey: 'units',
+      color: '#ef4444',
+      geometryType: 'point',
+      coordinates: point,
+      radius: null,
+      annotation: `原始目标：${target.name || target.id}；类型：${target.typeLabel || target.type || '--'}；坐标来源：${target.coordinateSource || 'enemy-threat-analysis'}`,
+      visible: true,
+      meta: {
+        unitSubtype: targetAllocationUnitSubtype(target.type || target.typeLabel),
+        targetId: target.id,
+        allocationTargetId: target.allocationTargetId || '',
+        originalTarget: true,
+        coordinateSource: target.coordinateSource || '',
+        showLabel: true,
       },
     });
   }
@@ -7783,25 +6948,33 @@ function buildTargetAllocationVisualization(output = {}) {
   for (const [index, assignment] of assignments.entries()) {
     const groupPoint = groupPointById.get(String(assignment.groupId));
     const targetPoint = targetPointById.get(String(assignment.targetId));
-    if (!groupPoint || !targetPoint) continue;
+    const previousTargetPoint = assignment.previousTargetId ? targetPointById.get(String(assignment.previousTargetId)) : null;
+    const startPoint = previousTargetPoint || groupPoint;
+    if (!startPoint || !targetPoint) continue;
+    const isSequentialTarget = Boolean(previousTargetPoint);
     entities.push({
       id: `allocation-order-${assignment.id || index + 1}`,
-      name: `${assignment.groupName || '编组'} -> ${assignment.targetName || '目标'}`,
+      name: `${isSequentialTarget ? (assignment.previousTargetName || '前序目标') : (assignment.groupName || '编组')} -> ${assignment.targetName || '目标'}`,
       type: 'order',
       camp: 'blue',
       layerKey: 'orders',
       color: Number(assignment.wave || 1) === 1 ? '#facc15' : '#38bdf8',
       geometryType: 'polyline',
-      coordinates: [groupPoint, targetPoint],
+      coordinates: [startPoint, targetPoint],
       radius: null,
-      annotation: `波次 ${assignment.wave || '--'}；匹配分 ${assignment.matchScore ?? '--'}；可行性 ${assignment.feasibilityScore ?? '--'}；距离 ${assignment.distanceKm ?? '--'} km`,
+      annotation: `${isSequentialTarget ? `一波第 ${assignment.sequenceOrder || '--'} 目标；前序 ${assignment.previousTargetName || assignment.previousTargetId || '--'}；` : `波次 ${assignment.wave || '--'}；`}匹配分 ${assignment.matchScore ?? '--'}；可行性 ${assignment.feasibilityScore ?? '--'}；距离 ${assignment.distanceKm ?? '--'} km`,
       visible: true,
       meta: {
-        commandStyle: Number(assignment.wave || 1) === 1 ? 'assault' : 'transfer',
+        commandStyle: isSequentialTarget ? 'transfer' : 'assault',
         assignmentId: assignment.id,
         groupId: assignment.groupId,
         targetId: assignment.targetId,
+        previousTargetId: assignment.previousTargetId,
+        sequenceOrder: assignment.sequenceOrder,
+        sequenceDistanceKm: assignment.sequenceDistanceKm,
+        waveMode: assignment.waveMode || 'single-wave',
         wave: assignment.wave,
+        showLabel: false,
       },
     });
   }
@@ -7831,6 +7004,7 @@ function buildTargetAllocationVisualization(output = {}) {
     summary: {
       groupEntityCount: entities.filter((item) => item.id.startsWith('allocation-group-')).length,
       targetEntityCount: entities.filter((item) => item.id.startsWith('allocation-target-')).length,
+      originalTargetEntityCount: entities.filter((item) => item.id.startsWith('allocation-original-target-')).length,
       assignmentArrowCount: entities.filter((item) => item.id.startsWith('allocation-order-')).length,
       deploymentContextCount: environment.length,
     },
@@ -7838,15 +7012,49 @@ function buildTargetAllocationVisualization(output = {}) {
 }
 
 function mergeTargetAllocationVisualization(output = {}) {
-  const visualization = buildTargetAllocationVisualization(output);
   const preferredPlan = safeObject(output.preferredPlan);
+  const comparedPlans = safeArray(output.comparedPlans).map((plan) => {
+    const planVisualization = buildTargetAllocationVisualization({
+      ...output,
+      preferredPlan: plan,
+    });
+    return {
+      ...plan,
+      visualization: plan.visualization || planVisualization,
+    };
+  });
+  const visualizedPreferredPlan = comparedPlans.find((plan) => (
+    String(plan.id || '') === String(preferredPlan.id || '')
+    || (
+      String(plan.methodKey || '') === String(preferredPlan.methodKey || '')
+      && String(plan.strategyKey || '') === String(preferredPlan.strategyKey || '')
+    )
+  )) || {
+    ...preferredPlan,
+    visualization: preferredPlan.visualization || buildTargetAllocationVisualization(output),
+  };
+  const visualization = visualizedPreferredPlan.visualization || buildTargetAllocationVisualization({
+    ...output,
+    preferredPlan: visualizedPreferredPlan,
+  });
   return {
     ...output,
+    comparedPlans,
     visualization,
     preferredPlan: {
-      ...preferredPlan,
+      ...visualizedPreferredPlan,
       visualization,
     },
+  };
+}
+
+function resolveTargetAllocationAppliedOptions(input = {}) {
+  const objectivePreference = resolvePlanningStrategyKey(input.options?.planningPreference || input.options?.objectivePreference || 'balanced');
+  return {
+    objectivePreference,
+    planningPreference: objectivePreference,
+    validationMode: String(input.options?.validationMode || 'strict'),
+    maxAssignmentsPerGroup: clamp(Number(input.options?.maxAssignmentsPerGroup || 2), 1, 6),
   };
 }
 
@@ -7864,82 +7072,570 @@ function targetAllocationCoverageText(plan = {}) {
   return Number(value || 0);
 }
 
-async function executeIntelligentTargetAllocation(context, step, algorithm, input, appliedOptions, events, signal) {
-  const projectRoot = path.join(REPO_ROOT, 'algorithms', 'target-allocation');
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), `mission-target-allocation-${safeFileNamePart(step.id || algorithm.id)}-`));
-  try {
-    const upstreamThreat = safeObject(context.stageOutputs?.['enemy-threat-analysis']);
-    const upstreamGrouping = safeObject(context.stageOutputs?.['force-grouping']);
-    const upstreamThreatPath = await writeJsonFile(path.join(tempDir, 'inputs', 'upstream-threat.json'), upstreamThreat);
-    const upstreamGroupingPath = await writeJsonFile(path.join(tempDir, 'inputs', 'upstream-grouping.json'), upstreamGrouping);
-    const outputPath = path.join(tempDir, 'outputs', 'target-allocation.json');
-    const terrainDir = safeRuntimeText(input.options?.terrainDir || input.options?.terrainRoot || process.env.PLANNING_TERRAIN_ROOT || '');
-    const args = [
-      '-m',
-      'target_allocation.cli',
-      '--upstream-threat',
-      upstreamThreatPath,
-      '--upstream-grouping',
-      upstreamGroupingPath,
-      '--objective-preference',
-      appliedOptions.objectivePreference,
-      '--validation-mode',
-      appliedOptions.validationMode,
-      '--max-assignments-per-group',
-      String(appliedOptions.maxAssignmentsPerGroup),
-      '--output',
-      outputPath,
-    ];
-    if (terrainDir) {
-      args.push('--terrain-dir', path.isAbsolute(terrainDir) ? terrainDir : path.join(REPO_ROOT, terrainDir));
-    }
-
-    await runPythonProcess({
-      args,
-      cwd: REPO_ROOT,
-      env: appendPythonPath({}, projectRoot),
-      events,
-      signal,
-      step,
-      algorithm,
-      variant: {
-        id: 'target-allocation:builtin:intelligent-allocation',
-        name: '智能分配算法',
-      },
-      stdoutAsLlm: false,
-      terminalPrefix: '作战目标智能分配 Python 算法',
-    });
-
-    const structuredOutput = JSON.parse(await fs.readFile(outputPath, 'utf-8'));
-    if (structuredOutput?.ok === false) {
-      throw createPlanningRuntimeError({
-        code: String(structuredOutput.error?.code || 'PLANNING_ALGORITHM_FAILED'),
-        type: String(structuredOutput.error?.type || 'algorithm_failed'),
-        status: 502,
-        message: String(structuredOutput.error?.message || '智能分配算法执行失败。'),
-        details: {
-          stepId: step.id,
-          algorithmId: algorithm.id,
-          methodKey: TARGET_INTELLIGENT_METHOD_KEY,
-          error: structuredOutput.error || {},
-        },
+function buildBattlePlannerPlatformsForAllocation(groups = []) {
+  const platforms = [];
+  for (const group of safeArray(groups)) {
+    for (const unit of safeArray(group.units || group.platforms)) {
+      platforms.push({
+        id: String(unit.id || `${group.id}-${platforms.length + 1}`),
+        name: String(unit.name || unit.model || `平台 ${platforms.length + 1}`),
+        model: String(unit.model || unit.name || ''),
+        role: String(unit.role || group.role || 'task-platform'),
+        roleLabel: String(unit.roleLabel || unit.category || battlePlannerPlatformRoleLabel(unit.role || group.role)),
+        groupId: String(group.id || ''),
+        groupName: String(group.name || ''),
+        count: Number(unit.count || unit.unitCount || 0),
+        coordinates: unit.coordinates || group.coordinates,
+        weaponLoadout: safeArray(unit.weaponLoadout),
+        personnelLoadout: safeArray(unit.personnelLoadout),
+        cargoLoadout: safeArray(unit.cargoLoadout),
       });
     }
-
-    return mergeTargetAllocationVisualization(structuredOutput);
-  } finally {
-    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => {});
   }
+  return platforms;
+}
+
+function resolveBattlePlannerAllocationTargets(threatOutput = {}, forceGrouping = {}) {
+  const upstreamTargetMaps = buildBattlePlannerTargetMaps(threatOutput);
+  const candidateTargets = safeArray(forceGrouping.candidateTargets).length
+    ? safeArray(forceGrouping.candidateTargets)
+    : upstreamTargetMaps.targets;
+  const byId = new Map();
+  const byName = new Map();
+  for (const [index, target] of candidateTargets.entries()) {
+    const point = normalizeGeoPoint(target);
+    const upstreamMatch = resolveBattlePlannerTarget(target.sourceTargetId || target.id, upstreamTargetMaps)
+      || resolveBattlePlannerTarget(target.name, upstreamTargetMaps);
+    const directCoordinates = isUsableMapCoordinate(target.coordinates)
+      ? normalizeMapCoordinate(target.coordinates, 0)
+      : point
+        ? [point.lng, point.lat, 0]
+        : null;
+    const upstreamCoordinates = isUsableMapCoordinate(upstreamMatch?.coordinates)
+      ? normalizeMapCoordinate(upstreamMatch.coordinates, 0)
+      : null;
+    const resolvedCoordinates = upstreamCoordinates || directCoordinates || undefined;
+    const normalized = {
+      ...target,
+      id: String(target.id || `battle-target-${index + 1}`),
+      name: String(target.name || target.label || `目标 ${index + 1}`),
+      coordinates: resolvedCoordinates,
+      sourceTargetId: target.sourceTargetId || upstreamMatch?.sourceTargetId || '',
+      sourceTargetName: target.sourceTargetName || upstreamMatch?.sourceTargetName || '',
+      coordinateSource: upstreamCoordinates
+        ? (upstreamMatch?.coordinateSource || 'upstream-threat')
+        : directCoordinates
+          ? (target.coordinateSource || 'force-grouping-candidate')
+          : (target.coordinateSource || ''),
+    };
+    byId.set(battlePlannerTargetKey(normalized.id), normalized);
+    if (normalized.sourceTargetId) byId.set(battlePlannerTargetKey(normalized.sourceTargetId), normalized);
+    byName.set(battlePlannerTargetKey(normalized.name), normalized);
+    if (normalized.sourceTargetName) byName.set(battlePlannerTargetKey(normalized.sourceTargetName), normalized);
+  }
+  return {
+    targets: [...byId.values()],
+    byId,
+    byName,
+  };
+}
+
+function resolveBattlePlannerAssignmentTarget(targetName = '', targetMaps = {}, index = 0) {
+  const matched = resolveBattlePlannerTarget(targetName, targetMaps);
+  if (matched) return matched;
+  const fallback = {
+    id: `battle-target-fallback-${index + 1}`,
+    name: String(targetName || `目标 ${index + 1}`),
+    type: 'battle-planner-target',
+    typeLabel: 'Battle Planner 目标',
+    priorityLevel: '三级',
+    importance: 60,
+    difficulty: 50,
+    coordinates: buildBattlePlannerFallbackCoordinate(index),
+  };
+  targetMaps.byId?.set(battlePlannerTargetKey(fallback.id), fallback);
+  targetMaps.byName?.set(battlePlannerTargetKey(fallback.name), fallback);
+  targetMaps.targets?.push(fallback);
+  return fallback;
+}
+
+function resolveBattlePlannerGroupingScheme(forceGrouping = {}, strategyKey = 'balanced') {
+  const normalizedStrategyKey = resolvePlanningStrategyKey(strategyKey);
+  const schemes = safeArray(forceGrouping.schemes);
+  return schemes.find((scheme) => resolvePlanningStrategyKey(scheme.strategyKey || scheme.id) === normalizedStrategyKey)
+    || safeObject(forceGrouping.preferredScheme)
+    || safeObject(forceGrouping.systemBestScheme);
+}
+
+function battlePlannerAssignmentTargetKeys(target = {}) {
+  return [
+    target.id,
+    target.name,
+    target.sourceTargetId,
+    target.sourceTargetName,
+  ].map(battlePlannerTargetKey).filter(Boolean);
+}
+
+function battlePlannerGroupResponsibleTargetKeys(group = {}) {
+  return [
+    ...safeArray(group.targetIds),
+    ...safeArray(group.targetNames),
+    ...safeArray(group.responsibleTargets),
+  ].map(battlePlannerTargetKey).filter(Boolean);
+}
+
+function battlePlannerTargetRequiredGroupCount(target = {}, profile = PLANNING_STRATEGY_PROFILES.balanced, groups = []) {
+  if (profile.key !== 'loss-minimized') return 1;
+  const highRisk = Number(target.importance || target.valueScore || 0) >= 72
+    || Number(target.difficulty || 0) >= 58
+    || /防空|火力|air-defense|fire/i.test(String(target.type || target.typeLabel || ''));
+  return highRisk && safeArray(groups).length > 1 ? 2 : 1;
+}
+
+function battlePlannerGroupResourceCost(group = {}) {
+  const unitCost = Number(group.unitCount || group.platformCount || 0);
+  const weaponCost = sumBy(safeArray(group.weapons), (item) => Number(item.quantity || 0)) * 0.02;
+  const personnelCost = sumBy(safeArray(group.personnel), (item) => Number(item.count || 0)) * 0.015;
+  return round(unitCost + weaponCost + personnelCost, 2);
+}
+
+function buildBattlePlannerGroupTargetCandidate(group = {}, target = {}, profile = PLANNING_STRATEGY_PROFILES.balanced, targetMaps = {}, existingAssignments = [], state = {}) {
+  const groupCoordinates = isUsableMapCoordinate(group.coordinates)
+    ? normalizeMapCoordinate(group.coordinates, 80)
+    : buildBattlePlannerGroupCoordinate(group, existingAssignments.length, targetMaps);
+  const targetCoordinates = isUsableMapCoordinate(target.coordinates)
+    ? normalizeMapCoordinate(target.coordinates, 40)
+    : buildBattlePlannerFallbackCoordinate(existingAssignments.length);
+  const distanceKm = round(haversineDistanceKm(groupCoordinates, targetCoordinates), 1);
+  const reachUtilization = round(distanceKm / 120, 3);
+  const rangeScore = clamp(100 - Math.max(0, reachUtilization - 0.55) * 62 - Math.max(0, reachUtilization - 1) * 180, 0, 100);
+  const groupKeys = new Set(battlePlannerGroupResponsibleTargetKeys(group));
+  const targetMatched = battlePlannerAssignmentTargetKeys(target).some((key) => groupKeys.has(key));
+  let roleFit = targetMatched ? 96 : 58;
+  const roleText = `${group.role || ''} ${group.normalizedRole || ''} ${group.taskType || ''} ${target.type || ''} ${target.typeLabel || ''}`.toLowerCase();
+  if (/防空|air-defense/.test(roleText) && /(strike|cover|火力|压制|防空)/i.test(roleText)) roleFit += 10;
+  if (/侦察|recon|radar|预警/.test(roleText) && /(recon|侦察)/i.test(roleText)) roleFit += 8;
+  if (/机动|集结|deployment|transport/.test(roleText) && /(mobility|transport|机动|运输)/i.test(roleText)) roleFit += 6;
+  roleFit = clamp(roleFit, 0, 100);
+
+  const estimatedLossPercent = Number(group.estimatedLossRate || 0) * 100;
+  const resourceCost = battlePlannerGroupResourceCost(group);
+  const currentGroupLoad = Number(state.groupLoads?.get(group.id) || 0);
+  const targetAssignments = safeArray(existingAssignments).filter((item) => item.targetId === target.id);
+  const introducesNewGroup = currentGroupLoad <= 0;
+  const collaborationBonus = targetAssignments.some((item) => item.groupId !== group.id)
+    ? Number(profile.allocation.collaborationBonus || 0)
+    : 0;
+  const loadPenalty = currentGroupLoad * Number(profile.allocation.loadPenalty || 0);
+  const resourcePenalty = resourceCost * Number(profile.allocation.resourcePenalty || 0);
+  const lossPenalty = estimatedLossPercent * Number(profile.allocation.lossPenalty || 0) * 0.1;
+  const resourceReuseAdjustment = introducesNewGroup
+    ? -Number(profile.allocation.newGroupPenalty || 0)
+    : Number(profile.allocation.reusedGroupBonus || 0);
+  const survivabilityScore = clamp(100 - estimatedLossPercent * 4 - Math.max(0, reachUtilization - 0.75) * 60, 0, 100);
+  const matchScore = round(clamp(
+    roleFit * 0.24
+    + Number(group.firepower || 0) * 0.2
+    + Number(group.mobility || 0) * 0.12
+    + Number(group.endurance || 0) * 0.08
+    + Number(target.importance || target.valueScore || 60) * 0.16
+    + rangeScore * 0.16
+    - Number(target.difficulty || 0) * 0.08
+    + (targetMatched ? 8 : 0),
+    0,
+    100,
+  ), 1);
+  const feasibilityScore = round(clamp(
+    rangeScore * 0.32
+    + survivabilityScore * 0.26
+    + roleFit * 0.16
+    + Number(group.mobility || 0) * 0.1
+    + Number(group.endurance || 0) * 0.08
+    + Number(group.firepower || 0) * 0.08
+    - Number(target.difficulty || 0) * 0.08,
+    0,
+    100,
+  ), 1);
+  const objectiveScore = round(clamp(
+    matchScore * 0.34
+    + feasibilityScore * 0.28
+    + survivabilityScore * Number(profile.allocation.weights.survivability || 0)
+    + Number(target.importance || 0) * 0.12
+    + collaborationBonus
+    + resourceReuseAdjustment
+    - loadPenalty
+    - resourcePenalty
+    - lossPenalty,
+    0,
+    120,
+  ), 2);
+
+  return {
+    groupCoordinates,
+    targetCoordinates,
+    distanceKm,
+    reachUtilization,
+    rangeScore: round(rangeScore, 1),
+    roleFit: round(roleFit, 1),
+    matchScore,
+    feasibilityScore,
+    survivabilityScore: round(survivabilityScore, 1),
+    resourceCost,
+    objectiveScore,
+    targetMatched,
+  };
+}
+
+function createBattlePlannerStrategyAssignment(group = {}, target = {}, candidate = {}, assignments = [], assignedCount = 0, profile = PLANNING_STRATEGY_PROFILES.balanced) {
+  return {
+    id: `battle-assignment-${profile.key}-${assignments.length + 1}`,
+    methodKey: TARGET_INTELLIGENT_METHOD_KEY,
+    strategyKey: profile.key,
+    strategyLabel: profile.label,
+    groupId: String(group.id || ''),
+    groupName: String(group.name || ''),
+    groupRole: group.role || group.normalizedRole || '',
+    targetId: target.id,
+    targetName: target.name,
+    targetType: target.type || target.typeLabel || '',
+    wave: 1,
+    sequenceOrder: assignedCount + 1,
+    waveMode: 'single-wave',
+    matchScore: candidate.matchScore,
+    feasibilityScore: candidate.feasibilityScore,
+    distanceKm: candidate.distanceKm,
+    reachUtilization: candidate.reachUtilization,
+    groupFirepower: round(Number(group.firepower || 0), 1),
+    groupFirepowerBreakdown: group.firepowerBreakdown || null,
+    firepowerSummary: group.firepowerSummary || formatBattlePlannerFirepowerSummary(group.firepowerBreakdown || {}),
+    groupMobility: round(Number(group.mobility || 0), 1),
+    groupEstimatedLossRate: round(Number(group.estimatedLossRate || 0), 3),
+    groupResourceCost: candidate.resourceCost,
+    groupCoordinates: candidate.groupCoordinates,
+    targetCoordinates: candidate.targetCoordinates,
+    routeStartCoordinates: candidate.groupCoordinates,
+    routeEndCoordinates: candidate.targetCoordinates,
+    platformIds: safeArray(group.units).map((unit) => unit.id).filter(Boolean),
+    reason: [
+      profile.description,
+      group.disposition || group.expectedEffect || 'battle_planner 编组阶段提供候选处置关系。',
+      candidate.targetMatched ? '命中编组原始负责目标。' : '跨目标策略重分配。',
+    ].filter(Boolean).join(' '),
+  };
+}
+
+function buildBattlePlannerAssignments(forceGrouping = {}, threatOutput = {}, appliedOptions = {}, strategyValue = 'balanced') {
+  const profile = resolvePlanningStrategyProfile(strategyValue || appliedOptions.objectivePreference);
+  const selectedScheme = resolveBattlePlannerGroupingScheme(forceGrouping, profile.key);
+  const groups = safeArray(selectedScheme.groups).filter((group) => !group.isReserve);
+  const targetMaps = resolveBattlePlannerAllocationTargets(threatOutput, forceGrouping);
+  for (const group of groups) {
+    const rawTargets = [
+      ...safeArray(group.targetNames),
+      ...safeArray(group.responsibleTargets),
+      ...safeArray(group.targetIds),
+    ];
+    rawTargets.forEach((rawTarget) => resolveBattlePlannerAssignmentTarget(rawTarget, targetMaps, targetMaps.targets.length));
+  }
+  const targets = safeArray(targetMaps.targets).filter((target) => isUsableMapCoordinate(target.coordinates));
+  const assignments = [];
+  const state = {
+    groupLoads: new Map(groups.map((group) => [group.id, 0])),
+    targetLoads: new Map(targets.map((target) => [target.id, 0])),
+    assignmentKeys: new Set(),
+  };
+  const validationFindings = [];
+  const blockedKeys = new Set();
+  const targetRequirements = new Map(targets.map((target) => [
+    target.id,
+    battlePlannerTargetRequiredGroupCount(target, profile, groups),
+  ]));
+  const maxAssignmentsPerGroup = clamp(
+    Number(appliedOptions.maxAssignmentsPerGroup || 2) + Number(profile.allocation.maxAssignmentsDelta || 0),
+    1,
+    6,
+  );
+
+  const orderedTargets = [...targets].sort((left, right) => (
+    Number(right.importance || 0) - Number(left.importance || 0)
+    || Number(right.difficulty || 0) - Number(left.difficulty || 0)
+  ));
+
+  for (const target of orderedTargets) {
+    const requiredGroupCount = Number(targetRequirements.get(target.id) || 1);
+    while (Number(state.targetLoads.get(target.id) || 0) < requiredGroupCount) {
+      const candidates = groups.map((group) => {
+        const assignmentKey = `${group.id}:${target.id}`;
+        if (state.assignmentKeys.has(assignmentKey)) return null;
+        if (Number(state.groupLoads.get(group.id) || 0) >= maxAssignmentsPerGroup) return null;
+        const fireStrikeBlocked = isBattlePlannerFireStrikeTask(group.taskType)
+          && !group.assignmentEligibleForStrike;
+        if (fireStrikeBlocked) {
+          if (!blockedKeys.has(assignmentKey)) {
+            blockedKeys.add(assignmentKey);
+            validationFindings.push({
+              level: 'fail',
+              title: '火力打击缺少武器装载',
+              detail: `${group.name || group.id} 承担 ${target.name}，但未装载武器，不能生成火力打击分配。`,
+              groupId: group.id,
+              groupName: group.name,
+              targetId: target.id,
+              targetName: target.name,
+              strategyKey: profile.key,
+            });
+          }
+          return null;
+        }
+        const candidate = buildBattlePlannerGroupTargetCandidate(group, target, profile, targetMaps, assignments, state);
+        if (candidate.matchScore < 24 || candidate.feasibilityScore < 24) return null;
+        return { group, target, candidate };
+      }).filter(Boolean);
+
+      if (!candidates.length) break;
+      const selected = candidates
+        .sort((left, right) => Number(right.candidate.objectiveScore || 0) - Number(left.candidate.objectiveScore || 0))[0];
+      if (!selected) break;
+      const assignedCount = Number(state.groupLoads.get(selected.group.id) || 0);
+      const assignment = createBattlePlannerStrategyAssignment(
+        selected.group,
+        target,
+        selected.candidate,
+        assignments,
+        assignedCount,
+        profile,
+      );
+      assignments.push(assignment);
+      state.groupLoads.set(selected.group.id, assignedCount + 1);
+      state.targetLoads.set(target.id, Number(state.targetLoads.get(target.id) || 0) + 1);
+      state.assignmentKeys.add(`${selected.group.id}:${target.id}`);
+    }
+  }
+
+  const coverage = targets.map((target) => {
+    const items = assignments.filter((assignment) => assignment.targetId === target.id);
+    const involvedGroups = uniqueList(items.map((item) => item.groupName));
+    const requiredPlatformCount = Number(targetRequirements.get(target.id) || 1);
+    const blockedGroupNames = validationFindings
+      .filter((item) => item.targetId === target.id)
+      .map((item) => item.groupName)
+      .filter(Boolean);
+    return {
+      id: target.id,
+      targetId: target.id,
+      name: target.name,
+      targetName: target.name,
+      importance: Number(target.importance || target.valueScore || 60),
+      requiredPlatformCount,
+      assignedPlatformCount: items.length,
+      involvedGroupCount: involvedGroups.length,
+      groups: uniqueList(items.map((item) => item.groupId)),
+      blockedGroupNames,
+      fullyCovered: items.length >= requiredPlatformCount,
+      remainingPlatformCount: Math.max(0, requiredPlatformCount - items.length),
+      averageMatchScore: round(average(items.map((item) => item.matchScore)), 1),
+      averageFeasibilityScore: round(average(items.map((item) => item.feasibilityScore)), 1),
+    };
+  });
+
+  const groupLoads = groups.map((group) => {
+    const assignedCount = Number(state.groupLoads.get(group.id) || 0);
+    return {
+      id: group.id,
+      name: group.name,
+      assignmentCount: assignedCount,
+      maxAssignmentCount: maxAssignmentsPerGroup,
+      loadRatio: round(assignedCount / Math.max(1, maxAssignmentsPerGroup), 3),
+      overloaded: assignedCount > maxAssignmentsPerGroup,
+      firepower: round(Number(group.firepower || 0), 1),
+      firepowerBreakdown: group.firepowerBreakdown || null,
+    };
+  });
+
+  const fullCoverRate = round((coverage.filter((item) => item.fullyCovered).length / Math.max(1, coverage.length)) * 100, 1);
+  const averageMatchScore = round(average(assignments.map((item) => item.matchScore)), 1);
+  const averageFeasibilityScore = round(average(assignments.map((item) => item.feasibilityScore)), 1);
+  const averageGroupFirepower = round(average(groups.map((item) => item.firepower)), 1);
+  const averageWeaponEquipmentPower = round(average(groups.map((item) => item.firepowerBreakdown?.weaponEquipmentPower)), 1);
+  const averageTransportPersonnelPower = round(average(groups.map((item) => item.firepowerBreakdown?.transportPersonnelPower)), 1);
+  const usedGroupIds = uniqueList(assignments.map((item) => item.groupId));
+  const usedUnitCount = sumBy(groups.filter((group) => usedGroupIds.includes(String(group.id))), (group) => Number(group.unitCount || group.platformCount || 0));
+  const averageAssignedLossPercent = round(average(assignments.map((item) => Number(item.groupEstimatedLossRate || 0) * 100)), 1);
+  const loadBalance = round(100 - average(groupLoads.map((item) => Math.max(0, Number(item.loadRatio || 0) - 1) * 100)), 1);
+  const survivabilityScore = clamp(100 - averageAssignedLossPercent * 3.5 - validationFindings.length * 4, 0, 100);
+  const resourceScore = clamp(100 - usedUnitCount * 2.2 - assignments.length * 3, 0, 100);
+  const weights = normalizeWeights(profile.allocation.weights);
+  const score = round(clamp(
+    fullCoverRate * Number(weights.coverage || 0)
+    + averageMatchScore * Number(weights.match || 0)
+    + averageFeasibilityScore * Number(weights.feasibility || 0)
+    + survivabilityScore * Number(weights.survivability || 0)
+    + resourceScore * Number(weights.resource || 0)
+    + loadBalance * Number(weights.balance || 0)
+    - validationFindings.length * 2,
+    0,
+    100,
+  ), 1);
+  const plan = {
+    id: `battle-planner-allocation-${profile.key}`,
+    methodKey: TARGET_INTELLIGENT_METHOD_KEY,
+    methodLabel: `${TARGET_INTELLIGENT_METHOD.label}·${profile.label}`,
+    name: profile.methodSuffix,
+    strategyKey: profile.key,
+    strategyLabel: profile.label,
+    description: profile.description,
+    score,
+    assignments,
+    coverage,
+    groupLoads,
+    platformLoads: [],
+    stats: {
+      fullCoverRate,
+      coverRate: fullCoverRate,
+      assignmentCount: assignments.length,
+      coveredTargetCount: coverage.filter((item) => item.fullyCovered).length,
+      targetCount: targetMaps.targets.length,
+      blockedAssignmentCount: validationFindings.length,
+      averageGroupFirepower,
+      averageWeaponEquipmentPower,
+      averageTransportPersonnelPower,
+      usedGroupCount: usedGroupIds.length,
+      usedUnitCount,
+      averageAssignedLossPercent,
+      resourceScore: round(resourceScore, 1),
+      survivabilityScore: round(survivabilityScore, 1),
+    },
+    metrics: {
+      targetCoverageRate: fullCoverRate,
+      averageMatchScore,
+      averageFeasibilityScore,
+      averageGroupFirepower,
+      averageWeaponEquipmentPower,
+      averageTransportPersonnelPower,
+      usedGroupCount: usedGroupIds.length,
+      usedUnitCount,
+      averageAssignedLossPercent,
+      resourceScore: round(resourceScore, 1),
+      survivabilityScore: round(survivabilityScore, 1),
+    },
+    objectives: {
+      fullCoverRate,
+      matchScore: averageMatchScore,
+      feasibilityScore: averageFeasibilityScore,
+      firepowerScore: averageGroupFirepower,
+      loadBalance,
+      survivabilityScore: round(survivabilityScore, 1),
+      resourceScore: round(resourceScore, 1),
+    },
+    validationFindings,
+  };
+
+  return {
+    targets: targetMaps.targets,
+    groups,
+    platforms: buildBattlePlannerPlatformsForAllocation(groups),
+    plan,
+  };
+}
+
+function buildBattlePlannerTargetAllocationOutput(context = {}, input = {}, appliedOptions = {}) {
+  const threatOutput = safeObject(context.stageOutputs?.['enemy-threat-analysis']);
+  const forceGrouping = safeObject(context.stageOutputs?.['force-grouping']);
+  if (!forceGrouping.preferredScheme && !forceGrouping.battlePlannerResult) {
+    throw createPlanningRuntimeError({
+      code: 'PLANNING_MISSING_UPSTREAM',
+      type: 'missing_upstream',
+      status: 400,
+      message: '智能分配算法缺少 Battle Planner 编组结果，请先完成作战力量智能编组。',
+      details: { algorithmId: 'target-allocation', missingFrom: ['force-grouping'] },
+    });
+  }
+  const validationProfile = resolveTargetValidationProfile(appliedOptions.validationMode);
+  const preferredStrategy = resolvePlanningStrategyProfile(appliedOptions.objectivePreference || appliedOptions.planningPreference);
+  const strategyResults = resolvePlanningStrategyProfiles(preferredStrategy.key).map((profile) => (
+    buildBattlePlannerAssignments(forceGrouping, threatOutput, appliedOptions, profile.key)
+  ));
+  const preferredResult = strategyResults.find((result) => result.plan.strategyKey === preferredStrategy.key) || strategyResults[0] || {};
+  const { targets = [], groups = [], platforms = [], plan = {} } = preferredResult;
+  const plans = strategyResults.map((result) => result.plan).filter(Boolean);
+  const systemBestPlan = sortByScore(plans, 'score')[0] || plan;
+  const originalTargets = buildTargetAllocationOriginalTargets(threatOutput);
+  const planValidationFindings = safeArray(plan.validationFindings);
+  const validation = planValidationFindings.length
+    ? [
+      ...planValidationFindings,
+      ...validateAllocationPlan(plan, targets, platforms, groups, appliedOptions, validationProfile)
+        .filter((item) => item.level !== 'pass'),
+    ]
+    : validateAllocationPlan(plan, targets, platforms, groups, appliedOptions, validationProfile);
+  const validationStatus = validation.some((item) => item.level === 'fail')
+    ? 'fail'
+    : validation.some((item) => item.level === 'warn')
+      ? 'warn'
+      : 'pass';
+  const output = {
+    ok: true,
+    implementationStatus: 'implemented',
+    builtinMethodKey: TARGET_INTELLIGENT_METHOD_KEY,
+    builtinMethodLabel: TARGET_INTELLIGENT_METHOD.label,
+    preferredPlanMethodKey: plan.methodKey || TARGET_INTELLIGENT_METHOD_KEY,
+    preferredPlanId: plan.id || '',
+    preferredStrategyKey: plan.strategyKey || preferredStrategy.key,
+    appliedOptions,
+    validationProfile,
+    planningBasis: {
+      source: 'battlePlannerResult.task_groups',
+      battlePlannerAvailable: Boolean(forceGrouping.battlePlannerResult),
+      groupingSchemeId: forceGrouping.preferredSchemeId || forceGrouping.preferredScheme?.id || '',
+    },
+    candidateTargets: targets,
+    originalTargets,
+    platforms,
+    groups,
+    comparedPlans: plans,
+    preferredPlan: plan,
+    systemBestPlanMethodKey: systemBestPlan.methodKey,
+    systemBestPlanId: systemBestPlan.id || '',
+    systemBestPlan,
+    validationSummary: {
+      status: validationStatus,
+      issueCount: validation.filter((item) => item.level !== 'pass').length,
+    },
+    validation,
+    validationFindings: validation,
+    adjustmentSuggestions: buildAdjustmentSuggestions(validation, plan, plans, validationProfile),
+  };
+  return mergeTargetAllocationVisualization(output);
+}
+
+async function executeLocalTargetAllocation(variant, task, step, algorithm, context, payload, input, tempDir, events, signal) {
+  const appliedOptions = resolveTargetAllocationAppliedOptions(input);
+  const intelligentOutput = buildBattlePlannerTargetAllocationOutput(context, input, appliedOptions);
+  const preferredPlan = safeObject(intelligentOutput.preferredPlan);
+  const validation = safeArray(intelligentOutput.validationFindings || intelligentOutput.validation);
+  const outputTargets = safeArray(intelligentOutput.candidateTargets);
+  const outputPlatforms = safeArray(intelligentOutput.platforms);
+  const outputGroups = safeArray(intelligentOutput.groups);
+
+  return {
+    summary: `已通过${variant.projectName || variant.name || TARGET_INTELLIGENT_METHOD.label}完成目标分配，并输出 ${preferredPlan.methodLabel || TARGET_INTELLIGENT_METHOD.label} 推荐方案。`,
+    outputPreview: [
+      `候选目标 ${outputTargets.length} 个 / 可用平台 ${outputPlatforms.length} 个 / 涉及编组 ${outputGroups.length} 个`,
+      `推荐分配方法：${preferredPlan.methodLabel || TARGET_INTELLIGENT_METHOD.label}（评分 ${preferredPlan.score ?? '--'}，全覆盖率 ${targetAllocationCoverageText(preferredPlan)}%）`,
+      validation[0] ? `合理性校核：${validation[0].label || validation[0].title || validation[0].id || '已完成'}` : '合理性校核待执行',
+    ],
+    artifacts: [
+      createArtifact('智能目标分配方案', '复用 battle_planner 编组结果输出编组到目标的链路化分配结果。'),
+      createArtifact('合理性验证结果', '对目标覆盖、距离软约束、任务可行性和编组负荷进行校核。'),
+      createArtifact('目标分配态势图层', '输出蓝方编组、红方目标、部署区上下文和分配箭头，可在单算法结果页三维展示。'),
+    ],
+    structuredOutput: intelligentOutput,
+  };
 }
 
 async function runBuiltinTargetAllocation(context, step, algorithm, input, dataset, events = null, signal = null) {
   const threatOutput = safeObject(context.stageOutputs['enemy-threat-analysis']);
   const forceGrouping = safeObject(context.stageOutputs['force-grouping']);
-  const appliedOptions = {
-    objectivePreference: String(input.options?.objectivePreference || 'balanced'),
-    validationMode: String(input.options?.validationMode || 'strict'),
-    maxAssignmentsPerGroup: clamp(Number(input.options?.maxAssignmentsPerGroup || 2), 1, 6),
-  };
+  const appliedOptions = resolveTargetAllocationAppliedOptions(input);
   const validationProfile = resolveTargetValidationProfile(appliedOptions.validationMode);
   const targets = buildCandidateTargets(threatOutput);
   const { platforms, groups } = buildPlatformProfiles(forceGrouping, dataset, appliedOptions);
@@ -7951,7 +7647,7 @@ async function runBuiltinTargetAllocation(context, step, algorithm, input, datas
   let intelligentOutput = null;
   let comparedPlans = plans;
   if (input.builtinMethodKey === TARGET_INTELLIGENT_METHOD_KEY) {
-    intelligentOutput = await executeIntelligentTargetAllocation(context, step, algorithm, input, appliedOptions, events, signal);
+    intelligentOutput = buildBattlePlannerTargetAllocationOutput(context, input, appliedOptions);
     const intelligentPlan = safeObject(intelligentOutput.preferredPlan);
     comparedPlans = intelligentPlan.methodKey ? [...plans, intelligentPlan] : plans;
   }
@@ -7972,6 +7668,9 @@ async function runBuiltinTargetAllocation(context, step, algorithm, input, datas
       ? 'warn'
       : 'pass';
   const outputTargets = intelligentOutput ? safeArray(intelligentOutput.candidateTargets) : targets;
+  const outputOriginalTargets = intelligentOutput
+    ? safeArray(intelligentOutput.originalTargets)
+    : buildTargetAllocationOriginalTargets(threatOutput);
   const outputPlatforms = intelligentOutput ? safeArray(intelligentOutput.platforms) : platforms;
   const outputGroups = intelligentOutput ? safeArray(intelligentOutput.groups) : groups;
   const outputValidationSummary = intelligentOutput
@@ -7987,10 +7686,12 @@ async function runBuiltinTargetAllocation(context, step, algorithm, input, datas
     outputPreview: [
       `候选目标 ${outputTargets.length} 个 / 可用平台 ${outputPlatforms.length} 个 / 涉及编组 ${outputGroups.length} 个`,
       `推荐分配方法：${preferredPlan.methodLabel}（评分 ${preferredPlan.score}，全覆盖率 ${targetAllocationCoverageText(preferredPlan)}%）`,
-      validation[0] ? `合理性校核：${validation[0].title}（${validationProfile.label}）` : '合理性校核待执行',
+      validation[0] ? `合理性校核：${validation[0].title || validation[0].label || validation[0].id || '已完成'}（${validationProfile.label}）` : '合理性校核待执行',
     ],
     artifacts: [
-      createArtifact('目标分配方案集', '输出匈牙利、蚁群协同、多目标优化和智能分配算法方案，并支持多平台、多目标协同分配。'),
+      createArtifact('目标分配方案集', intelligentOutput
+        ? '兼容旧配置输出匈牙利、蚁群协同、多目标优化和智能分配算法方案，并支持多平台、多目标协同分配。'
+        : '输出匈牙利、蚁群协同和多目标优化三类内置方案，并支持多平台、多目标协同分配。'),
       createArtifact('合理性验证结果', '对高价值目标覆盖、打击包完整性、平台可行性、射程约束和编组负荷进行校核。'),
       createArtifact('调整建议清单', '针对覆盖缺口、协同不足和负荷风险输出可执行的调整建议。'),
       createArtifact('目标分配态势图层', '输出蓝方编组、红方目标、部署区上下文和分配箭头，可在单算法结果页三维展示。'),
@@ -7998,10 +7699,11 @@ async function runBuiltinTargetAllocation(context, step, algorithm, input, datas
     structuredOutput: {
       implementationStatus: 'implemented',
       builtinMethodKey: input.builtinMethodKey,
-      builtinMethodLabel: findMethodLabel(algorithm.builtinMethods, input.builtinMethodKey),
+      builtinMethodLabel: findMethodLabel(TARGET_ALL_METHODS, input.builtinMethodKey),
       appliedOptions,
       validationProfile,
       candidateTargets: outputTargets,
+      originalTargets: outputOriginalTargets,
       deploymentContexts: intelligentOutput ? safeArray(intelligentOutput.deploymentContexts) : [],
       targetClusters: intelligentOutput ? safeArray(intelligentOutput.targetClusters) : [],
       platforms: outputPlatforms,
@@ -11340,6 +11042,417 @@ async function executeTaskPlanning(task, template, payload = {}, dataset = {}, {
   };
 }
 
+function extractRealtimeArtifactStageOutput(artifact = {}) {
+  const resultPayload = safeObject(artifact.resultPayload || artifact.result_payload);
+  const directStructured = safeObject(resultPayload.structuredOutput);
+  if (Object.keys(directStructured).length) {
+    return cloneData(directStructured);
+  }
+
+  const stepStructured = safeObject(safeObject(resultPayload.step).structuredOutput);
+  if (Object.keys(stepStructured).length) {
+    return cloneData(stepStructured);
+  }
+
+  const nestedStructured = safeObject(safeObject(resultPayload.result).structuredOutput);
+  if (Object.keys(nestedStructured).length) {
+    return cloneData(nestedStructured);
+  }
+
+  return cloneData(resultPayload);
+}
+
+function applyRealtimeArtifactsToContext(context, inputArtifacts = []) {
+  const stageOutputs = { ...safeObject(context.stageOutputs) };
+  const handoffTrail = [...safeArray(context.handoffTrail)];
+
+  for (const artifact of safeArray(inputArtifacts)) {
+    const algorithmId = String(artifact.algorithmId || artifact.algorithm_id || '').trim();
+    const stepId = String(artifact.stepId || artifact.step_id || '').trim();
+    const output = extractRealtimeArtifactStageOutput(artifact);
+
+    if (stepId) {
+      stageOutputs[stepId] = cloneData(output);
+    }
+    if (algorithmId) {
+      stageOutputs[algorithmId] = cloneData(output);
+    }
+
+    handoffTrail.push({
+      stepId,
+      stepName: String(artifact.stepName || artifact.step_name || ''),
+      algorithmId,
+      produces: ['实时生成产物'],
+      artifactId: Number(artifact.id || 0) || null,
+      artifactName: String(artifact.displayName || artifact.display_name || ''),
+    });
+  }
+
+  return {
+    ...context,
+    stageOutputs,
+    handoffTrail,
+  };
+}
+
+function resolveRealtimeStep(task, algorithmMap, payload = {}) {
+  const steps = safeArray(task.steps);
+  const requestedStepId = String(payload.stepId || '').trim();
+  const requestedAlgorithmId = String(payload.algorithmId || '').trim();
+  let step = requestedStepId ? steps.find((item) => item.id === requestedStepId) : null;
+
+  if (!step && requestedAlgorithmId) {
+    step = steps.find((item) => item.algorithmId === requestedAlgorithmId) || null;
+  }
+
+  const algorithmId = String(requestedAlgorithmId || step?.algorithmId || '').trim();
+  const algorithm = algorithmMap.get(algorithmId);
+
+  if (!algorithm) {
+    throw createPlanningRuntimeError({
+      code: 'PLANNING_MISSING_DATA',
+      type: 'missing_data',
+      status: 400,
+      message: `未找到实时生成要执行的算法 ${algorithmId || '未知算法'}。`,
+      details: {
+        algorithmId,
+        stepId: requestedStepId,
+      },
+    });
+  }
+
+  if (step && requestedAlgorithmId && step.algorithmId !== requestedAlgorithmId) {
+    throw createPlanningRuntimeError({
+      code: 'PLANNING_MISSING_DATA',
+      type: 'missing_data',
+      status: 400,
+      message: '实时生成选择的步骤与算法不一致，请重新选择。',
+      details: {
+        stepId: step.id,
+        stepAlgorithmId: step.algorithmId,
+        algorithmId: requestedAlgorithmId,
+      },
+    });
+  }
+
+  const resolvedStep = step || {
+    id: `realtime-${algorithm.id}`,
+    order: 1,
+    name: algorithm.name,
+    algorithmId: algorithm.id,
+    objective: algorithm.description || `${algorithm.name}实时生成步骤`,
+    consumes: cloneData(algorithm.expectedInputs || []),
+    produces: cloneData(algorithm.expectedOutputs || []),
+  };
+
+  return {
+    step: resolvedStep,
+    algorithm,
+  };
+}
+
+function assertUniqueRealtimeInputArtifacts(inputArtifacts = []) {
+  const seen = new Set();
+  for (const artifact of safeArray(inputArtifacts)) {
+    const algorithmId = String(artifact.algorithmId || artifact.algorithm_id || '').trim();
+    if (!algorithmId) continue;
+    if (seen.has(algorithmId)) {
+      throw createPlanningRuntimeError({
+        code: 'PLANNING_REALTIME_DUPLICATE_INPUT',
+        type: 'missing_data',
+        status: 400,
+        message: '同一算法类型一次只能选择一个输入产物，请删除重复的上游产物后再执行。',
+        details: {
+          algorithmId,
+        },
+      });
+    }
+    seen.add(algorithmId);
+  }
+}
+
+function buildRealtimeStepResult(step, algorithm, variant, algorithmInput, stageResult, gatewayMeta) {
+  return {
+    order: Number(step.order || 1),
+    stepId: step.id,
+    stepName: step.name,
+    objective: step.objective,
+    consumes: cloneData(step.consumes || []),
+    produces: cloneData(step.produces || []),
+    algorithm: {
+      id: algorithm.id,
+      name: algorithm.name,
+      category: algorithm.category,
+    },
+    binding: {
+      id: variant.id,
+      name: variant.name,
+      type: variant.type,
+      runtimeKey: variant.runtimeKey,
+      source: variant.source,
+      runtime: variant.runtime,
+      version: variant.version,
+      executionMode: variant.executionMode || '',
+      projectName: variant.projectName || '',
+      projectPath: variant.projectPath || '',
+    },
+    config: {
+      builtinMethodKey: algorithmInput.builtinMethodKey,
+      selectedSourceIds: cloneData(algorithmInput.selectedSourceIds || []),
+      uploadedFileCount: safeArray(algorithmInput.uploadedFiles).length,
+      options: redactSensitiveOptions(cloneData(algorithmInput.options || {})),
+    },
+    gateway: gatewayMeta,
+    status: 'completed',
+    summary: stageResult.summary,
+    outputPreview: safeArray(stageResult.outputPreview),
+    artifacts: safeArray(stageResult.artifacts),
+    structuredOutput: cloneData(stageResult.structuredOutput || {}),
+  };
+}
+
+export async function evaluatePlanningRealtimeStep(payload = {}, { db, events, signal } = {}) {
+  const template = buildPlanningTemplate();
+  const task = selectTask(template, payload.taskId, payload.taskDefinition);
+  if (!task) {
+    throw createPlanningRuntimeError({
+      code: 'PLANNING_MISSING_DATA',
+      type: 'missing_data',
+      status: 400,
+      message: '实时生成缺少可执行的规划任务定义。',
+      details: {},
+    });
+  }
+
+  const algorithmMap = buildAlgorithmMap(template.algorithms);
+  const { step, algorithm } = resolveRealtimeStep(task, algorithmMap, payload);
+  const inputArtifacts = safeArray(payload.inputArtifacts);
+  assertUniqueRealtimeInputArtifacts(inputArtifacts);
+
+  const rawAlgorithmInputs = {
+    ...safeObject(payload.algorithmInputs),
+    [algorithm.id]: {
+      ...safeObject(safeObject(payload.algorithmInputs)[algorithm.id]),
+      ...safeObject(payload.algorithmInput),
+    },
+  };
+  const algorithmInputs = normalizeAlgorithmInputs(template, {
+    ...payload,
+    algorithmInputs: rawAlgorithmInputs,
+  });
+  const algorithmInput = algorithmInputs[algorithm.id] || normalizeAlgorithmInput(algorithm);
+  const bindings = {
+    ...safeObject(payload.bindings),
+    ...(payload.bindingId ? { [step.id]: String(payload.bindingId) } : {}),
+  };
+  const variant = resolveBindingVariant(step, algorithm, task, bindings);
+
+  if (!variant) {
+    throw createPlanningRuntimeError({
+      code: 'PLANNING_MISSING_DATA',
+      type: 'missing_data',
+      status: 400,
+      message: `实时生成步骤 ${step.name} 未找到可用算法实现。`,
+      details: {
+        stepId: step.id,
+        stepName: step.name,
+        algorithmId: algorithm.id,
+      },
+    });
+  }
+
+  if (variant.status !== 'active') {
+    throw createPlanningRuntimeError({
+      code: 'PLANNING_MISSING_DATA',
+      type: 'missing_data',
+      status: 400,
+      message: `${step.name} 选择的算法实现 ${variant.name} 当前仅为预留扩展位。`,
+      details: {
+        stepId: step.id,
+        stepName: step.name,
+        algorithmId: algorithm.id,
+        bindingId: variant.id,
+      },
+    });
+  }
+
+  const dataset = loadPlanningDataset(db);
+  let context = buildInitialContext(task, payload, algorithmInputs, dataset);
+  context = applyRealtimeArtifactsToContext(context, inputArtifacts);
+
+  throwIfPlanningAborted(signal, {
+    taskId: payload.taskId || payload.taskCenterId || null,
+    stepId: step.id,
+    algorithmId: algorithm.id,
+  });
+
+  const startedAt = Date.now();
+  emitPlanningEvent(events, 'step-start', {
+    stepId: step.id,
+    stepName: step.name,
+    algorithmId: algorithm.id,
+    algorithmName: algorithm.name,
+    bindingId: variant.id,
+    bindingName: variant.name,
+    order: Number(step.order || 1),
+    totalSteps: 1,
+    realtime: true,
+  });
+  emitPlanningEvent(events, 'progress', {
+    currentStepId: step.id,
+    currentStepName: step.name,
+    progress: 0,
+    completedSteps: 0,
+    totalSteps: 1,
+    phase: 'running-step',
+    realtime: true,
+  });
+
+  let stageResult = null;
+  try {
+    stageResult = variant.type === 'builtin'
+      ? await executeBuiltinStep(step, algorithm, context, algorithmInput, dataset, events, signal)
+      : await executeExternalStep(variant, task, step, algorithm, context, { ...payload, dataset }, algorithmInput, events, signal);
+  } catch (error) {
+    const normalizedError = normalizePlanningRuntimeError(error, `${step.name} 实时生成失败。`);
+    normalizedError.details = {
+      ...(normalizedError.details || {}),
+      stepId: step.id,
+      stepName: step.name,
+      algorithmId: algorithm.id,
+      bindingId: variant.id,
+      runtime: variant.runtimeKey,
+    };
+    recordAlgorithmCall(db, {
+      moduleKey: 'planning-realtime',
+      assessmentName: String(payload.assessmentName || `${task.name}实时生成`),
+      taskId: Number.isFinite(Number(payload.taskCenterId)) ? Number(payload.taskCenterId) : null,
+      taskRunId: null,
+      algorithmKey: algorithm.id,
+      algorithmName: algorithm.name,
+      engineKey: variant.id,
+      engineSource: variant.source || (variant.type === 'builtin' ? 'builtin' : 'external'),
+      engineRuntime: variant.runtime || variant.runtimeKey,
+      engineVersion: variant.version || '',
+      status: 'failed',
+      httpStatus: normalizedError.status,
+      durationMs: Date.now() - startedAt,
+      requestId: normalizedError?.details?.requestId || '',
+      errorCode: normalizedError.code || '',
+      errorMessage: normalizedError.message || '',
+      requestPayload: {
+        stepId: step.id,
+        stepName: step.name,
+        inputArtifactIds: safeArray(payload.inputArtifactIds),
+        selectedSourceCount: safeArray(algorithmInput.selectedSourceIds).length,
+        uploadedFileCount: safeArray(algorithmInput.uploadedFiles).length,
+      },
+      responsePayload: normalizedError.details || {},
+    });
+    emitPlanningEvent(events, 'error', {
+      stepId: step.id,
+      stepName: step.name,
+      algorithmId: algorithm.id,
+      bindingId: variant.id,
+      message: normalizedError.message,
+      code: normalizedError.code,
+      errorType: normalizedError.type,
+      realtime: true,
+    });
+    throw normalizedError;
+  }
+
+  const gatewayMeta = variant.type === 'builtin'
+    ? buildAlgorithmGatewayMeta(variant, {
+      status: 'succeeded',
+      durationMs: Date.now() - startedAt,
+      httpStatus: 200,
+      requestId: '',
+    })
+    : buildAlgorithmGatewayMeta(variant, stageResult?.gateway || {
+      status: 'succeeded',
+      durationMs: Date.now() - startedAt,
+      httpStatus: 200,
+    });
+  const normalizedResult = buildRealtimeStepResult(step, algorithm, variant, algorithmInput, stageResult, gatewayMeta);
+  const nextContext = mergeExecutionContext(context, step, algorithm, normalizedResult);
+
+  recordAlgorithmCall(db, {
+    moduleKey: 'planning-realtime',
+    assessmentName: String(payload.assessmentName || `${task.name}实时生成`),
+    taskId: Number.isFinite(Number(payload.taskCenterId)) ? Number(payload.taskCenterId) : null,
+    taskRunId: null,
+    algorithmKey: algorithm.id,
+    algorithmName: algorithm.name,
+    engineKey: variant.id,
+    engineSource: gatewayMeta.source,
+    engineRuntime: gatewayMeta.runtime,
+    engineVersion: gatewayMeta.version,
+    status: 'succeeded',
+    httpStatus: gatewayMeta.httpStatus,
+    durationMs: gatewayMeta.durationMs,
+    requestId: gatewayMeta.requestId,
+    requestPayload: {
+      stepId: step.id,
+      stepName: step.name,
+      inputArtifactIds: safeArray(payload.inputArtifactIds),
+      selectedSourceCount: safeArray(algorithmInput.selectedSourceIds).length,
+      uploadedFileCount: safeArray(algorithmInput.uploadedFiles).length,
+    },
+    responsePayload: {
+      summary: normalizedResult.summary,
+      outputPreviewCount: normalizedResult.outputPreview.length,
+      artifactCount: normalizedResult.artifacts.length,
+    },
+  });
+
+  emitPlanningEvent(events, 'step-complete', {
+    stepId: step.id,
+    stepName: step.name,
+    algorithmId: algorithm.id,
+    algorithmName: algorithm.name,
+    bindingId: variant.id,
+    bindingName: variant.name,
+    order: Number(step.order || 1),
+    durationMs: gatewayMeta.durationMs,
+    summary: normalizedResult.summary,
+    progress: 100,
+    completedSteps: 1,
+    totalSteps: 1,
+    realtime: true,
+  });
+  emitPlanningEvent(events, 'progress', {
+    currentStepId: step.id,
+    currentStepName: step.name,
+    progress: 100,
+    completedSteps: 1,
+    totalSteps: 1,
+    phase: 'step-complete',
+    realtime: true,
+  });
+
+  return {
+    ok: true,
+    assessmentName: String(payload.assessmentName || `${task.name}实时生成`),
+    module: 'intelligent-task-planning',
+    mode: 'realtime-step',
+    generatedAt: new Date().toISOString(),
+    task: {
+      id: task.id,
+      name: task.name,
+      category: task.category,
+      stepCount: safeArray(task.steps).length,
+    },
+    inputArtifactIds: cloneData(safeArray(payload.inputArtifactIds)),
+    step: normalizedResult,
+    structuredOutput: cloneData(normalizedResult.structuredOutput || {}),
+    context: {
+      handoffTrail: cloneData(nextContext.handoffTrail || []),
+      injectedArtifactCount: inputArtifacts.length,
+    },
+  };
+}
+
 function buildDeliverables(task, executionSteps = []) {
   const implementedSteps = executionSteps.filter((item) => item.structuredOutput?.implementationStatus === 'implemented');
   const placeholderSteps = executionSteps.filter((item) => item.structuredOutput?.implementationStatus !== 'implemented');
@@ -11963,6 +12076,7 @@ function buildFinalResult(task, executionSteps = []) {
 
 export const __planningRuntimeTestHooks = {
   buildSupportPlan,
+  executeLocalPythonStep,
   normalizeSupportPlanningOptions,
   runBuiltinTargetAllocation,
 };

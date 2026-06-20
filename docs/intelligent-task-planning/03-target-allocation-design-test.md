@@ -9,13 +9,15 @@
 | 默认 methodKey | `multi-objective` |
 | 可选 methodKey | `hungarian`、`ant-colony`、`multi-objective` |
 | 所属模块 | `intelligent-task-planning` |
-| 当前源码位置 | `apps/server/src/planning-runtime.js`：`TARGET_METHODS`、`TARGET_VALIDATION_PROFILES`、`runBuiltinTargetAllocation()` |
+| 当前源码位置 | `apps/server/src/planning-runtime.js`：`TARGET_METHODS`、`TARGET_VALIDATION_PROFILES`、`runBuiltinTargetAllocation()`、`executeLocalTargetAllocation()` |
 | 调用入口 | `BUILTIN_EXECUTORS['target-allocation']` |
 | 平台流程作用 | 把敌情威胁目标与我方编组平台匹配为多目标、多平台、多波次分配方案 |
 | 上游 | `enemy-threat-analysis`、`force-grouping` |
 | 下游 | `airborne-landing-site-selection`、`method-planning` |
 
-当前实现内置匈牙利、蚁群协同、多目标优化三类启发式方案，并输出合理性校核与调整建议。真实算法可替换求解器，但要保留 `preferredPlan` 和 `comparedPlans` 结构。
+当前内置方法仍提供匈牙利、蚁群协同、多目标优化三类启发式方案。`target-allocation-local / 智能分配算法` 已改为 Battle Planner 适配器：不再调用旧 `target_allocation` Python 包，而是读取上游 `force-grouping` 的 `battlePlannerResult.task_groups` 生成 `preferredPlan` 和可视化箭头。
+
+智能分配适配器会按实际武器装载计算分配火力值：`weaponEquipmentPower = weapons.quantity * 0.8`，未装载武器时 `group.firepower = 0`。运输直升机和人员配置继续输出为 `transportPersonnelPower/personnelDeliveryScore`，用于说明机动投送等其他能力，但不参与火力合成。火力打击类任务若未装载武器，会生成合理性校核失败项并阻止该编组形成有效火力打击分配。
 
 ## 二、接口适配说明
 
@@ -50,7 +52,7 @@
 该算法 `supportedInputModes` 为 `upstream-result`，不直接使用资源库或上传文件。它从 `context.stageOutputs` 读取：
 
 - `enemy-threat-analysis`：火力、防空、侦察、反机降、部署区，生成 `candidateTargets`。
-- `force-grouping`：推荐编组与单位能力，生成 `platforms/groups`。
+- `force-grouping`：优先读取 `battlePlannerResult.task_groups` 中的编组-目标处置关系，同时复用 `preferredScheme.groups` 中的平台、坐标和单位信息。
 
 ### 3. 输出 JSON 完整结构
 
@@ -65,7 +67,7 @@
 | `candidateTargets` | array | 从威胁节点构建候选目标 |
 | `platforms` | array | 从编组单位构建平台 |
 | `groups` | array | 从编组群构建群组摘要 |
-| `comparedPlans` | array | 三类方法完整方案 |
+| `comparedPlans` | array | 内置方法为三类方法完整方案；智能分配为单个 `intelligent-allocation` 适配方案 |
 | `preferredPlanMethodKey` / `preferredPlan` | string / object | 用户选择 method 对应方案 |
 | `systemBestPlanMethodKey` / `systemBestPlan` | string / object | 系统最高分方案 |
 | `validationSummary` | object | `{ status, issueCount }` |
@@ -339,4 +341,3 @@ assert.ok(['pass', 'warn', 'fail'].includes(output.validationSummary.status));
 - `coverage/backlogTargets/groupLoads/platformLoads/stats` 必须能解释方案质量。
 - 对无法覆盖目标不得伪造分配，必须进入 `backlogTargets`。
 - 与 `method-planning` 兼容：`preferredPlan.assignments[]` 字段不得破坏。
-

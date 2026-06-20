@@ -48,6 +48,27 @@ def load_sample() -> dict:
     return json.loads(SAMPLE_EXTRACTION.read_text(encoding="utf-8"))
 
 
+def load_multi_cluster_sample() -> dict:
+    payload = load_sample()
+    payload["spatialContext"]["areaOfInterest"]["bounds"] = {
+        "minLon": 117.6,
+        "minLat": 31.5,
+        "maxLon": 121.4,
+        "maxLat": 33.7,
+    }
+    far_fire = json.loads(json.dumps(payload["targets"][0]))
+    far_fire["id"] = "target-101"
+    far_fire["name"] = "东南远程火力群"
+    far_fire["location"]["coordinates"] = [120.92, 33.14, 0]
+    far_air_defense = json.loads(json.dumps(payload["targets"][1]))
+    far_air_defense["id"] = "target-102"
+    far_air_defense["name"] = "东南防空阵地"
+    far_air_defense["location"]["coordinates"] = [121.06, 33.08, 0]
+    payload["targets"].extend([far_fire, far_air_defense])
+    payload["relations"] = []
+    return payload
+
+
 def test_llm_config_supports_ollama_backend() -> None:
     config = resolve_llm_config(
         {
@@ -290,11 +311,49 @@ def test_visualization_declares_static_heatmap_image_overlay() -> None:
     overlay = overlays[0]
     assert overlay["id"] == "threat-spatial-field"
     assert overlay["imageBase64Field"] == "heatmapBase64"
+    assert "imageBase64" not in overlay
     assert overlay["rendering"] == "single-tile-image"
     assert 0.8 <= overlay["alpha"] < 1
     assert overlay["displayVersion"] == "soft-continuous-v2"
     assert overlay["bounds"]["east"] > overlay["bounds"]["west"]
     assert overlay["bounds"]["north"] > overlay["bounds"]["south"]
+    assert result["heatmap"]["overlayMode"] == "single"
+    assert len(result["heatmap"]["groupSummaries"]) == 1
+
+
+def test_clustered_heatmap_outputs_multiple_inline_image_overlays() -> None:
+    result = analyze(None, heatmap_density="low", extraction_json=load_multi_cluster_sample(), generate_assessment=False)
+    overlays = result["visualization"]["imageOverlays"]
+    assert result["heatmapBase64"]
+    assert result["heatmap"]["overlayMode"] == "clustered"
+    assert len(overlays) == 2
+    assert len(result["heatmap"]["groupSummaries"]) == 2
+    assert sorted(len(item["targetIds"]) for item in overlays) == [2, 2]
+
+    for overlay in overlays:
+        assert overlay["imageBase64"]
+        assert overlay["rendering"] == "single-tile-image"
+        assert overlay["displayVersion"] == "soft-continuous-v2"
+        assert overlay["targetIds"]
+        bounds = overlay["bounds"]
+        assert bounds["east"] > bounds["west"]
+        assert bounds["north"] > bounds["south"]
+
+
+def test_clustered_heatmap_keeps_local_bounds_for_remote_groups() -> None:
+    result = analyze(None, heatmap_density="low", extraction_json=load_multi_cluster_sample(), generate_assessment=False)
+    global_bounds = result["heatmap"]["bounds"]
+    global_width = global_bounds["maxLon"] - global_bounds["minLon"]
+    global_height = global_bounds["maxLat"] - global_bounds["minLat"]
+    assert global_width > 3
+    assert global_height > 2
+
+    target_sets = [set(item["targetIds"]) for item in result["visualization"]["imageOverlays"]]
+    assert not any({"target-001", "target-101"} <= target_ids for target_ids in target_sets)
+    for overlay in result["visualization"]["imageOverlays"]:
+        bounds = overlay["bounds"]
+        assert (bounds["east"] - bounds["west"]) < global_width / 2
+        assert (bounds["north"] - bounds["south"]) < global_height / 2
 
 
 def test_heatmap_png_has_visible_hotspot_alpha() -> None:

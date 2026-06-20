@@ -139,6 +139,8 @@ class Confidence(SchemaModel):
 class ExtractedTarget(SchemaModel):
     id: str = ""
     name: str = ""
+    groupId: str = ""
+    groupName: str = ""
     category: str = "unknown"
     subCategory: str = ""
     camp: str = "red"
@@ -208,6 +210,8 @@ class ThreatExtractionJson(SchemaModel):
 class TargetAssessment(SchemaModel):
     id: str
     name: str
+    groupId: str = ""
+    groupName: str = ""
     category: str
     threatScore: float
     valueScore: float

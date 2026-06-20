@@ -1,5 +1,5 @@
 <script setup>
-import { computed } from 'vue';
+import { computed, ref, watch } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import PlanningForceGroupingPanel from '../../components/PlanningForceGroupingPanel.vue';
 import PlanningThreatMapPanel from '../../components/PlanningThreatMapPanel.vue';
@@ -158,7 +158,10 @@ const TABLE_SPECS = {
     ['evidenceTrace', '证据溯源'],
   ],
   'force-grouping': [
+    ['targetFirepowerRequirements', '目标威胁火力需求'],
+    ['targetCoverage', '目标覆盖情况'],
     ['comparison', '编组方案对比'],
+    ['resourceShortfalls', '资源缺口'],
     ['ruleEvidence', '规则证据'],
     ['evidenceTrace', '证据溯源'],
   ],
@@ -192,7 +195,7 @@ const TABLE_SPECS = {
 
 const OBJECT_SPECS = {
   'enemy-threat-analysis': ['inputSummary', 'appliedOptions', 'algorithmModel', 'sourceCompatibility'],
-  'force-grouping': ['inputSummary', 'appliedOptions', 'resolvedRuleProfile', 'constraintModel', 'constraintSummary'],
+  'force-grouping': ['inputSummary', 'appliedOptions', 'battlePlannerMetadata', 'constraintSummary', 'threatIntegration'],
   'target-allocation': ['inputSummary', 'appliedOptions', 'planningBasis', 'preferredPlan.metrics'],
   'airborne-landing-site-selection': ['inputSummary', 'appliedOptions', 'preferredCandidate.metrics', 'planningBasis'],
   'method-planning': ['inputSummary', 'appliedOptions', 'preferredPlan.metrics', 'planningBasis'],
@@ -208,6 +211,7 @@ const currentStep = computed(() => (
   currentStepIndex.value >= 0 ? executionSteps.value[currentStepIndex.value] : null
 ));
 const currentOutput = computed(() => currentStep.value?.structuredOutput || {});
+const selectedTargetAllocationPlanId = ref('');
 const currentStepSummary = computed(() => {
   if (currentStep.value?.algorithm?.id !== 'force-grouping') return currentStep.value?.summary || '';
   const preferred = safeObject(currentOutput.value?.preferredScheme);
@@ -233,9 +237,23 @@ const previewItems = computed(() => {
   if (currentStep.value?.algorithm?.id === 'force-grouping') {
     const preferred = safeObject(currentOutput.value?.preferredScheme);
     const preferredLabel = preferred.name || preferred.methodLabel || '--';
+    const metrics = safeObject(preferred.metrics);
+    const battlePlannerResult = safeObject(currentOutput.value?.battlePlannerResult);
+    const threatIntegration = safeObject(currentOutput.value?.threatIntegration);
+    if (Object.keys(battlePlannerResult).length) {
+      return [
+        `推荐方案：${preferredLabel} / ${preferred.score ?? '--'} 分`,
+        `编组数量：${safeArray(preferred.groups).length || preferred.actualGroupCount || '--'}`,
+        `Battle Planner 任务组：${safeArray(battlePlannerResult.task_groups).length} / 总编组 ${battlePlannerResult.total_groups ?? '--'}`,
+        `资源与约束告警：${safeArray(battlePlannerResult.warnings).length}`,
+        `约束状态：${currentOutput.value?.constraintSummary?.overallStatus || preferred.constraintEvaluation?.overallStatus || '--'}`,
+      ];
+    }
     return [
       `推荐方案：${preferredLabel} / ${preferred.score ?? '--'} 分`,
       `编组数量：${safeArray(preferred.groups).length || preferred.actualGroupCount || '--'}`,
+      `威胁压力：${threatIntegration.threatPressure ?? '--'} / 高威胁覆盖 ${metrics.highThreatCoverage ?? '--'}`,
+      `风险控制：${metrics.threatRiskControl ?? '--'} / 算法 ${currentOutput.value?.algorithmModel || '--'}`,
       `约束状态：${currentOutput.value?.constraintSummary?.overallStatus || preferred.constraintEvaluation?.overallStatus || '--'}`,
     ];
   }
@@ -271,11 +289,32 @@ const mapEntities = computed(() => {
   }
   return mergeEntities(safeArray(mapData.value.entities), derivedThreatEntities);
 });
+const targetAllocationPlanOptions = computed(() => buildTargetAllocationPlanOptions(currentOutput.value));
+const preferredTargetAllocationPlanId = computed(() => {
+  const options = targetAllocationPlanOptions.value;
+  const explicitId = String(currentOutput.value?.preferredPlanId || currentOutput.value?.preferredPlan?.id || '');
+  if (explicitId && options.some((item) => item.__viewId === explicitId)) return explicitId;
+  const explicitMethod = String(currentOutput.value?.preferredPlanMethodKey || currentOutput.value?.preferredPlan?.methodKey || '');
+  const explicitStrategy = String(currentOutput.value?.preferredStrategyKey || currentOutput.value?.preferredPlan?.strategyKey || '');
+  const matched = options.find((item) => (
+    String(item.methodKey || '') === explicitMethod
+    && (!explicitStrategy || String(item.strategyKey || '') === explicitStrategy)
+  ));
+  return matched?.__viewId || options[0]?.__viewId || '';
+});
 const targetAllocationPanel = computed(() => buildTargetAllocationPanel(
   currentStep.value,
   currentOutput.value,
-  mapData.value,
+  selectedTargetAllocationPlanId.value,
 ));
+watch(preferredTargetAllocationPlanId, (value) => {
+  selectedTargetAllocationPlanId.value = value || targetAllocationPlanOptions.value[0]?.__viewId || '';
+}, { immediate: true });
+watch(targetAllocationPlanOptions, (options) => {
+  if (!options.some((item) => item.__viewId === selectedTargetAllocationPlanId.value)) {
+    selectedTargetAllocationPlanId.value = preferredTargetAllocationPlanId.value || options[0]?.__viewId || '';
+  }
+});
 const objectSections = computed(() => buildObjectSections(currentStep.value, currentOutput.value));
 const tableSections = computed(() => buildTableSections(currentStep.value, currentOutput.value));
 const formattedStructuredOutput = computed(() => JSON.stringify(currentOutput.value || {}, null, 2));
@@ -590,6 +629,107 @@ function isValidLonLat(coordinates) {
     && Number.isFinite(latitude)
     && Math.abs(longitude) <= 180
     && Math.abs(latitude) <= 90;
+}
+
+function coordinateKey(coordinates) {
+  if (!isValidLonLat(coordinates)) return '';
+  return `${Number(coordinates[0]).toFixed(5)}:${Number(coordinates[1]).toFixed(5)}`;
+}
+
+function targetAllocationUnitSubtype(type = '') {
+  const normalized = String(type || '').toLowerCase();
+  if (normalized.includes('air-defense') || normalized.includes('防空')) return 'airDefense';
+  if (normalized.includes('recon') || normalized.includes('radar') || normalized.includes('侦察') || normalized.includes('预警')) return 'radar';
+  if (normalized.includes('anti-airborne') || normalized.includes('engineer') || normalized.includes('反机降') || normalized.includes('工程')) return 'engineer';
+  if (normalized.includes('command') || normalized.includes('指挥')) return 'command';
+  if (normalized.includes('transport') || normalized.includes('logistics') || normalized.includes('后勤')) return 'transport';
+  return 'artillery';
+}
+
+function buildOriginalTargetEntity(rawTarget = {}, index = 0) {
+  const coordinates = normalizeCoordinate(rawTarget.coordinates || rawTarget.location?.coordinates || rawTarget.location || rawTarget.center);
+  if (!isValidLonLat(coordinates)) return null;
+  const id = String(rawTarget.id || rawTarget.sourceTargetId || rawTarget.targetId || rawTarget.allocationTargetId || `original-target-${index + 1}`);
+  const name = String(rawTarget.name || rawTarget.sourceTargetName || rawTarget.targetName || rawTarget.label || id);
+  const type = String(rawTarget.type || rawTarget.typeLabel || rawTarget.targetType || rawTarget.category || '');
+  return {
+    id: `allocation-original-target-${id}`,
+    name: `原始目标-${name}`,
+    type: 'unit',
+    camp: 'red',
+    layerKey: 'units',
+    color: '#ef4444',
+    geometryType: 'point',
+    coordinates: [coordinates[0], coordinates[1], Number(coordinates[2] || 70)],
+    radius: null,
+    annotation: `原始目标：${name}；类型：${type || '--'}`,
+    visible: true,
+    meta: {
+      unitSubtype: targetAllocationUnitSubtype(type),
+      targetId: id,
+      allocationTargetId: String(rawTarget.allocationTargetId || rawTarget.id || ''),
+      originalTarget: true,
+      showLabel: true,
+    },
+  };
+}
+
+function buildTargetAllocationMapEntities(output = {}, visualization = {}) {
+  const sourceEntities = safeArray(visualization.entities).map((entity) => ({
+    ...entity,
+    meta: { ...(entity.meta || {}) },
+  }));
+  const existingOriginals = sourceEntities.filter((entity) => String(entity.id || '').startsWith('allocation-original-target-'));
+  const syntheticOriginals = existingOriginals.length
+    ? []
+    : (safeArray(output.originalTargets).length ? safeArray(output.originalTargets) : safeArray(output.candidateTargets))
+      .map(buildOriginalTargetEntity)
+      .filter(Boolean);
+  const originalEntities = existingOriginals.length ? existingOriginals : syntheticOriginals;
+  const originalCoordinateKeys = new Set(originalEntities
+    .map((entity) => coordinateKey(entity.coordinates))
+    .filter(Boolean));
+  const originalTargetIds = new Set(originalEntities.flatMap((entity) => [
+    entity.meta?.targetId,
+    entity.meta?.allocationTargetId,
+    String(entity.id || '').replace(/^allocation-original-target-/, ''),
+  ].map((item) => String(item || '').trim()).filter(Boolean)));
+
+  const prepared = [...sourceEntities, ...syntheticOriginals].map((entity) => {
+    const id = String(entity.id || '');
+    const next = {
+      ...entity,
+      meta: { ...(entity.meta || {}) },
+    };
+    if (id.startsWith('allocation-original-target-')) {
+      next.visible = true;
+      next.color = next.color || '#ef4444';
+      next.meta.originalTarget = true;
+      next.meta.showLabel = true;
+      return next;
+    }
+    if (id.startsWith('allocation-group-') || id.startsWith('allocation-order-')) {
+      next.meta.showLabel = false;
+      return next;
+    }
+    if (id.startsWith('allocation-target-')) {
+      const targetId = String(next.meta?.targetId || id.replace(/^allocation-target-/, ''));
+      const coveredByOriginal = originalTargetIds.has(targetId) || originalCoordinateKeys.has(coordinateKey(next.coordinates));
+      next.visible = coveredByOriginal ? false : next.visible !== false;
+      next.meta.showLabel = false;
+      next.meta.coveredByOriginalTarget = coveredByOriginal;
+      return next;
+    }
+    return next;
+  });
+
+  const seen = new Set();
+  return prepared.filter((entity) => {
+    const id = String(entity.id || '');
+    if (!id || seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
 }
 
 function normalizeBounds(bounds = {}) {
@@ -926,6 +1066,81 @@ function formatValue(value) {
   return String(value);
 }
 
+function formatFirepowerBreakdown(value = {}) {
+  const breakdown = safeObject(value);
+  if (!Object.keys(breakdown).length) return '';
+  return `火力构成：武装装备 ${formatValue(breakdown.weaponEquipmentPower)} / 运输人员 ${formatValue(breakdown.transportPersonnelPower)}`;
+}
+
+function assignmentFirepowerSummary(assignment = {}) {
+  return assignment.firepowerSummary || formatFirepowerBreakdown(assignment.groupFirepowerBreakdown);
+}
+
+function normalizeTargetAllocationPlanId(plan = {}, index = 0) {
+  return String(
+    plan.id
+    || plan.planId
+    || [
+      plan.methodKey || 'allocation-plan',
+      plan.strategyKey || plan.strategyLabel || '',
+      index + 1,
+    ].filter(Boolean).join('-'),
+  );
+}
+
+function buildTargetAllocationPlanOptions(output = {}) {
+  const candidates = safeArray(output.comparedPlans)
+    .filter((item) => item && typeof item === 'object')
+    .map((plan, index) => ({
+      ...plan,
+      __viewId: normalizeTargetAllocationPlanId(plan, index),
+    }));
+  const preferredPlan = safeObject(output.preferredPlan);
+  if (Object.keys(preferredPlan).length) {
+    const preferredViewId = normalizeTargetAllocationPlanId(preferredPlan, candidates.length);
+    const exists = candidates.some((plan) => (
+      plan.__viewId === preferredViewId
+      || (
+        String(plan.methodKey || '') === String(preferredPlan.methodKey || '')
+        && String(plan.strategyKey || '') === String(preferredPlan.strategyKey || '')
+      )
+    ));
+    if (!exists) {
+      candidates.push({
+        ...preferredPlan,
+        __viewId: preferredViewId,
+      });
+    }
+  }
+  return candidates;
+}
+
+function isTargetAllocationPreferredPlan(output = {}, plan = {}) {
+  const preferredId = String(output.preferredPlanId || output.preferredPlan?.id || '');
+  if (preferredId && String(plan.__viewId || plan.id || '') === preferredId) return true;
+  const preferredMethod = String(output.preferredPlanMethodKey || output.preferredPlan?.methodKey || '');
+  const preferredStrategy = String(output.preferredStrategyKey || output.preferredPlan?.strategyKey || '');
+  return String(plan.methodKey || '') === preferredMethod
+    && (!preferredStrategy || String(plan.strategyKey || '') === preferredStrategy);
+}
+
+function isTargetAllocationSystemBestPlan(output = {}, plan = {}) {
+  const systemBestId = String(output.systemBestPlanId || output.systemBestPlan?.id || '');
+  if (systemBestId && String(plan.__viewId || plan.id || '') === systemBestId) return true;
+  const systemBestMethod = String(output.systemBestPlanMethodKey || output.systemBestPlan?.methodKey || '');
+  const systemBestStrategy = String(output.systemBestPlan?.strategyKey || '');
+  return String(plan.methodKey || '') === systemBestMethod
+    && (!systemBestStrategy || String(plan.strategyKey || '') === systemBestStrategy);
+}
+
+function targetAllocationPlanTitle(plan = {}) {
+  return plan.name || plan.methodLabel || plan.strategyLabel || plan.methodKey || '分配方案';
+}
+
+function selectTargetAllocationPlan(plan = {}) {
+  selectedTargetAllocationPlanId.value = plan.__viewId || normalizeTargetAllocationPlanId(plan);
+}
+
 function truncateText(value, limit = 180) {
   const text = String(value || '').replace(/\s+/g, ' ').trim();
   if (text.length <= limit) return text;
@@ -964,11 +1179,12 @@ function buildMetricCards(step, output) {
     ];
   }
   if (algorithmId === 'force-grouping') {
+    const metrics = safeObject(output.preferredScheme?.metrics);
     return [
       ['推荐方案', output.preferredScheme?.name || output.preferredScheme?.methodLabel || '--'],
       ['方案得分', output.preferredScheme?.score ?? '--'],
-      ['实际群组', output.actualGroupCount || output.preferredScheme?.groups?.length || 0],
-      ['候选单元', output.inputSummary?.candidateCount || output.inputSummary?.forceUnitCount || output.inputSummary?.blueIntelligenceCount || output.candidateCount || 0],
+      ['高威胁覆盖', metrics.highThreatCoverage ?? '--'],
+      ['风险控制', metrics.threatRiskControl ?? '--'],
     ];
   }
   if (algorithmId === 'target-allocation') {
@@ -1012,34 +1228,52 @@ function buildMetricCards(step, output) {
   ];
 }
 
-function buildTargetAllocationPanel(step, output = {}, visualization = {}) {
+function buildTargetAllocationPanel(step, output = {}, selectedPlanId = '') {
   if (step?.algorithm?.id !== 'target-allocation') return null;
+  const planOptions = buildTargetAllocationPlanOptions(output);
   const preferredPlan = safeObject(output.preferredPlan);
-  const assignments = safeArray(preferredPlan.assignments);
-  const comparedPlans = safeArray(output.comparedPlans).map((plan) => {
+  const selectedPlan = planOptions.find((plan) => plan.__viewId === selectedPlanId)
+    || planOptions.find((plan) => isTargetAllocationPreferredPlan(output, plan))
+    || planOptions[0]
+    || preferredPlan;
+  const selectedVisualization = safeObject(selectedPlan.visualization || (
+    isTargetAllocationPreferredPlan(output, selectedPlan) ? output.visualization : {}
+  ));
+  const assignments = safeArray(selectedPlan.assignments);
+  const comparedPlans = planOptions.map((plan) => {
     const coverage = resolveTargetAllocationCoverage(plan);
     return {
-      key: plan.methodKey || plan.id || plan.name,
-      methodLabel: plan.methodLabel || plan.name || plan.methodKey || '--',
+      key: plan.__viewId,
+      methodLabel: targetAllocationPlanTitle(plan),
       methodKey: plan.methodKey || '--',
+      strategyKey: plan.strategyKey || '',
+      strategyLabel: plan.strategyLabel || '',
       score: formatValue(plan.score),
       coverage: coverage === null ? '--' : `${formatValue(coverage)}%`,
       assignmentCount: safeArray(plan.assignments).length,
-      isPreferred: String(plan.methodKey || '') === String(output.preferredPlanMethodKey || preferredPlan.methodKey || ''),
-      isSystemBest: String(plan.methodKey || '') === String(output.systemBestPlanMethodKey || ''),
+      usedGroupCount: plan.metrics?.usedGroupCount ?? plan.stats?.usedGroupCount,
+      usedUnitCount: plan.metrics?.usedUnitCount ?? plan.stats?.usedUnitCount,
+      estimatedLossPercent: plan.metrics?.averageAssignedLossPercent ?? plan.stats?.averageAssignedLossPercent,
+      isPreferred: isTargetAllocationPreferredPlan(output, plan),
+      isSystemBest: isTargetAllocationSystemBestPlan(output, plan),
+      isSelected: String(plan.__viewId || '') === String(selectedPlan.__viewId || ''),
+      rawPlan: plan,
     };
   });
-  const entities = safeArray(visualization.entities);
-  const environment = safeArray(visualization.environment);
+  const entities = buildTargetAllocationMapEntities(output, selectedVisualization);
+  const environment = safeArray(selectedVisualization.environment);
   if (!Object.keys(preferredPlan).length && !assignments.length && !comparedPlans.length && !entities.length && !environment.length) {
     return null;
   }
 
   const assignmentArrows = entities.filter((item) => String(item.id || '').startsWith('allocation-order-')).length;
-  const coverage = resolveTargetAllocationCoverage(preferredPlan);
+  const coverage = resolveTargetAllocationCoverage(selectedPlan);
   return {
-    methodLabel: output.builtinMethodLabel || preferredPlan.methodLabel || '--',
-    score: formatValue(preferredPlan.score),
+    selectedPlanId: selectedPlan.__viewId || normalizeTargetAllocationPlanId(selectedPlan),
+    selectedPlan,
+    methodLabel: output.builtinMethodLabel || selectedPlan.methodLabel || '--',
+    selectedPlanTitle: targetAllocationPlanTitle(selectedPlan),
+    score: formatValue(selectedPlan.score),
     assignmentCount: assignments.length,
     targetCount: safeArray(output.candidateTargets).length,
     groupCount: safeArray(output.groups).length,
@@ -1048,12 +1282,178 @@ function buildTargetAllocationPanel(step, output = {}, visualization = {}) {
     environment,
     comparedPlans,
     assignments: assignments.slice(0, 8),
+    allocationDiagram: buildAllocationDiagram(output, assignments),
     statCards: [
-      ['执行方法', output.builtinMethodLabel || preferredPlan.methodLabel || '--'],
-      ['推荐评分', formatValue(preferredPlan.score)],
+      ['当前方案', selectedPlan.strategyLabel || selectedPlan.methodLabel || '--'],
+      ['方案评分', formatValue(selectedPlan.score)],
       ['目标覆盖', coverage === null ? '--' : `${formatValue(coverage)}%`],
       ['分配箭头', assignmentArrows || assignments.length],
+      ['使用编组', formatValue(selectedPlan.metrics?.usedGroupCount ?? selectedPlan.stats?.usedGroupCount)],
     ],
+  };
+}
+
+function buildAllocationDiagram(output = {}, assignments = []) {
+  const groupCatalog = new Map(safeArray(output.groups).map((item) => [String(item.id || ''), item]));
+  const platformCatalog = new Map(safeArray(output.platforms).map((item) => [String(item.id || ''), item]));
+  const targetCatalog = new Map(safeArray(output.candidateTargets).map((item) => [String(item.id || ''), item]));
+  const groupMap = new Map();
+  const targetMap = new Map();
+  const rawLinks = [];
+
+  safeArray(assignments).forEach((assignment, index) => {
+    const groupId = String(assignment.groupId || assignment.platformId || `group-${index + 1}`);
+    const targetId = String(assignment.targetId || `target-${index + 1}`);
+    const group = safeObject(groupCatalog.get(groupId) || platformCatalog.get(String(assignment.platformId || '')) || {});
+    const target = safeObject(targetCatalog.get(targetId) || {});
+
+    if (!groupMap.has(groupId)) {
+      const firepowerSummary = assignment.firepowerSummary
+        || formatFirepowerBreakdown(group.firepowerBreakdown || assignment.groupFirepowerBreakdown);
+      const baseMeta = `火力 ${formatValue(group.firepower ?? assignment.groupFirepower)} / 机动 ${formatValue(group.mobility ?? assignment.groupMobility)}`;
+      groupMap.set(groupId, {
+        id: groupId,
+        name: assignment.groupName || group.name || assignment.platformName || groupId,
+        subtitle: group.role || group.normalizedRole || assignment.groupRole || assignment.platformRole || '编组',
+        meta: firepowerSummary ? `${baseMeta} / ${firepowerSummary}` : baseMeta,
+      });
+    }
+    if (!targetMap.has(targetId)) {
+      targetMap.set(targetId, {
+        id: targetId,
+        name: assignment.targetName || target.name || targetId,
+        subtitle: target.typeLabel || target.type || assignment.targetType || '目标',
+        meta: `优先级 ${target.priorityLevel || assignment.priorityLevel || '--'} / 重要性 ${formatValue(target.importance ?? assignment.priority)}`,
+      });
+    }
+
+    rawLinks.push({
+      id: assignment.id || `allocation-link-${index + 1}`,
+      groupId,
+      targetId,
+      wave: Number(assignment.wave || 1),
+      matchScore: assignment.matchScore,
+      feasibilityScore: assignment.feasibilityScore,
+      distanceKm: assignment.distanceKm,
+      previousTargetId: assignment.previousTargetId,
+      previousTargetName: assignment.previousTargetName,
+      sequenceOrder: assignment.sequenceOrder,
+      sequenceDistanceKm: assignment.sequenceDistanceKm,
+      reason: assignment.reason || assignment.summary || '',
+      risk: Boolean(
+        assignment.reachExceeded
+        || assignment.fallbackAssignment
+        || assignment.overCapacity
+        || assignment.fallbackReason
+        || assignment.relaxationLevel
+      ),
+    });
+  });
+
+  const groupNodes = [...groupMap.values()];
+  const targetNodes = [...targetMap.values()];
+  const nodeWidth = 220;
+  const nodeHeight = 76;
+  const leftX = 32;
+  const rightX = 580;
+  const topY = 34;
+  const rowGap = 106;
+  const rowCount = Math.max(groupNodes.length, targetNodes.length, 1);
+  const width = 840;
+  const height = Math.max(260, topY * 2 + (rowCount - 1) * rowGap + nodeHeight);
+
+  const layoutNodes = (nodes, x) => nodes.map((node, index) => ({
+    ...node,
+    x,
+    y: topY + index * rowGap,
+    width: nodeWidth,
+    height: nodeHeight,
+    assignmentCount: rawLinks.filter((link) => link.groupId === node.id || link.targetId === node.id).length,
+  }));
+  const groups = layoutNodes(groupNodes, leftX);
+  const targets = layoutNodes(targetNodes, rightX);
+  const groupById = new Map(groups.map((node) => [node.id, node]));
+  const targetById = new Map(targets.map((node) => [node.id, node]));
+  const pairTotals = new Map();
+  rawLinks.forEach((link) => {
+    const key = `${link.groupId}::${link.targetId}`;
+    pairTotals.set(key, (pairTotals.get(key) || 0) + 1);
+  });
+  const pairSeen = new Map();
+
+  const links = rawLinks
+    .map((link) => {
+      const group = groupById.get(link.groupId);
+      const target = targetById.get(link.targetId);
+      if (!group || !target) return null;
+      const pairKey = `${link.groupId}::${link.targetId}`;
+      const seen = pairSeen.get(pairKey) || 0;
+      pairSeen.set(pairKey, seen + 1);
+      const total = pairTotals.get(pairKey) || 1;
+      const offset = (seen - (total - 1) / 2) * 18;
+      const startX = group.x + group.width;
+      const startY = group.y + group.height / 2 + offset;
+      const endX = target.x;
+      const endY = target.y + target.height / 2 - offset;
+      const controlPad = Math.max(120, (endX - startX) * 0.42);
+      const waveClass = link.wave <= 1 ? 'wave-1' : link.wave === 2 ? 'wave-2' : 'wave-late';
+      const color = link.wave <= 1 ? '#facc15' : link.wave === 2 ? '#38bdf8' : '#c084fc';
+      return {
+        ...link,
+        waveClass,
+        color,
+        markerId: `allocation-arrowhead-${waveClass}`,
+        path: `M ${startX} ${startY} C ${startX + controlPad} ${startY}, ${endX - controlPad} ${endY}, ${endX} ${endY}`,
+        labelX: (startX + endX) / 2 - 24,
+        labelY: (startY + endY) / 2 - 12,
+        title: [
+          `波次 ${link.wave || '--'}`,
+          `匹配 ${link.matchScore ?? '--'}`,
+          `可行性 ${link.feasibilityScore ?? '--'}`,
+          `距离 ${link.distanceKm ?? '--'} km`,
+          link.previousTargetId ? `一波第 ${link.sequenceOrder || '--'} 目标，前序 ${link.previousTargetName || link.previousTargetId}，目标间距 ${link.sequenceDistanceKm ?? '--'} km` : '一波首要目标',
+          link.reason,
+        ].filter(Boolean).join(' / '),
+      };
+    })
+    .filter(Boolean);
+
+  return {
+    width,
+    height,
+    viewBox: `0 0 ${width} ${height}`,
+    groups,
+    targets,
+    links,
+    legend: [
+      { key: 'wave-1', label: '第一波', color: '#facc15' },
+      { key: 'wave-2', label: '第二波', color: '#38bdf8' },
+      { key: 'wave-late', label: '其他波次', color: '#c084fc' },
+      { key: 'risk', label: '风险/兜底分配', color: '#fb7185' },
+    ],
+  };
+}
+
+function allocationDiagramCanvasStyle(diagram = {}) {
+  return {
+    width: `${Number(diagram.width || 840)}px`,
+    height: `${Number(diagram.height || 260)}px`,
+  };
+}
+
+function allocationDiagramNodeStyle(node = {}) {
+  return {
+    left: `${Number(node.x || 0)}px`,
+    top: `${Number(node.y || 0)}px`,
+    width: `${Number(node.width || 220)}px`,
+    minHeight: `${Number(node.height || 76)}px`,
+  };
+}
+
+function allocationDiagramRiskStyle(link = {}) {
+  return {
+    left: `${Number(link.labelX || 0)}px`,
+    top: `${Number(link.labelY || 0)}px`,
   };
 }
 
@@ -1068,17 +1468,19 @@ function resolveVisualization(output) {
 }
 
 function resolveOverlayImageBase64(overlay = {}, output = {}, heatmap = {}) {
+  const directImage = overlay.imageBase64 || overlay.base64 || overlay.image || overlay.data;
+  if (directImage) return directImage;
+
   const isCurrentHeatmapDisplay = overlay.normalizedForDisplay === true
     && overlay.displayVersion === HEATMAP_DISPLAY_VERSION;
+  const field = overlay.imageBase64Field || overlay.base64Field;
+  const fieldImage = field ? (output[field] || heatmap[field] || '') : '';
+  if (isCurrentHeatmapDisplay && fieldImage) return fieldImage;
   if (!isCurrentHeatmapDisplay) {
     const regeneratedImage = buildHeatmapCanvasDataUrl(heatmap);
     if (regeneratedImage) return regeneratedImage;
   }
-  const directImage = overlay.imageBase64 || overlay.base64 || overlay.image || overlay.data;
-  if (directImage) return directImage;
-  const field = overlay.imageBase64Field || overlay.base64Field;
-  if (field && output[field]) return output[field];
-  if (field && heatmap[field]) return heatmap[field];
+  if (fieldImage) return fieldImage;
   return output.heatmapBase64 || heatmap.base64Png || '';
 }
 
@@ -1388,8 +1790,42 @@ function handleDownloadFile(file) {
         <div class="section-heading compact">
           <div>
             <h3>作战目标分配态势</h3>
-            <p>展示蓝方编组、红方目标、分配箭头、分配清单和方案指标。</p>
+            <p>点击下方方案可切换蓝方编组、红方目标、分配箭头、分配清单和方案指标。</p>
           </div>
+        </div>
+
+        <div
+          v-if="targetAllocationPanel.comparedPlans.length"
+          class="planning-grouping-scheme-grid planning-allocation-plan-grid top-gap"
+        >
+          <button
+            v-for="plan in targetAllocationPanel.comparedPlans"
+            :key="plan.key"
+            type="button"
+            class="planning-grouping-scheme-card"
+            :class="{ active: plan.isSelected, 'planning-grouping-scheme-card--preferred': plan.isPreferred }"
+            :aria-pressed="plan.isSelected"
+            @click="selectTargetAllocationPlan(plan.rawPlan)"
+          >
+            <div class="planning-grouping-scheme-card__head">
+              <div>
+                <div class="capability-stage-pill-row">
+                  <span v-if="plan.isPreferred" class="pill pill-active">推荐</span>
+                  <span v-if="plan.isSelected" class="pill pill-muted">当前查看</span>
+                  <span v-if="plan.isSystemBest && !plan.isPreferred" class="pill pill-muted">系统最优</span>
+                </div>
+                <h4>{{ plan.methodLabel }}</h4>
+                <small>{{ plan.strategyLabel || plan.methodKey }}</small>
+              </div>
+              <strong>{{ plan.score }} 分</strong>
+            </div>
+            <div class="planning-grouping-scheme-card__stats">
+              <span>覆盖 {{ plan.coverage }}</span>
+              <span>分配 {{ plan.assignmentCount }}</span>
+              <span>编组 {{ plan.usedGroupCount ?? '--' }}</span>
+              <span>战损 {{ plan.estimatedLossPercent ?? '--' }}</span>
+            </div>
+          </button>
         </div>
 
         <div class="stats-strip compact-grid four-up">
@@ -1409,6 +1845,96 @@ function handleDownloadFile(file) {
           :threat-field="null"
         />
 
+        <article class="detail-card planning-allocation-diagram-card top-gap">
+          <div class="planning-allocation-diagram-card__head">
+            <div>
+              <span class="eyebrow">Assignment Diagram</span>
+              <h4>编组-目标分配图</h4>
+              <p>左侧为蓝方编组，右侧为红方目标，箭头表示当前查看方案的分配关系。</p>
+            </div>
+            <div class="planning-allocation-diagram-legend">
+              <span
+                v-for="item in targetAllocationPanel.allocationDiagram.legend"
+                :key="item.key"
+              >
+                <i :style="{ background: item.color }"></i>{{ item.label }}
+              </span>
+            </div>
+          </div>
+
+          <div
+            v-if="targetAllocationPanel.allocationDiagram.links.length"
+            class="planning-allocation-diagram-scroll"
+          >
+            <div
+              class="planning-allocation-diagram-canvas"
+              :style="allocationDiagramCanvasStyle(targetAllocationPanel.allocationDiagram)"
+            >
+              <svg
+                class="planning-allocation-diagram-svg"
+                :viewBox="targetAllocationPanel.allocationDiagram.viewBox"
+                preserveAspectRatio="none"
+                aria-hidden="true"
+              >
+                <defs>
+                  <marker id="allocation-arrowhead-wave-1" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+                    <path d="M 0 0 L 10 5 L 0 10 z" fill="#facc15"></path>
+                  </marker>
+                  <marker id="allocation-arrowhead-wave-2" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+                    <path d="M 0 0 L 10 5 L 0 10 z" fill="#38bdf8"></path>
+                  </marker>
+                  <marker id="allocation-arrowhead-wave-late" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="strokeWidth">
+                    <path d="M 0 0 L 10 5 L 0 10 z" fill="#c084fc"></path>
+                  </marker>
+                </defs>
+                <path
+                  v-for="link in targetAllocationPanel.allocationDiagram.links"
+                  :key="link.id"
+                  class="planning-allocation-diagram-link"
+                  :class="{ 'planning-allocation-diagram-link--risk': link.risk }"
+                  :d="link.path"
+                  :stroke="link.color"
+                  :marker-end="`url(#${link.markerId})`"
+                >
+                  <title>{{ link.title }}</title>
+                </path>
+              </svg>
+
+              <div
+                v-for="node in targetAllocationPanel.allocationDiagram.groups"
+                :key="`group-${node.id}`"
+                class="planning-allocation-diagram-node planning-allocation-diagram-node--group"
+                :style="allocationDiagramNodeStyle(node)"
+              >
+                <strong>{{ node.name }}</strong>
+                <span>{{ node.subtitle }}</span>
+                <small>{{ node.meta }} / 分配 {{ node.assignmentCount }}</small>
+              </div>
+
+              <div
+                v-for="node in targetAllocationPanel.allocationDiagram.targets"
+                :key="`target-${node.id}`"
+                class="planning-allocation-diagram-node planning-allocation-diagram-node--target"
+                :style="allocationDiagramNodeStyle(node)"
+              >
+                <strong>{{ node.name }}</strong>
+                <span>{{ node.subtitle }}</span>
+                <small>{{ node.meta }} / 承担 {{ node.assignmentCount }}</small>
+              </div>
+
+              <span
+                v-for="link in targetAllocationPanel.allocationDiagram.links.filter((item) => item.risk)"
+                :key="`risk-${link.id}`"
+                class="planning-allocation-diagram-risk-tag"
+                :style="allocationDiagramRiskStyle(link)"
+              >
+                风险
+              </span>
+            </div>
+          </div>
+          <p v-else class="muted-text top-gap">当前推荐方案未返回可绘制分配关系。</p>
+        </article>
+
         <div class="planning-result-two-column top-gap">
           <article class="detail-card">
             <span class="eyebrow">方案指标</span>
@@ -1424,13 +1950,19 @@ function handleDownloadFile(file) {
                   </tr>
                 </thead>
                 <tbody>
-                  <tr v-for="plan in targetAllocationPanel.comparedPlans" :key="plan.key">
+                  <tr
+                    v-for="plan in targetAllocationPanel.comparedPlans"
+                    :key="plan.key"
+                    :class="{ 'planning-allocation-plan-row--active': plan.isSelected }"
+                    @click="selectTargetAllocationPlan(plan.rawPlan)"
+                  >
                     <td>{{ plan.methodLabel }}</td>
                     <td>{{ plan.score }}</td>
                     <td>{{ plan.coverage }}</td>
                     <td>{{ plan.assignmentCount }}</td>
                     <td>
-                      <span v-if="plan.isPreferred" class="pill pill-active">当前推荐</span>
+                      <span v-if="plan.isSelected" class="pill pill-active">当前查看</span>
+                      <span v-else-if="plan.isPreferred" class="pill pill-muted">推荐</span>
                       <span v-else-if="plan.isSystemBest" class="pill pill-muted">系统最优</span>
                       <span v-else class="pill pill-muted">{{ plan.methodKey }}</span>
                     </td>
@@ -1455,6 +1987,8 @@ function handleDownloadFile(file) {
                   匹配 {{ assignment.matchScore ?? '--' }} /
                   可行性 {{ assignment.feasibilityScore ?? '--' }} /
                   距离 {{ assignment.distanceKm ?? '--' }} km
+                  <br v-if="assignmentFirepowerSummary(assignment)" />
+                  <span v-if="assignmentFirepowerSummary(assignment)">{{ assignmentFirepowerSummary(assignment) }}</span>
                 </p>
                 <small>{{ assignment.reason || assignment.summary || '结构化分配项' }}</small>
               </article>

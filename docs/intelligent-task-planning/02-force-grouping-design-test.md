@@ -9,13 +9,13 @@
 | 默认 methodKey | `hybrid-balanced` |
 | 可选 methodKey | `rule-inference`、`genetic-optimization`、`hybrid-balanced` |
 | 所属模块 | `intelligent-task-planning` |
-| 当前源码位置 | `apps/server/src/planning-runtime.js`：`ALGORITHM_DEFINITIONS`、`GROUPING_RULE_LIBRARIES`、`GROUPING_CONSTRAINT_MODELS`、`runBuiltinForceGrouping()` |
+| 当前源码位置 | `apps/server/src/planning-runtime.js`：`ALGORITHM_DEFINITIONS`、`executeLocalForceGrouping()`、`runBuiltinForceGrouping()`；Python 包位于 `algorithms/battle-planner` |
 | 调用入口 | `executeTaskPlanning()` 根据步骤 `step-force-grouping` 调用 `BUILTIN_EXECUTORS['force-grouping']` |
 | 平台流程作用 | 把我方兵力、文档候选单元与敌情威胁结果组织为多套功能群方案 |
 | 上游 | `enemy-threat-analysis` |
 | 下游 | `target-allocation`、`support-planning` |
 
-当前实现包含规则画像、三类编组方法、基础约束模型、遗传优化轨迹等启发式逻辑。真实算法应优先替换编组求解与约束评估核心，同时保持输出字段。
+当前智能编组实现已切换为 `battle_planner`。旧 `algorithms/force-grouping` Python 智能算法目录已删除；服务端负责把上一阶段敌情威胁结果包装为临时 `planning-artifact-export-v1` JSON，并把智能编组阶段的我方资料文档传给 `battle_planner --friendly`。
 
 ## 二、接口适配说明
 
@@ -45,13 +45,14 @@
 |---|---|---:|---|---|---|---|
 | `builtinMethodKey` | string | 是 | `hybrid-balanced` | 内置方法下拉框 | `runBuiltinForceGrouping()` | 决定首选推荐方案 |
 | `selectedSourceIds` | number[] | 否 | `[]` | 数据源选择弹窗 | `buildSourceBundle()` | 我方资源库数据源 |
-| `uploadedFiles` | object[] | 否 | `[]` | 本地文件上传 | `normalizeUploadedFiles()` | CSV/Excel 可按行拆出兵力候选 |
-| `options.ruleLibraryKey` | string | 否 | `fire-strike-rules` | 规则库下拉框 | `GROUPING_RULE_LIBRARIES` | 火力打击或机降突击规则权重 |
-| `options.constraintModelKey` | string | 否 | `baseline-constraints` | 约束模型下拉框 | `resolveGroupingConstraintModel()` | 当前只有基础编组约束 |
-| `options.comparisonFocus` | string | 否 | `balanced` | 对比侧重下拉框 | 评分函数 | `balanced / firepower-first / survivability-first` |
-| `options.expectedGroupCount` | number | 否 | `4` | 期望群组数输入框 | `clamp(...,3,6)` | 期望输出 3-6 个功能群 |
+| `uploadedFiles` | object[] | 否 | `[]` | 本地文件上传 | `materializeBattlePlannerFriendlyFiles()` | 我方资料文档；`PDF / Excel / CSV` 会先转文本 |
+| `options.ruleLibraryKey` | string | 否 | `fire-strike-rules` | 规则库下拉框 | 兼容保留 | Battle Planner 当前不直接消费，仅保留任务配置兼容 |
+| `options.constraintModelKey` | string | 否 | `baseline-constraints` | 约束模型下拉框 | 兼容保留 | Battle Planner 当前不直接消费，仅保留任务配置兼容 |
+| `options.comparisonFocus` | string | 否 | `balanced` | 对比侧重下拉框 | 兼容保留 | Battle Planner 当前不直接消费，仅保留任务配置兼容 |
+| `options.expectedGroupCount` | number | 否 | `4` | 期望群组数输入框 | `buildBattlePlannerConfig()` | 映射为 Battle Planner `algorithm.max_group_size` 上限之一 |
 
 上游要求：`validatePlanning()` 要求 `enemy-threat-analysis` 已在当前任务步骤中先执行。
+用户不再上传敌情 JSON；服务端会从 `context.stageOutputs['enemy-threat-analysis']` 生成内部临时 JSON。
 
 ### 3. 输出 JSON 完整结构
 
@@ -60,6 +61,8 @@
 | 字段 | 类型 | 生成逻辑 |
 |---|---|---|
 | `implementationStatus` | string | 固定 `implemented` |
+| `algorithmModel` | string | 当前为 `battle-planner-v1` |
+| `battlePlannerResult` | object | `battle_planner` 原始 `PlanResult`，供目标分配阶段复用 |
 | `builtinMethodKey` / `builtinMethodLabel` | string | 输入方法与 label |
 | `ruleLibrary` | object | `{ key, label, description }` |
 | `constraintModel` | object | `{ key, label, description }` |
@@ -68,7 +71,7 @@
 | `selectedSources` | array | 选中数据源摘要 |
 | `importedFiles` | array | 上传文件摘要 |
 | `evidenceTrace` | array | 证据溯源，最多 80 条 |
-| `resolvedRuleProfile` | object | 规则画像、权重摘要、主信号、群组蓝图 |
+| `battlePlannerMetadata` | object | Battle Planner 原始 metadata |
 | `constraintSummary` | object | 首选方案的约束评分与检查项 |
 | `ruleEvidence` | array | 主信号命中的证据 |
 | `schemes` | array | 三种 method 的完整方案 |
@@ -98,7 +101,13 @@
     "blueprintFit": 84,
     "readinessScore": 76,
     "groupCoverage": 100,
-    "constraintSatisfaction": 92
+    "constraintSatisfaction": 92,
+    "targetCoverage": 96,
+    "damageSatisfaction": 94,
+    "highThreatCoverage": 90,
+    "threatRiskControl": 88,
+    "weaponEfficiency": 82,
+    "transportCoverage": 100
   },
   "groups": [
     {
@@ -169,24 +178,24 @@
 
 ```text
 Given:
-  ForcePool = { unit_i(capabilities, role, readiness) }
-  Blueprint = { group_j(role requirements, target mix) }
+  Threat = { overallThreat, firePressure, airDefensePressure, reconPressure, antiAirbornePressure }
+  TargetDemand = { target_j(class, threatMultiplier, protection, scale, priority) }
+  ForcePool = { helicopter_i(role, load, readiness, weapon compatibility) }
 Find:
-  Assignment unit_i -> group_j
+  Target -> firepower package, helicopter_i -> group_j, weapon/personnel/cargo -> platform_i
 Maximize:
-  weighted capabilities + role fit + balance + constraint satisfaction
+  target coverage + damage satisfaction + high threat coverage + threat risk control + transport coverage
 Subject to:
-  group count, role coverage, load balance, candidate availability
+  platform uniqueness, weapon stock, payload, transport capacity, one-wave target limit, reserve attack count
 ```
 
 ### 3. 输入预处理
 
-1. 从资源库筛选蓝方情报 `camp === "blue"`。
-2. 从上传文件的表格/文本中构建 `documentCandidates`。
-3. 合并结构化候选与文档候选为 `forcePool`。
-4. `expectedGroupCount` clamp 到 `3-6`。
-5. 根据候选数量修正 `actualGroupCount`，避免输出大量空组。
-6. 根据 `ruleLibraryKey` 和威胁结果生成 `resolvedRuleProfile`。
+1. 服务端从上游 `enemy-threat-analysis` 输出生成 `planning-artifact-export-v1` 临时敌情 JSON。
+2. 服务端把用户在智能编组阶段传入的 `TXT / MD / JSON / DOCX` 直接传给 `battle_planner`，把 `PDF / Excel / CSV` 转成文本临时文件。
+3. `battle_planner` 读取敌情目标、调用 LLM 生成处置规则，再从我方资料生成友方资源结构。
+4. `battle_planner` 生成 `PlanResult.task_groups / reserve_group / remaining_resources / warnings`。
+5. 平台适配层把 `PlanResult` 转成 `schemes / preferredScheme / groups / targetCoverage / evidenceTrace / constraintSummary`，并保留 `battlePlannerResult`。
 
 ### 4. 关键指标
 
@@ -200,6 +209,12 @@ Subject to:
 | `balance` | 群组均衡度 | 组间能力方差反向分 |
 | `roleFit` | 角色适配 | 单位角色与蓝图偏好匹配 |
 | `constraintSatisfaction` | 约束满足 | `constraintEvaluation.score` |
+| `targetCoverage` | 目标覆盖率 | 目标火力覆盖率均值 |
+| `damageSatisfaction` | 毁伤满足度 | 已分配毁伤 / 需求毁伤 |
+| `highThreatCoverage` | 高威胁目标覆盖 | 高威胁目标覆盖率 |
+| `threatRiskControl` | 敌情风险控制 | 高威胁覆盖叠加侦察/护航链路 |
+| `weaponEfficiency` | 武器效率 | 毁伤需求匹配和毁伤/重量效率 |
+| `transportCoverage` | 运输覆盖 | 人员与物资装载覆盖 |
 
 ### 5. 权重模型
 
@@ -212,28 +227,42 @@ Subject to:
 
 ### 6. 评分模型
 
-方案总分建议：
+当前 v3 方案总分：
 
 ```text
 score =
-  capabilityScore * 0.45
-  + roleFit * 0.18
-  + blueprintFit * 0.14
-  + readinessScore * 0.08
-  + groupCoverage * 0.07
-  + constraintSatisfaction * 0.08
-  - structuralPenalty
+  targetCoverage*0.20
+  + damageSatisfaction*0.18
+  + highThreatCoverage*0.14
+  + threatRiskControl*0.12
+  + weaponEfficiency*0.10
+  + transportCoverage*0.10
+  + readiness*0.08
+  + loadBalance*0.05
+  + explanationConfidence*0.03
+  - constraintPenalty
 ```
 
-`genetic-optimization` 可使用遗传算法、局部搜索或整数规划；`rule-inference` 可保留贪心/规则推理；`hybrid-balanced` 可混合规则初值与局部优化。
+目标火力需求公式：
+
+```text
+requiredDamage =
+  baseDamageByTargetClass
+  * threatMultiplier
+  * protectionMultiplier
+  * scaleMultiplier
+  * priorityMultiplier
+```
+
+其中 `threatMultiplier` 由目标自身威胁、上游总体威胁、火力覆盖压力、防空压力、侦察预警压力和反机降压力共同计算。
 
 ### 7. 约束条件
 
 当前 `baseline-constraints` 校验：
 
 - 功能群完整性。
-- 关键角色覆盖。
-- 威胁适配能力。
+- 高威胁目标覆盖。
+- 敌情风险控制链。
 - 兵力负载均衡。
 
 真实约束模型应输出同构结构：
@@ -350,4 +379,3 @@ assert.ok(['pass', 'warn', 'fail'].includes(output.constraintSummary.overallStat
 - 约束模型必须返回可解释 checks，不允许只返回一个总分。
 - 下游 `target-allocation` 能从 `preferredScheme.groups[].units` 构建平台。
 - 与当前标准结果兼容，不删除 `ruleEvidence/evidenceTrace/resolvedRuleProfile`。
-

@@ -224,7 +224,7 @@ flowchart TD
 
 - `ALGORITHM_DEFINITIONS`：声明算法 id、名称、分类、输入输出、内置方法、默认配置、文件类型、规则库/约束模型。
 - `BUILTIN_EXECUTORS`：把算法 id 映射到内置执行函数。
-- `buildRuntimeCatalog()`：构建 `builtin` 与外部工程运行时；当前 `PLANNING_EXTERNAL_ALGORITHM_PROJECTS = []`。
+- `buildRuntimeCatalog()`：构建 `builtin` 与本地 Python 工程运行时；当前 active 本地变体包括敌情分析、Battle Planner 编组/分配适配、机降选址。
 - `buildAlgorithmVariants()`：把运行时转换为前端可选实现，形成 `${algorithmId}:${runtimeKey}`。
 - 任务模板 `buildFireStrikeTask()` 与 `buildAirAssaultTask()`：声明步骤顺序与默认绑定。
 
@@ -232,7 +232,7 @@ flowchart TD
 
 - 前端流程编排页修改 `state.algorithmBindings[step.id]`。
 - 后端 `resolveBindingVariant(step, algorithm, task, bindings)` 按 `bindings -> task.defaultBindings -> algorithm.defaultVariantId -> variants[0]` 回退。
-- 当前只有 6 个 `:builtin` 变体；外部工程恢复后要补 `PLANNING_EXTERNAL_ALGORITHM_PROJECTS`、参数 schema、默认参数和网关 URL 环境变量。
+- 旧 `force-grouping` / `target-allocation` Python 智能算法目录已删除；`force-grouping-local` 与 `target-allocation-local` 都通过 `algorithms/battle-planner` 提供能力，其中分配阶段复用编组阶段 `battlePlannerResult.task_groups`，不重复调用 Python/LLM。
 
 ## 9. 上下游关系与共享模型
 

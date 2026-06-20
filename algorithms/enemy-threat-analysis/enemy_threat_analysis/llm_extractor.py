@@ -640,6 +640,24 @@ def _coerce_target(value: Any, index: int) -> dict[str, Any]:
     target = dict(value or {}) if isinstance(value, dict) else {"name": str(value)}
     target.setdefault("id", f"target-{index:03d}")
     target.setdefault("name", target["id"])
+    target["groupId"] = str(
+        target.get("groupId")
+        or target.get("group_id")
+        or target.get("clusterId")
+        or target.get("cluster_id")
+        or target.get("targetGroupId")
+        or target.get("target_group_id")
+        or ""
+    ).strip()
+    target["groupName"] = str(
+        target.get("groupName")
+        or target.get("group_name")
+        or target.get("clusterName")
+        or target.get("cluster_name")
+        or target.get("targetGroupName")
+        or target.get("target_group_name")
+        or ""
+    ).strip()
     target.setdefault("category", "unknown")
     target["subCategory"] = str(target.get("subCategory") or target.get("sub_category") or "")
     target.setdefault("camp", "red")
