@@ -187,9 +187,30 @@ export const api = {
   evaluatePlanningStream(payload, handlers = {}) {
     return requestEventStream('/api/planning/evaluate/stream', payload, handlers);
   },
+  evaluatePlanningRealtimeStepStream(payload, handlers = {}) {
+    return requestEventStream('/api/planning/realtime/steps/evaluate/stream', payload, handlers);
+  },
   validatePlanning(payload) {
     return request('/api/planning/validate', {
       method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  },
+  getPlanningUpstreamResults(filters = {}) {
+    const params = new URLSearchParams();
+    if (filters.taskId) params.set('taskId', String(filters.taskId));
+    if (filters.algorithmId) params.set('algorithmId', String(filters.algorithmId));
+    if (filters.query) params.set('query', String(filters.query));
+    if (filters.limit) params.set('limit', String(filters.limit));
+    if (filters.offset) params.set('offset', String(filters.offset));
+    return request(`/api/planning/realtime/upstream-results${params.toString() ? `?${params.toString()}` : ''}`);
+  },
+  getPlanningRealtimeArtifact(id) {
+    return request(`/api/planning/realtime/artifacts/${id}`);
+  },
+  updatePlanningRealtimeArtifact(id, payload) {
+    return request(`/api/planning/realtime/artifacts/${id}`, {
+      method: 'PATCH',
       body: JSON.stringify(payload),
     });
   },

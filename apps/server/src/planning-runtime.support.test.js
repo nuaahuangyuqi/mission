@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import {
   __planningRuntimeTestHooks,
   evaluatePlanning,
+  evaluatePlanningRealtimeStep,
   getPlanningTemplate,
   testPlanningLlm,
   validatePlanning,
@@ -125,6 +126,84 @@ function createBattlePlannerNoWeaponsFriendlyUpload() {
         constraints: { preserve_reserve: false },
       },
     }), 'utf8').toString('base64'),
+  };
+}
+
+function createRealtimeForceGroupingOutput() {
+  return {
+    implementationStatus: 'implemented',
+    preferredSchemeId: 'scheme-realtime-force',
+    preferredScheme: {
+      id: 'scheme-realtime-force',
+      name: '实时编组结果',
+      score: 86,
+      groups: [
+        {
+          id: 'group-realtime-1',
+          name: '实时主攻群',
+          role: 'strike',
+          unitCount: 2,
+          firepower: 88,
+          protection: 64,
+          reconCoverage: 42,
+          endurance: 55,
+          units: [
+            {
+              id: 'unit-realtime-1',
+              name: '武装直升机一号',
+              category: 'attack_helicopter',
+              role: 'strike',
+              strength: 4,
+              readiness: 'available',
+              coordinates: [118.05, 32.0, 0],
+              capabilities: {
+                firepower: 88,
+                protection: 62,
+                recon: 44,
+                support: 52,
+              },
+              weaponLoadout: [
+                { name: '空地导弹', quantity: 8 },
+              ],
+            },
+            {
+              id: 'unit-realtime-2',
+              name: '侦察直升机一号',
+              category: 'recon_helicopter',
+              role: 'recon',
+              strength: 2,
+              readiness: 'available',
+              coordinates: [118.07, 32.02, 0],
+              capabilities: {
+                firepower: 35,
+                protection: 48,
+                recon: 86,
+                support: 58,
+              },
+            },
+          ],
+        },
+      ],
+    },
+  };
+}
+
+function createRealtimeSingleStepTask(algorithmId = 'target-allocation') {
+  return {
+    id: 'realtime-single-step-task',
+    name: '实时单步任务',
+    category: '测试任务',
+    steps: [
+      {
+        id: `step-${algorithmId}`,
+        order: 1,
+        name: algorithmId === 'target-allocation' ? '作战目标自动分配' : algorithmId,
+        algorithmId,
+        objective: '实时执行测试',
+        consumes: ['前置结果'],
+        produces: ['实时产物'],
+      },
+    ],
   };
 }
 
@@ -694,6 +773,103 @@ test('planning validation accepts local Python variants in a mixed task flow', a
       'target-allocation:builtin',
       'airborne-landing-site-selection:airlanding-zone-local',
     ],
+  );
+});
+
+test('realtime step execution injects upstream artifacts into single algorithm context', async () => {
+  const result = await evaluatePlanningRealtimeStep({
+    assessmentName: '实时目标分配测试',
+    taskDefinition: createRealtimeSingleStepTask('target-allocation'),
+    algorithmId: 'target-allocation',
+    stepId: 'step-target-allocation',
+    bindings: {
+      'step-target-allocation': 'target-allocation:target-allocation-local',
+    },
+    algorithmInputs: {
+      'target-allocation': {
+        builtinMethodKey: 'multi-objective',
+        selectedSourceIds: [],
+        uploadedFiles: [],
+        options: {
+          objectivePreference: 'balanced',
+          validationMode: 'standard',
+          maxAssignmentsPerGroup: 2,
+        },
+      },
+    },
+    inputResultRefs: [
+      { sourceType: 'task-run-step', taskId: 101, runId: 201, stepId: 'step-threat-analysis' },
+      { sourceType: 'task-run-step', taskId: 102, runId: 202, stepId: 'step-force-grouping' },
+    ],
+    inputArtifacts: [
+      {
+        id: 'task-run-step:101:201:step-threat-analysis',
+        sourceType: 'task-run-step',
+        algorithmId: 'enemy-threat-analysis',
+        stepId: 'step-threat-analysis',
+        displayName: '历史敌情结果',
+        resultPayload: {
+          structuredOutput: createBattlePlannerThreatOutput(),
+        },
+      },
+      {
+        id: 'task-run-step:102:202:step-force-grouping',
+        sourceType: 'task-run-step',
+        algorithmId: 'force-grouping',
+        stepId: 'step-force-grouping',
+        displayName: '历史编组结果',
+        resultPayload: {
+          structuredOutput: createRealtimeForceGroupingOutput(),
+        },
+      },
+    ],
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.mode, 'realtime-step');
+  assert.equal(result.step.algorithm.id, 'target-allocation');
+  assert.equal(result.context.injectedArtifactCount, 2);
+  assert.deepEqual(
+    result.inputResultRefs.map((item) => item.sourceType),
+    ['task-run-step', 'task-run-step'],
+  );
+  assert.ok(result.structuredOutput.preferredPlan.assignments.length > 0);
+});
+
+test('realtime step execution rejects duplicate upstream algorithm artifacts', async () => {
+  await assert.rejects(
+    () => evaluatePlanningRealtimeStep({
+      assessmentName: '重复上游结果测试',
+      taskDefinition: createRealtimeSingleStepTask('target-allocation'),
+      algorithmId: 'target-allocation',
+      stepId: 'step-target-allocation',
+      bindings: {
+        'step-target-allocation': 'target-allocation:builtin',
+      },
+      algorithmInputs: {
+        'target-allocation': {
+          builtinMethodKey: 'multi-objective',
+          selectedSourceIds: [],
+          uploadedFiles: [],
+          options: {},
+        },
+      },
+      inputArtifacts: [
+        {
+          id: 'artifact-threat-1',
+          algorithmId: 'enemy-threat-analysis',
+          stepId: 'step-threat-analysis',
+          resultPayload: { structuredOutput: createBattlePlannerThreatOutput() },
+        },
+        {
+          id: 'artifact-threat-2',
+          algorithmId: 'enemy-threat-analysis',
+          stepId: 'step-threat-analysis-alt',
+          resultPayload: { structuredOutput: createBattlePlannerThreatOutput() },
+        },
+      ],
+    }),
+    /同一算法类型一次只能选择一个输入产物/,
   );
 });
 

@@ -171,3 +171,149 @@ test('task list omits planning payload blobs while task detail rehydrates upload
     await stopServer(child);
   }
 });
+
+test('planning upstream results include task run steps and validate realtime refs', async () => {
+  const port = createPort();
+  const child = await startServer(port);
+
+  try {
+    const cookie = await login(port);
+    const fileContentBase64 = Buffer.from('东侧发现防空节点，北侧存在通信中继站。', 'utf8').toString('base64');
+    const createResponse = await fetch(`http://localhost:${port}/api/tasks`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        cookie,
+      },
+      body: JSON.stringify({
+        moduleKey: 'planning',
+        name: `upstream-task-${Date.now()}`,
+        planningTemplateId: 'fire-strike-task',
+        planningTaskDefinition: {
+          id: 'upstream-threat-only',
+          name: '上游结果测试任务',
+          category: '测试',
+          steps: [
+            {
+              id: 'step-threat-analysis',
+              order: 1,
+              name: '敌情威胁自动分析',
+              algorithmId: 'enemy-threat-analysis',
+              objective: '生成敌情结果',
+              consumes: ['本地文件'],
+              produces: ['威胁模型'],
+            },
+          ],
+          defaultBindings: {
+            'step-threat-analysis': 'enemy-threat-analysis:builtin',
+          },
+        },
+        planningBindings: {
+          'step-threat-analysis': 'enemy-threat-analysis:builtin',
+        },
+        planningAlgorithmInputs: {
+          'enemy-threat-analysis': {
+            builtinMethodKey: 'knowledge-fusion',
+            selectedSourceIds: [],
+            uploadedFiles: [
+              {
+                id: 'upstream-file-1',
+                fileName: 'enemy-upstream.txt',
+                fileExtension: '.txt',
+                size: 66,
+                fileContentBase64,
+              },
+            ],
+            options: {
+              analysisFocus: 'comprehensive',
+              heatmapDensity: 'low',
+              impactBias: 'balanced',
+            },
+          },
+        },
+      }),
+    });
+
+    assert.equal(createResponse.status, 201);
+    const createdPayload = await createResponse.json();
+    const taskId = createdPayload?.task?.id;
+    assert.ok(taskId);
+
+    const evaluateResponse = await fetch(`http://localhost:${port}/api/planning/evaluate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        cookie,
+      },
+      body: JSON.stringify({
+        taskCenterId: taskId,
+        assessmentName: '上游结果测试执行',
+      }),
+    });
+    assert.equal(evaluateResponse.status, 200);
+    const evaluatedPayload = await evaluateResponse.json();
+    const runId = evaluatedPayload.runId;
+    assert.ok(runId);
+
+    const listResponse = await fetch(`http://localhost:${port}/api/planning/realtime/upstream-results?algorithmId=enemy-threat-analysis`, {
+      headers: { cookie },
+    });
+    assert.equal(listResponse.status, 200);
+    const listPayload = await listResponse.json();
+    const taskRunStep = (listPayload.results || []).find((item) => (
+      item.sourceType === 'task-run-step'
+      && Number(item.taskId) === Number(taskId)
+      && Number(item.runId) === Number(runId)
+      && item.algorithmId === 'enemy-threat-analysis'
+    ));
+    assert.ok(taskRunStep);
+    assert.deepEqual(taskRunStep.resultRef, {
+      sourceType: 'task-run-step',
+      taskId,
+      runId,
+      stepId: 'step-threat-analysis',
+      algorithmId: 'enemy-threat-analysis',
+    });
+
+    const duplicateResponse = await fetch(`http://localhost:${port}/api/planning/realtime/steps/evaluate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        cookie,
+      },
+      body: JSON.stringify({
+        taskCenterId: taskId,
+        algorithmId: 'force-grouping',
+        inputResultRefs: [taskRunStep.resultRef, taskRunStep.resultRef],
+      }),
+    });
+    assert.equal(duplicateResponse.status, 400);
+    const duplicatePayload = await duplicateResponse.json();
+    assert.equal(duplicatePayload.error.code, 'PLANNING_REALTIME_DUPLICATE_INPUT');
+
+    const missingResponse = await fetch(`http://localhost:${port}/api/planning/realtime/steps/evaluate`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        cookie,
+      },
+      body: JSON.stringify({
+        taskCenterId: taskId,
+        algorithmId: 'force-grouping',
+        inputResultRefs: [
+          {
+            sourceType: 'task-run-step',
+            taskId,
+            runId: runId + 99999,
+            stepId: 'step-threat-analysis',
+          },
+        ],
+      }),
+    });
+    assert.equal(missingResponse.status, 404);
+    const missingPayload = await missingResponse.json();
+    assert.equal(missingPayload.error.code, 'PLANNING_MISSING_DATA');
+  } finally {
+    await stopServer(child);
+  }
+});

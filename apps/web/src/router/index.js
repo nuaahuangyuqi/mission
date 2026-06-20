@@ -58,6 +58,7 @@ const router = createRouter({
       children: [
         { path: '', redirect: { name: 'planning-algorithms' } },
         { path: 'algorithms', name: 'planning-algorithms', component: () => import('../views/planning/PlanningAlgorithmsStep.vue'), meta: { requiresAuth: true } },
+        { path: 'step-execution', name: 'planning-step-execution', component: () => import('../views/planning/PlanningStepExecutionStep.vue'), meta: { requiresAuth: true } },
         {
           path: 'tasks',
           component: () => import('../views/planning/PlanningTasksStep.vue'),

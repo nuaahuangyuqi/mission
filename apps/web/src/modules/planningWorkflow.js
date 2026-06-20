@@ -143,6 +143,24 @@ function createExecutionStreamState() {
   };
 }
 
+function createStepExecutionState() {
+  return {
+    activeView: 'config',
+    selectedAlgorithmId: '',
+    selectedBindingId: '',
+    inputResultRefsByAlgorithm: {},
+    upstreamResults: [],
+    upstreamResultsLoading: false,
+    upstreamQuery: '',
+    currentArtifact: null,
+    selectedArtifact: null,
+    latestResult: null,
+    calculating: false,
+    executionStream: createExecutionStreamState(),
+    errorMessage: '',
+  };
+}
+
 const state = reactive({
   loading: false,
   calculating: false,
@@ -168,10 +186,12 @@ const state = reactive({
   savedResultSnapshots: [],
   storageScope: '',
   executionStream: createExecutionStreamState(),
+  stepExecution: createStepExecutionState(),
 });
 
 let persistTimer = null;
 let planningExecutionAbortController = null;
+let stepExecutionAbortController = null;
 
 const currentUser = computed(() => authState.user || { username: '', role: 'user' });
 const algorithmLibrary = computed(() => state.template?.algorithms || []);
@@ -310,6 +330,48 @@ const intelligenceRecords = computed(() => state.resources.intelligence || []);
 const environmentRecords = computed(() => state.resources.environment || []);
 const extractionRecords = computed(() => state.resources.extractions || []);
 const runHistory = computed(() => state.runHistory || []);
+const stepExecutionSelectedAlgorithm = computed(() => (
+  getAlgorithmById(state.stepExecution.selectedAlgorithmId) || algorithmLibrary.value[0] || null
+));
+const stepExecutionSelectedStep = computed(() => {
+  const algorithmId = stepExecutionSelectedAlgorithm.value?.id || '';
+  return orderedTaskSteps.value.find((step) => step.algorithmId === algorithmId) || {
+    id: algorithmId ? `realtime-${algorithmId}` : '',
+    order: 1,
+    name: stepExecutionSelectedAlgorithm.value?.name || '分步执行算法',
+    algorithmId,
+    objective: stepExecutionSelectedAlgorithm.value?.description || '',
+    consumes: cloneData(stepExecutionSelectedAlgorithm.value?.expectedInputs || []),
+    produces: cloneData(stepExecutionSelectedAlgorithm.value?.expectedOutputs || []),
+  };
+});
+const stepExecutionSelectedVariant = computed(() => {
+  const algorithm = stepExecutionSelectedAlgorithm.value;
+  const step = stepExecutionSelectedStep.value;
+  if (!algorithm) return null;
+  const variantId = state.stepExecution.selectedBindingId
+    || (step?.id ? state.algorithmBindings?.[step.id] : '')
+    || algorithm.defaultVariantId
+    || `${algorithm.id}:builtin`;
+  return getVariant(algorithm, variantId);
+});
+const stepExecutionRequiredUpstreamIds = computed(() => {
+  const algorithmId = stepExecutionSelectedAlgorithm.value?.id || '';
+  const algorithm = stepExecutionSelectedAlgorithm.value || {};
+  const required = new Set(safeArray(algorithm.requiredUpstreamAlgorithmIds));
+  const previousAlgorithmIds = orderedTaskSteps.value
+    .filter((step) => Number(step.order || 0) < Number(stepExecutionSelectedStep.value?.order || 0))
+    .map((step) => step.algorithmId);
+  if (algorithmId === 'support-planning' && previousAlgorithmIds.includes('airborne-landing-site-selection')) {
+    required.add('airborne-landing-site-selection');
+  }
+  return [...required];
+});
+const stepExecutionOptionalUpstreamIds = computed(() => {
+  const algorithm = stepExecutionSelectedAlgorithm.value || {};
+  const required = new Set(stepExecutionRequiredUpstreamIds.value);
+  return safeArray(algorithm.optionalUpstreamAlgorithmIds).filter((item) => !required.has(item));
+});
 
 const resourceSummary = computed(() => ({
   sourceCount: sourceOptions.value.length,
@@ -388,6 +450,10 @@ function resetExecutionStream() {
   state.executionStream = createExecutionStreamState();
 }
 
+function resetStepExecutionStream() {
+  state.stepExecution.executionStream = createExecutionStreamState();
+}
+
 function isAbortError(error) {
   return error?.name === 'AbortError'
     || error?.code === 'ABORT_ERR'
@@ -446,30 +512,38 @@ function updateStreamStep(stepId, patch = {}) {
   });
 }
 
-function appendTerminalLine(payload = {}) {
+function appendTerminalLineToStream(streamState, payload = {}) {
   const rawMessage = String(payload.message || payload.raw || '').trimEnd();
   if (!rawMessage) return;
   const lines = rawMessage.split(/\r?\n/).filter(Boolean).map((line) => ({
     timestamp: payload.timestamp || new Date().toISOString(),
-    stepName: payload.stepName || state.executionStream.currentStepName || '',
+    stepName: payload.stepName || streamState.currentStepName || '',
     stream: payload.stream || 'terminal',
     message: line,
   }));
-  state.executionStream.terminalLines = [...state.executionStream.terminalLines, ...lines].slice(-320);
+  streamState.terminalLines = [...safeArray(streamState.terminalLines), ...lines].slice(-320);
 }
 
-function appendLlmChunk(payload = {}) {
+function appendTerminalLine(payload = {}) {
+  appendTerminalLineToStream(state.executionStream, payload);
+}
+
+function appendLlmChunkToStream(streamState, payload = {}) {
   const content = String(payload.content || payload.raw || '');
   if (!content) return;
-  let chunks = [...state.executionStream.llmChunks, {
+  let chunks = [...safeArray(streamState.llmChunks), {
     timestamp: payload.timestamp || new Date().toISOString(),
-    stepName: payload.stepName || state.executionStream.currentStepName || '',
+    stepName: payload.stepName || streamState.currentStepName || '',
     content,
   }];
   while (chunks.reduce((total, item) => total + String(item.content || '').length, 0) > 16000) {
     chunks = chunks.slice(1);
   }
-  state.executionStream.llmChunks = chunks;
+  streamState.llmChunks = chunks;
+}
+
+function appendLlmChunk(payload = {}) {
+  appendLlmChunkToStream(state.executionStream, payload);
 }
 
 function handlePlanningStreamEvent(eventType, payload = {}) {
@@ -546,6 +620,111 @@ function handlePlanningStreamEvent(eventType, payload = {}) {
     state.executionStream.active = false;
     state.executionStream.done = true;
     if (payload.status === 'succeeded') state.executionStream.progress = 100;
+  }
+}
+
+function pushStepExecutionEvent(eventType, payload = {}) {
+  const streamState = state.stepExecution.executionStream;
+  const entry = {
+    type: eventType,
+    timestamp: payload.timestamp || new Date().toISOString(),
+    message: payload.message || payload.summary || '',
+  };
+  streamState.events = [...safeArray(streamState.events), entry].slice(-120);
+  streamState.currentEvent = eventType;
+}
+
+function updateStepExecutionStreamStep(stepId, patch = {}) {
+  const streamState = state.stepExecution.executionStream;
+  const normalizedStepId = String(stepId || patch.stepId || '');
+  if (!normalizedStepId) return;
+  const list = [...safeArray(streamState.stepStates)];
+  const index = list.findIndex((item) => item.stepId === normalizedStepId);
+  const next = {
+    ...(index >= 0 ? list[index] : {}),
+    stepId: normalizedStepId,
+    stepName: patch.stepName || (index >= 0 ? list[index].stepName : ''),
+    algorithmId: patch.algorithmId || (index >= 0 ? list[index].algorithmId : ''),
+    bindingName: patch.bindingName || (index >= 0 ? list[index].bindingName : ''),
+    order: patch.order ?? (index >= 0 ? list[index].order : list.length + 1),
+    status: patch.status || (index >= 0 ? list[index].status : 'pending'),
+    summary: patch.summary || (index >= 0 ? list[index].summary : ''),
+    durationMs: patch.durationMs ?? (index >= 0 ? list[index].durationMs : null),
+  };
+  if (index >= 0) list[index] = next;
+  else list.push(next);
+  streamState.stepStates = list.sort((left, right) => Number(left.order || 0) - Number(right.order || 0));
+}
+
+function handleStepExecutionStreamEvent(eventType, payload = {}) {
+  const streamState = state.stepExecution.executionStream;
+  pushStepExecutionEvent(eventType, payload);
+  if (payload.runId) streamState.runId = Number(payload.runId);
+  if (payload.taskCenterId) streamState.taskCenterId = Number(payload.taskCenterId);
+
+  if (eventType === 'run-start') {
+    streamState.active = true;
+    streamState.done = false;
+    streamState.currentEvent = payload.phase || eventType;
+    streamState.progress = Math.max(streamState.progress, 1);
+    appendTerminalLineToStream(streamState, { ...payload, stream: 'system', message: payload.realtime ? '分步执行流已启动。' : '规划流式执行已启动。' });
+    return;
+  }
+
+  if (eventType === 'step-start') {
+    streamState.active = true;
+    streamState.currentStepId = payload.stepId || '';
+    streamState.currentStepName = payload.stepName || '';
+    updateStepExecutionStreamStep(payload.stepId, { ...payload, status: 'running' });
+    appendTerminalLineToStream(streamState, { ...payload, stream: 'system', message: `开始执行：${payload.stepName || payload.algorithmName || '规划步骤'}` });
+    return;
+  }
+
+  if (eventType === 'progress') {
+    streamState.progress = Math.max(0, Math.min(100, Number(payload.progress || streamState.progress)));
+    streamState.currentStepId = payload.currentStepId || streamState.currentStepId;
+    streamState.currentStepName = payload.currentStepName || streamState.currentStepName;
+    return;
+  }
+
+  if (eventType === 'terminal') {
+    appendTerminalLineToStream(streamState, payload);
+    return;
+  }
+
+  if (eventType === 'llm-chunk') {
+    appendLlmChunkToStream(streamState, payload);
+    return;
+  }
+
+  if (eventType === 'step-complete') {
+    streamState.progress = Math.max(streamState.progress, Number(payload.progress || 0));
+    updateStepExecutionStreamStep(payload.stepId, { ...payload, status: 'completed' });
+    appendTerminalLineToStream(streamState, { ...payload, stream: 'system', message: `完成步骤：${payload.stepName || '规划步骤'}。${payload.summary || ''}` });
+    return;
+  }
+
+  if (eventType === 'final') {
+    state.stepExecution.latestResult = payload.result || null;
+    state.stepExecution.currentArtifact = payload.artifact || null;
+    state.stepExecution.selectedArtifact = payload.artifact || null;
+    streamState.progress = 100;
+    appendTerminalLineToStream(streamState, { ...payload, stream: 'system', message: '分步执行结果已生成并归档。' });
+    return;
+  }
+
+  if (eventType === 'error') {
+    streamState.errorMessage = payload.message || '分步执行失败。';
+    state.stepExecution.errorMessage = streamState.errorMessage;
+    if (payload.stepId) updateStepExecutionStreamStep(payload.stepId, { ...payload, status: 'failed', summary: payload.message || '' });
+    appendTerminalLineToStream(streamState, { ...payload, stream: 'error', message: payload.message || '分步执行失败。' });
+    return;
+  }
+
+  if (eventType === 'done') {
+    streamState.active = false;
+    streamState.done = true;
+    if (payload.status === 'succeeded') streamState.progress = 100;
   }
 }
 
@@ -626,6 +805,9 @@ async function loadPlanningTemplate() {
   if (!state.selectedTaskId && state.taskTemplates.length) state.selectedTaskId = state.taskTemplates[0].id;
   if (!state.assessmentName) state.assessmentName = payload.title || '智能任务规划任务';
   state.algorithmInputs = Object.keys(state.algorithmInputs).length ? mergeAlgorithmInputsWithDefaults(state.algorithmInputs) : buildDefaultAlgorithmInputs(payload);
+  if (!state.stepExecution.selectedAlgorithmId && safeArray(payload.algorithms).length) {
+    state.stepExecution.selectedAlgorithmId = payload.algorithms[0].id;
+  }
 }
 
 async function loadPlanningResources() {
@@ -877,6 +1059,182 @@ function terminatePlanningExecution() {
     planningExecutionAbortController.abort();
   }
   markPlanningExecutionTerminated();
+}
+
+function setStepExecutionView(view = 'config') {
+  state.stepExecution.activeView = view === 'run' ? 'run' : 'config';
+}
+
+function setStepExecutionAlgorithm(algorithmId) {
+  const algorithm = getAlgorithmById(algorithmId);
+  if (!algorithm) return;
+  state.stepExecution.selectedAlgorithmId = algorithm.id;
+  state.stepExecution.selectedBindingId = '';
+  state.stepExecution.inputResultRefsByAlgorithm = {};
+  state.stepExecution.latestResult = null;
+  state.stepExecution.currentArtifact = null;
+  state.stepExecution.selectedArtifact = null;
+  state.stepExecution.errorMessage = '';
+  resetStepExecutionStream();
+}
+
+function setStepExecutionBinding(variantId) {
+  state.stepExecution.selectedBindingId = normalizePlanningVariantId(variantId);
+  state.stepExecution.errorMessage = '';
+}
+
+function setStepExecutionUpstreamQuery(value) {
+  state.stepExecution.upstreamQuery = String(value || '');
+}
+
+function selectStepExecutionInputResult(upstreamAlgorithmId, resultRef = null) {
+  const key = String(upstreamAlgorithmId || '').trim();
+  if (!key) return;
+  const next = { ...safeObject(state.stepExecution.inputResultRefsByAlgorithm) };
+  if (!resultRef) delete next[key];
+  else next[key] = cloneData(resultRef);
+  state.stepExecution.inputResultRefsByAlgorithm = next;
+  state.stepExecution.errorMessage = '';
+}
+
+function selectStepExecutionArtifact(artifact = null) {
+  state.stepExecution.selectedArtifact = artifact || null;
+  const resultPayload = safeObject(artifact?.resultPayload);
+  state.stepExecution.latestResult = resultPayload?.step ? resultPayload : state.stepExecution.latestResult;
+}
+
+async function loadStepExecutionUpstreamResults(filters = {}) {
+  state.stepExecution.upstreamResultsLoading = true;
+  try {
+    const response = await api.getPlanningUpstreamResults({
+      query: filters.query ?? state.stepExecution.upstreamQuery,
+      limit: filters.limit || 160,
+      offset: filters.offset || 0,
+    });
+    state.stepExecution.upstreamResults = safeArray(response?.results);
+    return state.stepExecution.upstreamResults;
+  } catch (error) {
+    state.stepExecution.errorMessage = formatPlanningError(error);
+    throw error;
+  } finally {
+    state.stepExecution.upstreamResultsLoading = false;
+  }
+}
+
+async function loadStepExecutionArtifact(artifactId) {
+  if (!artifactId) return null;
+  const response = await api.getPlanningRealtimeArtifact(artifactId);
+  const artifact = response?.artifact || null;
+  if (artifact) selectStepExecutionArtifact(artifact);
+  return artifact;
+}
+
+function buildStepExecutionPayload() {
+  const algorithm = stepExecutionSelectedAlgorithm.value;
+  const step = stepExecutionSelectedStep.value;
+  const variant = stepExecutionSelectedVariant.value;
+  if (!selectedTaskInstance.value) {
+    const error = new Error('请先选择或创建一个规划任务实例，再进行分步执行。');
+    error.type = 'missing_data';
+    throw error;
+  }
+  if (!algorithm?.id) {
+    const error = new Error('请选择要执行的规划算法。');
+    error.type = 'missing_data';
+    throw error;
+  }
+  if (!variant?.id) {
+    const error = new Error('请选择可用的算法实现。');
+    error.type = 'missing_data';
+    throw error;
+  }
+
+  const selectedRefs = Object.values(safeObject(state.stepExecution.inputResultRefsByAlgorithm)).filter(Boolean);
+  const missingRequired = stepExecutionRequiredUpstreamIds.value.filter((algorithmId) => (
+    !selectedRefs.some((ref) => String(ref.algorithmId || '') === algorithmId)
+  ));
+  if (missingRequired.length) {
+    const error = new Error(`缺少前置算法结果：${missingRequired.join(' / ')}。`);
+    error.type = 'missing_upstream';
+    throw error;
+  }
+
+  const displayName = `${algorithm.name}-${new Date().toISOString().slice(0, 19).replace('T', ' ')}`;
+  return {
+    taskCenterId: selectedTaskInstance.value.id,
+    assessmentName: state.assessmentName,
+    algorithmId: algorithm.id,
+    stepId: step?.id || '',
+    bindingId: variant.id,
+    algorithmInput: getAlgorithmInput(algorithm.id),
+    inputResultRefs: selectedRefs.map((ref) => cloneData(ref)),
+    displayName,
+    description: selectedRefs.length ? `前置结果 ${selectedRefs.length} 个` : '无前置结果单步执行',
+  };
+}
+
+function markStepExecutionTerminated(message = '分步执行已终止。') {
+  const streamState = state.stepExecution.executionStream;
+  streamState.active = false;
+  streamState.done = true;
+  streamState.cancelRequested = true;
+  streamState.terminated = true;
+  streamState.errorMessage = message;
+  state.stepExecution.errorMessage = message;
+  appendTerminalLineToStream(streamState, {
+    stream: 'system',
+    message,
+    timestamp: new Date().toISOString(),
+  });
+}
+
+async function executePlanningRealtimeStep() {
+  state.stepExecution.calculating = true;
+  state.stepExecution.errorMessage = '';
+  resetStepExecutionStream();
+  stepExecutionAbortController = new AbortController();
+
+  try {
+    await persistCurrentTaskConfig({ silent: true });
+    const payload = buildStepExecutionPayload();
+    const response = await api.evaluatePlanningRealtimeStepStream(payload, {
+      onEvent: handleStepExecutionStreamEvent,
+      signal: stepExecutionAbortController.signal,
+    });
+    if (!response?.result) {
+      const error = new Error(state.stepExecution.executionStream.errorMessage || '分步执行流未返回最终结果。');
+      error.type = 'algorithm_failed';
+      throw error;
+    }
+    state.stepExecution.latestResult = response.result;
+    state.stepExecution.currentArtifact = response.artifact || null;
+    state.stepExecution.selectedArtifact = response.artifact || null;
+    state.stepExecution.activeView = 'run';
+    await loadStepExecutionUpstreamResults({ limit: 160 });
+    return response;
+  } catch (error) {
+    if (state.stepExecution.executionStream.cancelRequested || isAbortError(error)) {
+      markStepExecutionTerminated();
+      return null;
+    }
+    state.stepExecution.executionStream.active = false;
+    state.stepExecution.executionStream.done = true;
+    state.stepExecution.executionStream.errorMessage = state.stepExecution.executionStream.errorMessage || error.message || '分步执行失败。';
+    state.stepExecution.errorMessage = formatPlanningError(error);
+    throw error;
+  } finally {
+    stepExecutionAbortController = null;
+    state.stepExecution.calculating = false;
+  }
+}
+
+function terminatePlanningRealtimeStep() {
+  if (!state.stepExecution.calculating && !state.stepExecution.executionStream.active) return;
+  state.stepExecution.executionStream.cancelRequested = true;
+  if (stepExecutionAbortController) {
+    stepExecutionAbortController.abort();
+  }
+  markStepExecutionTerminated();
 }
 
 function setPlanningStage(stageKey) {
@@ -1148,6 +1506,11 @@ export function usePlanningWorkflow() {
     environmentRecords,
     extractionRecords,
     runHistory,
+    stepExecutionSelectedAlgorithm,
+    stepExecutionSelectedStep,
+    stepExecutionSelectedVariant,
+    stepExecutionRequiredUpstreamIds,
+    stepExecutionOptionalUpstreamIds,
     resourceSummary,
     workflowSummary,
     initializePlanningWorkflow,
@@ -1158,6 +1521,16 @@ export function usePlanningWorkflow() {
     replayTaskRun,
     calculatePlanningAssessment,
     terminatePlanningExecution,
+    loadStepExecutionUpstreamResults,
+    loadStepExecutionArtifact,
+    executePlanningRealtimeStep,
+    terminatePlanningRealtimeStep,
+    setStepExecutionView,
+    setStepExecutionAlgorithm,
+    setStepExecutionBinding,
+    setStepExecutionUpstreamQuery,
+    selectStepExecutionInputResult,
+    selectStepExecutionArtifact,
     saveCurrentResultSnapshot,
     downloadResultPackage,
     downloadPlanningFile,

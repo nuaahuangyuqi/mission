@@ -5204,6 +5204,85 @@ tbody tr:hover, tbody tr.active { background: rgba(111, 143, 82, 0.12); }
   justify-content: center;
 }
 
+.planning-step-execution-page,
+.planning-step-execution-head,
+.planning-step-run-deck {
+  display: grid;
+  gap: 16px;
+}
+
+.planning-step-execution-head {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+}
+
+.planning-step-upstream-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 14px;
+}
+
+.planning-step-upstream-card {
+  display: grid;
+  align-content: start;
+  gap: 10px;
+}
+
+.planning-step-upstream-card__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.planning-step-upstream-card__head h4 {
+  margin: 4px 0 0;
+}
+
+.planning-step-history-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.planning-step-history-card {
+  position: relative;
+  display: grid;
+  gap: 6px;
+  min-height: 120px;
+  padding: 14px;
+  text-align: left;
+  color: var(--text);
+  border: 1px solid rgba(176, 214, 179, 0.16);
+  border-radius: 10px;
+  background: rgba(7, 14, 9, 0.68);
+  cursor: pointer;
+}
+
+.planning-step-history-card:hover,
+.planning-step-history-card.active {
+  border-color: rgba(163, 230, 53, 0.42);
+  background: rgba(17, 36, 22, 0.78);
+}
+
+.planning-step-history-card span,
+.planning-step-history-card small {
+  color: var(--muted);
+}
+
+.planning-step-history-card em {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  padding: 3px 7px;
+  border-radius: 999px;
+  color: #fde68a;
+  font-size: 11px;
+  font-style: normal;
+  background: rgba(245, 158, 11, 0.14);
+  border: 1px solid rgba(245, 158, 11, 0.28);
+}
+
 .planning-dialog-backdrop {
   position: fixed;
   inset: 0;
@@ -5367,6 +5446,10 @@ tbody tr:hover, tbody tr.active { background: rgba(111, 143, 82, 0.12); }
   }
 
   .planning-execution-command-deck {
+    grid-template-columns: 1fr;
+  }
+
+  .planning-step-execution-head {
     grid-template-columns: 1fr;
   }
 

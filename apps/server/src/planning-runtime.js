@@ -1145,6 +1145,8 @@ function buildAlgorithmLibrary(runtimes) {
     ...cloneData(item),
     interfaceStatus: item.implementationStatus === 'implemented' ? 'defined' : 'pending-definition',
     defaultVariantId: `${item.id}:builtin`,
+    requiredUpstreamAlgorithmIds: cloneData(resolveRequiredUpstreamAlgorithms(item.id, {})),
+    optionalUpstreamAlgorithmIds: cloneData(resolveOptionalUpstreamAlgorithms(item.id)),
     variants: buildAlgorithmVariants(item.id, runtimes, item.implementationStatus),
   }));
 }
@@ -1638,6 +1640,16 @@ function resolveRequiredUpstreamAlgorithms(algorithmId = '', task = {}) {
     return uniqueList([...defaults, 'airborne-landing-site-selection']);
   }
   return defaults;
+}
+
+function resolveOptionalUpstreamAlgorithms(algorithmId = '') {
+  if (algorithmId === 'method-planning' || algorithmId === 'support-planning') {
+    return ['airborne-landing-site-selection'];
+  }
+  if (algorithmId === 'airborne-landing-site-selection') {
+    return ['force-grouping'];
+  }
+  return [];
 }
 
 function assertSupportPlanningInputCompleteness(step = {}, options = {}) {
@@ -11444,6 +11456,7 @@ export async function evaluatePlanningRealtimeStep(payload = {}, { db, events, s
       stepCount: safeArray(task.steps).length,
     },
     inputArtifactIds: cloneData(safeArray(payload.inputArtifactIds)),
+    inputResultRefs: cloneData(safeArray(payload.inputResultRefs)),
     step: normalizedResult,
     structuredOutput: cloneData(normalizedResult.structuredOutput || {}),
     context: {

@@ -1,6 +1,6 @@
 # Agent Memory
 
-Updated: 2026-06-20
+Updated: 2026-06-21
 
 Purpose: keep only the latest handoff-ready status for future agents.
 
@@ -16,7 +16,48 @@ Purpose: keep only the latest handoff-ready status for future agents.
 
 ## Current Status
 
-Latest completed work on 2026-06-20: added strategy-profile comparison for Battle Planner intelligent grouping and intelligent target allocation, then wired the result page so users can click a scheme/plan to display different grouping and allocation results. Both intelligent modules now expose `balanced / loss-minimized / resource-minimized` (`均衡 / 战损最小化 / 资源最小化`) outputs; target allocation carries a separate visualization per compared plan so the 3D situation, 2D group-target diagram, metrics, and assignment list switch together.
+Latest completed work on 2026-06-21: added the intelligent task planning `分步执行` module as a top-level sibling of `规划算法库` and `作战任务库`. The new route `/planning/step-execution` provides a two-tab `配置 / 运行与结果` workflow for running one algorithm at a time against selected upstream results, including cross-task results the current user can access.
+
+Files and areas changed in the latest work:
+
+- Updated `apps/server/src/index.js`:
+  - Added `GET /api/planning/realtime/upstream-results`, merging `planning_realtime_artifacts` with archived single-step outputs from full planning task runs.
+  - Extended realtime single-step execution to accept `inputResultRefs` in addition to legacy `inputArtifactIds`.
+  - Resolved `{ sourceType: "realtime-artifact", id }` and `{ sourceType: "task-run-step", taskId, runId, stepId }` refs with permission checks, existence checks, and duplicate-upstream-algorithm validation before injecting results into the realtime stage context.
+- Updated `apps/server/src/planning-runtime.js`:
+  - Added upstream metadata fields on planning algorithms.
+  - Preserved `inputResultRefs` in realtime step results for traceability.
+- Updated `apps/web/src/modules/planningWorkflow.js`:
+  - Added independent `stepExecution` state, stream handling, upstream result loading, payload building, execution, termination, and artifact selection.
+- Added shared frontend components:
+  - `apps/web/src/components/PlanningAlgorithmConfigPanel.vue`
+  - `apps/web/src/components/PlanningExecutionStreamMonitor.vue`
+  - `apps/web/src/components/PlanningSingleAlgorithmResultPanel.vue`
+- Added `apps/web/src/views/planning/PlanningStepExecutionStep.vue`:
+  - Config tab reuses algorithm configuration controls and adds one-slot-per-upstream result selectors.
+  - Run/result tab reuses the stream monitor and embedded single-algorithm result panel, with current and historical realtime products.
+- Updated navigation and routing:
+  - `apps/web/src/router/index.js`
+  - `apps/web/src/views/PlanningView.vue`
+- Updated tests:
+  - `apps/server/src/index.contract.test.js` covers upstream result listing, task-run-step refs, duplicate refs, and missing refs.
+  - `apps/server/src/planning-runtime.support.test.js` covers realtime step execution with injected upstream artifacts and duplicate upstream rejection.
+- Updated docs:
+  - `README.md`
+  - `agent.md`
+  - `docs/intelligent-task-planning/00-module-overview.md`
+
+Verification completed for the latest work:
+
+- `npm test --workspace @mission/server -- --runInBand` passed: 28 tests.
+- `npm run build --workspace @mission/web` passed; Vite still reports the existing large chunk warning.
+
+Remaining risk:
+
+- Manual browser acceptance for the new `分步执行` page has not been run in this handoff. Recommended checks: no task instance prompt, enemy-threat run without upstream, force grouping with cross-task enemy result, target allocation with enemy + grouping results, stream terminal/LLM display, 3D/result export display, and existing full task execution flow.
+- Real external OpenAI-compatible or Ollama execution was not exercised; automated tests use local/mock execution paths.
+
+Previous completed work on 2026-06-20: added strategy-profile comparison for Battle Planner intelligent grouping and intelligent target allocation, then wired the result page so users can click a scheme/plan to display different grouping and allocation results. Both intelligent modules now expose `balanced / loss-minimized / resource-minimized` (`均衡 / 战损最小化 / 资源最小化`) outputs; target allocation carries a separate visualization per compared plan so the 3D situation, 2D group-target diagram, metrics, and assignment list switch together.
 
 Files and areas changed in the latest work:
 

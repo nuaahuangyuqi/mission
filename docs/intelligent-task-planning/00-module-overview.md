@@ -10,12 +10,14 @@
 |---|---|---|
 | 模块运行时 | `apps/server/src/planning-runtime.js` | 算法定义、任务模板、输入归一化、内置执行器、上下游上下文、导出包 |
 | 后端导出入口 | `apps/server/src/planning.js` | 透传 `evaluatePlanning / getPlanningTemplate / validatePlanning` |
-| HTTP 接口 | `apps/server/src/index.js` | `/api/planning/template`、`/api/planning/validate`、`/api/planning/evaluate`、任务实例与执行记录接口 |
-| 前端状态模块 | `apps/web/src/modules/planningWorkflow.js` | 模板加载、算法输入、绑定、任务实例、执行、结果包下载 |
+| HTTP 接口 | `apps/server/src/index.js` | `/api/planning/template`、`/api/planning/validate`、`/api/planning/evaluate`、`/api/planning/realtime/upstream-results`、实时单步执行、任务实例与执行记录接口 |
+| 前端状态模块 | `apps/web/src/modules/planningWorkflow.js` | 模板加载、算法输入、绑定、任务实例、完整执行、分步执行、结果包下载 |
 | 算法配置页 | `apps/web/src/views/planning/PlanningAlgorithmsStep.vue` | 内置方法、资源库、本地文件、算法选项表单 |
 | 流程编排页 | `apps/web/src/views/planning/PlanningTaskFlowStep.vue` | 步骤与算法实现绑定 |
 | 执行总览页 | `apps/web/src/views/planning/PlanningTaskExecutionOverview.vue` | 执行、归档、导出、分算法入口 |
+| 分步执行页 | `apps/web/src/views/planning/PlanningStepExecutionStep.vue` | 配置 / 运行与结果分段界面，跨任务前置结果选择，实时单步执行 |
 | 单算法结果页 | `apps/web/src/views/planning/PlanningTaskExecutionResultStep.vue` | `structuredOutput` 展示、表格、三维结果、JSON 明细 |
+| 共享前端组件 | `PlanningAlgorithmConfigPanel.vue`、`PlanningExecutionStreamMonitor.vue`、`PlanningSingleAlgorithmResultPanel.vue` | 分步执行与完整任务执行复用算法配置、流式监控和单算法结果展示 |
 | 现有测试 | `apps/server/src/planning-runtime.support.test.js`、`apps/server/src/index.contract.test.js` | 保障规划、缺上游、显式输入、任务附件拆分等契约 |
 
 ## 2. 模块目录位置
@@ -26,6 +28,8 @@
 - 后端 HTTP 聚合：`apps/server/src/index.js`
 - 前端规划 workflow：`apps/web/src/modules/planningWorkflow.js`
 - 前端规划页面：`apps/web/src/views/planning/`
+- 前端分步执行页：`apps/web/src/views/planning/PlanningStepExecutionStep.vue`
+- 前端共享规划组件：`apps/web/src/components/PlanningAlgorithmConfigPanel.vue`、`PlanningExecutionStreamMonitor.vue`、`PlanningSingleAlgorithmResultPanel.vue`
 - 三维规划结果组件：`apps/web/src/components/PlanningThreatMapPanel.vue`
 
 ## 3. 整体架构
@@ -49,6 +53,13 @@ flowchart TD
   P --> Q[buildFinalResult.consolidatedOutputs]
   Q --> R[outputPackages: json/html/geojson/csv]
   R --> S[结果页与下载]
+  T[前端 PlanningStepExecutionStep] --> U[/api/planning/realtime/upstream-results]
+  U --> V[实时产物 + 任务执行历史步骤结果]
+  T --> W[/api/planning/realtime/steps/evaluate/stream]
+  V --> W
+  W --> X[evaluatePlanningRealtimeStep]
+  X --> Y[planning_realtime_artifacts]
+  X --> Z[单算法结果面板]
 ```
 
 执行过程中，`executeTaskPlanning()` 按任务步骤顺序执行，每完成一个步骤，就把该步骤的 `structuredOutput` 同时写入：
@@ -57,6 +68,29 @@ flowchart TD
 - `context.stageOutputs[algorithm.id]`
 
 这就是后续算法读取上游结果的统一方式。
+
+### 3.1 分步执行架构补充
+
+`分步执行` 是智能任务规划下与 `规划算法库`、`作战任务库` 同级的入口，路由为 `/planning/step-execution`。页面内部只用 `配置 / 运行与结果` 分段控件切换，不再增加深层路由。
+
+关键规则：
+
+- 单步运行仍必须挂靠一个规划任务实例，用于任务上下文、权限和实时产物归档。
+- 配置界面复用共享算法配置面板，支持算法下拉、算法实现下拉、内置方法、资源库、本地文件、算法私有参数、LLM 配置与连接测试。
+- 前置结果选择器按当前算法的上游需求生成槽位，每个上游算法最多选择 1 个结果。
+- 上游候选来自 `GET /api/planning/realtime/upstream-results`，合并 `planning_realtime_artifacts` 和完整任务执行历史中的 `execution.steps[]`。
+- 运行界面复用执行监控组件，实时展示 `terminal` 与 `llm-chunk` 事件；结果展示复用单算法结果组件。
+
+`inputResultRefs` 是分步执行跨任务上游选择的核心契约：
+
+```json
+[
+  { "sourceType": "realtime-artifact", "id": 12 },
+  { "sourceType": "task-run-step", "taskId": 101, "runId": 201, "stepId": "step-force-grouping" }
+]
+```
+
+服务端会在执行前解析这些引用，校验当前用户权限、结果存在性和重复上游算法，然后把对应 `structuredOutput` 注入 `stageOutputs[stepId]` 与 `stageOutputs[algorithmId]`。
 
 ## 4. 6 个算法功能对比表
 

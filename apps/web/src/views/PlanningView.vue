@@ -32,6 +32,13 @@ const moduleItems = [
     short: 'TASK',
     title: '作战任务库',
   },
+  {
+    key: 'step-execution',
+    name: 'planning-step-execution',
+    routeNames: ['planning-step-execution'],
+    short: 'STEP',
+    title: '分步执行',
+  },
 ];
 
 const taskStageMap = {

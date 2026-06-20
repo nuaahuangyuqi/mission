@@ -725,6 +725,40 @@ function normalizeRealtimeArtifactIds(value = []) {
   return [...new Set(safeArray(value).map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0))];
 }
 
+function normalizePlanningInputResultRefs(value = []) {
+  return safeArray(value)
+    .map((item) => safeObject(item))
+    .map((item) => {
+      const sourceType = String(item.sourceType || item.type || '').trim();
+      if (sourceType === 'realtime-artifact') {
+        const id = Number(item.id || item.artifactId);
+        return Number.isInteger(id) && id > 0
+          ? { sourceType, id }
+          : null;
+      }
+
+      if (sourceType === 'task-run-step') {
+        const taskId = Number(item.taskId);
+        const runId = Number(item.runId);
+        const stepId = String(item.stepId || '').trim();
+        const algorithmId = String(item.algorithmId || '').trim();
+        if (!Number.isInteger(taskId) || taskId <= 0 || !Number.isInteger(runId) || runId <= 0 || (!stepId && !algorithmId)) {
+          return null;
+        }
+        return {
+          sourceType,
+          taskId,
+          runId,
+          stepId,
+          algorithmId,
+        };
+      }
+
+      return null;
+    })
+    .filter(Boolean);
+}
+
 function canAccessRealtimeArtifact(artifact, user) {
   if (!artifact || !user) return false;
   return Number(artifact.ownerUserId) === Number(user.id);
@@ -777,6 +811,183 @@ function listPlanningRealtimeArtifacts(user, filters = {}) {
   return {
     artifacts: rows.map(mapPlanningRealtimeArtifact),
     total: Number(totalRow?.total || 0),
+    limit,
+    offset,
+  };
+}
+
+function normalizePlanningUpstreamResultItem(source = {}) {
+  const sourceType = String(source.sourceType || 'realtime-artifact');
+  const taskId = Number(source.taskId || 0) || null;
+  const runId = Number(source.runId || 0) || null;
+  const artifactId = Number(source.artifactId || 0) || null;
+  const stepId = String(source.stepId || '');
+  const algorithmId = String(source.algorithmId || '');
+  const displayName = String(source.displayName || source.stepName || source.algorithmName || '前置算法结果');
+  return {
+    id: source.id || (
+      sourceType === 'task-run-step'
+        ? `task-run-step:${taskId || ''}:${runId || ''}:${stepId || algorithmId}`
+        : `realtime-artifact:${artifactId || ''}`
+    ),
+    sourceType,
+    artifactId,
+    taskId,
+    taskName: String(source.taskName || ''),
+    runId,
+    runStatus: String(source.runStatus || source.status || ''),
+    displayName,
+    description: String(source.description || ''),
+    algorithmId,
+    algorithmName: String(source.algorithmName || ''),
+    stepId,
+    stepName: String(source.stepName || ''),
+    bindingId: String(source.bindingId || ''),
+    bindingName: String(source.bindingName || ''),
+    status: String(source.status || 'succeeded'),
+    summary: String(source.summary || ''),
+    createdAt: String(source.createdAt || ''),
+    updatedAt: String(source.updatedAt || source.createdAt || ''),
+    resultRef: sourceType === 'task-run-step'
+      ? { sourceType, taskId, runId, stepId, algorithmId }
+      : { sourceType, id: artifactId },
+  };
+}
+
+function mapRealtimeArtifactToUpstreamResult(artifact = {}) {
+  const resultPayload = safeObject(artifact.resultPayload);
+  const step = safeObject(resultPayload.step);
+  return normalizePlanningUpstreamResultItem({
+    sourceType: 'realtime-artifact',
+    artifactId: artifact.id,
+    taskId: artifact.taskId,
+    taskName: artifact.taskName,
+    displayName: artifact.displayName,
+    description: artifact.description,
+    algorithmId: artifact.algorithmId,
+    algorithmName: artifact.algorithmName,
+    stepId: artifact.stepId,
+    stepName: artifact.stepName,
+    bindingId: artifact.bindingId,
+    bindingName: artifact.bindingName,
+    status: artifact.status,
+    summary: step.summary || resultPayload.summary || '',
+    createdAt: artifact.createdAt,
+    updatedAt: artifact.updatedAt,
+  });
+}
+
+function mapTaskRunStepToUpstreamResult({ task = {}, run = {}, result = {}, step = {} } = {}) {
+  return normalizePlanningUpstreamResultItem({
+    sourceType: 'task-run-step',
+    taskId: task.id,
+    taskName: task.name,
+    runId: run.id,
+    runStatus: run.status,
+    displayName: `${step.stepName || step.algorithm?.name || '单算法结果'} #${run.id}`,
+    description: result?.assessmentName || run.summary?.assessmentName || '',
+    algorithmId: step.algorithm?.id || '',
+    algorithmName: step.algorithm?.name || '',
+    stepId: step.stepId || '',
+    stepName: step.stepName || '',
+    bindingId: step.binding?.id || '',
+    bindingName: step.binding?.name || '',
+    status: run.status,
+    summary: step.summary || '',
+    createdAt: run.createdAt,
+    updatedAt: result.generatedAt || run.createdAt,
+  });
+}
+
+function listPlanningTaskRunStepResults(user, filters = {}) {
+  const conditions = ["tasks.module_key = 'planning'", "task_results.result_payload != ''"];
+  const params = [];
+  const taskId = Number(filters.taskId);
+  const algorithmId = String(filters.algorithmId || '').trim();
+  const query = String(filters.query || '').trim().toLowerCase();
+  const rowLimit = Math.min(Math.max(Number(filters.rowLimit) || 120, 1), 300);
+
+  if (user.role !== 'admin') {
+    conditions.push('tasks.owner_user_id = ?');
+    params.push(Number(user.id));
+  }
+  if (Number.isInteger(taskId) && taskId > 0) {
+    conditions.push('tasks.id = ?');
+    params.push(taskId);
+  }
+
+  const rows = db.prepare(`
+    SELECT
+      tasks.id AS task_id,
+      tasks.name AS task_name,
+      tasks.owner_user_id AS owner_user_id,
+      task_runs.id AS run_id,
+      task_runs.status AS run_status,
+      task_runs.summary AS run_summary,
+      task_runs.created_at AS run_created_at,
+      task_results.result_payload AS result_payload,
+      task_results.created_at AS result_created_at
+    FROM task_results
+    JOIN task_runs ON task_runs.id = task_results.run_id
+    JOIN tasks ON tasks.id = task_results.task_id
+    WHERE ${conditions.join(' AND ')}
+    ORDER BY task_results.created_at DESC, task_results.id DESC
+    LIMIT ?
+  `).all(...params, rowLimit);
+
+  return rows.flatMap((row) => {
+    const resultPayload = parseJsonText(row.result_payload, {});
+    const runSummary = parseJsonText(row.run_summary, {});
+    const steps = safeArray(resultPayload?.execution?.steps);
+    return steps.map((step) => mapTaskRunStepToUpstreamResult({
+      task: {
+        id: row.task_id,
+        name: row.task_name,
+        ownerUserId: row.owner_user_id,
+      },
+      run: {
+        id: row.run_id,
+        status: row.run_status,
+        summary: runSummary,
+        createdAt: row.run_created_at,
+      },
+      result: {
+        ...safeObject(resultPayload),
+        generatedAt: resultPayload.generatedAt || row.result_created_at,
+      },
+      step,
+    }));
+  }).filter((item) => {
+    if (algorithmId && item.algorithmId !== algorithmId) return false;
+    if (!query) return true;
+    return [
+      item.displayName,
+      item.description,
+      item.taskName,
+      item.algorithmName,
+      item.stepName,
+      item.summary,
+    ].some((value) => String(value || '').toLowerCase().includes(query));
+  });
+}
+
+function listPlanningUpstreamResults(user, filters = {}) {
+  const limit = Math.min(Math.max(Number(filters.limit) || 120, 1), 240);
+  const offset = Math.max(Number(filters.offset) || 0, 0);
+  const realtime = listPlanningRealtimeArtifacts(user, {
+    taskId: filters.taskId,
+    algorithmId: filters.algorithmId,
+    query: filters.query,
+    limit: 200,
+    offset: 0,
+  }).artifacts.map(mapRealtimeArtifactToUpstreamResult);
+  const taskRunSteps = listPlanningTaskRunStepResults(user, filters);
+  const results = [...realtime, ...taskRunSteps]
+    .sort((left, right) => String(right.updatedAt || '').localeCompare(String(left.updatedAt || '')));
+
+  return {
+    results: results.slice(offset, offset + limit),
+    total: results.length,
     limit,
     offset,
   };
@@ -866,6 +1077,121 @@ function readPlanningRealtimeInputArtifacts(inputArtifactIds = [], user) {
   return artifacts;
 }
 
+function resolveTaskRunStepResultRef(ref = {}, user) {
+  const task = readTaskById(ref.taskId);
+  if (!task) {
+    throw createPlanningError({
+      code: 'PLANNING_MISSING_DATA',
+      type: 'missing_data',
+      status: 404,
+      message: '选择的任务执行结果不存在。',
+      details: { taskId: ref.taskId, runId: ref.runId, stepId: ref.stepId },
+    });
+  }
+  if (!canAccessTask(task, user)) {
+    throw createPlanningError({
+      code: 'PLANNING_PERMISSION_DENIED',
+      type: 'permission_denied',
+      status: 403,
+      message: '当前账号无权访问所选任务执行结果。',
+      details: { taskId: ref.taskId, runId: ref.runId, stepId: ref.stepId },
+    });
+  }
+
+  const detail = getTaskRunDetail(ref.taskId, ref.runId);
+  const resultPayload = safeObject(detail?.result?.resultPayload);
+  const step = safeArray(resultPayload?.execution?.steps).find((item) => (
+    (ref.stepId && String(item.stepId || '') === ref.stepId)
+    || (ref.algorithmId && String(item.algorithm?.id || '') === ref.algorithmId)
+  ));
+  if (!detail || !step) {
+    throw createPlanningError({
+      code: 'PLANNING_MISSING_DATA',
+      type: 'missing_data',
+      status: 404,
+      message: '选择的任务执行记录中没有对应算法结果。',
+      details: { taskId: ref.taskId, runId: ref.runId, stepId: ref.stepId, algorithmId: ref.algorithmId },
+    });
+  }
+
+  return {
+    id: `task-run-step:${ref.taskId}:${ref.runId}:${step.stepId || step.algorithm?.id || ''}`,
+    sourceType: 'task-run-step',
+    ownerUserId: task.ownerUserId,
+    taskId: task.id,
+    taskName: task.name,
+    displayName: `${step.stepName || step.algorithm?.name || '单算法结果'} #${ref.runId}`,
+    description: resultPayload.assessmentName || detail.run?.summary?.assessmentName || '',
+    algorithmId: step.algorithm?.id || '',
+    algorithmName: step.algorithm?.name || '',
+    stepId: step.stepId || '',
+    stepName: step.stepName || '',
+    bindingId: step.binding?.id || '',
+    bindingName: step.binding?.name || '',
+    status: detail.run?.status || 'succeeded',
+    inputArtifactIds: [],
+    resultPayload: {
+      ok: true,
+      sourceType: 'task-run-step',
+      assessmentName: resultPayload.assessmentName || '',
+      generatedAt: resultPayload.generatedAt || detail.result?.createdAt || '',
+      task: {
+        id: task.id,
+        name: task.name,
+      },
+      run: {
+        id: ref.runId,
+        status: detail.run?.status || '',
+      },
+      step,
+      structuredOutput: safeObject(step.structuredOutput),
+    },
+    createdAt: detail.run?.createdAt || '',
+    updatedAt: detail.result?.createdAt || detail.run?.createdAt || '',
+  };
+}
+
+function readPlanningRealtimeInputResultRefs(inputResultRefs = [], user) {
+  const refs = normalizePlanningInputResultRefs(inputResultRefs);
+  if (safeArray(inputResultRefs).length !== refs.length) {
+    throw createPlanningError({
+      code: 'PLANNING_INVALID_INPUT_REF',
+      type: 'missing_data',
+      status: 400,
+      message: '前置算法结果引用格式无效。',
+      details: { inputResultRefs },
+    });
+  }
+  const artifacts = refs.map((ref) => {
+    if (ref.sourceType === 'realtime-artifact') {
+      const artifact = readPlanningRealtimeArtifactById(ref.id);
+      if (!artifact) {
+        throw createPlanningError({
+          code: 'PLANNING_MISSING_DATA',
+          type: 'missing_data',
+          status: 404,
+          message: '选择的实时生成产物不存在。',
+          details: { artifactId: ref.id },
+        });
+      }
+      if (!canAccessRealtimeArtifact(artifact, user)) {
+        throw createPlanningError({
+          code: 'PLANNING_PERMISSION_DENIED',
+          type: 'permission_denied',
+          status: 403,
+          message: '当前账号无权访问所选实时生成产物。',
+          details: { artifactId: artifact.id },
+        });
+      }
+      return artifact;
+    }
+    return resolveTaskRunStepResultRef(ref, user);
+  });
+
+  assertUniqueRealtimeArtifactAlgorithms(artifacts);
+  return artifacts;
+}
+
 function normalizeRealtimeEditablePayload(value) {
   if (typeof value === 'undefined') {
     return undefined;
@@ -930,6 +1256,7 @@ function buildRealtimeStepPayloadFromTask(task, body = {}, inputArtifacts = []) 
     algorithmInput,
     algorithmInputs,
     inputArtifactIds: inputArtifacts.map((artifact) => artifact.id),
+    inputResultRefs: normalizePlanningInputResultRefs(body.inputResultRefs),
     inputArtifacts,
   };
 }
@@ -1969,6 +2296,21 @@ app.get('/api/planning/realtime/artifacts', (req, res) => {
   }
 });
 
+app.get('/api/planning/realtime/upstream-results', (req, res) => {
+  try {
+    const result = listPlanningUpstreamResults(req.user, {
+      taskId: req.query.taskId,
+      algorithmId: req.query.algorithmId,
+      query: req.query.query || req.query.keyword,
+      limit: req.query.limit,
+      offset: req.query.offset,
+    });
+    res.json(result);
+  } catch (error) {
+    sendPlanningError(res, error, '前置算法结果列表读取失败');
+  }
+});
+
 app.get('/api/planning/realtime/artifacts/:id', (req, res) => {
   try {
     const artifact = readPlanningRealtimeArtifactById(Number(req.params.id));
@@ -2060,7 +2402,11 @@ app.post('/api/planning/realtime/steps/evaluate', async (req, res) => {
   const body = req.body || {};
   try {
     const task = resolveRealtimeTaskAccess(body.taskCenterId || body.taskId, req.user);
-    const inputArtifacts = readPlanningRealtimeInputArtifacts(body.inputArtifactIds, req.user);
+    const inputArtifacts = [
+      ...readPlanningRealtimeInputArtifacts(body.inputArtifactIds, req.user),
+      ...readPlanningRealtimeInputResultRefs(body.inputResultRefs, req.user),
+    ];
+    assertUniqueRealtimeArtifactAlgorithms(inputArtifacts);
     const payload = buildRealtimeStepPayloadFromTask(task, body, inputArtifacts);
     const result = await evaluatePlanningRealtimeStep(payload, { db });
     const artifact = savePlanningRealtimeArtifact(req.user, task, result, result.inputArtifactIds || [], {
@@ -2105,7 +2451,11 @@ app.post('/api/planning/realtime/steps/evaluate/stream', async (req, res) => {
     });
 
     task = resolveRealtimeTaskAccess(body.taskCenterId || body.taskId, req.user);
-    const inputArtifacts = readPlanningRealtimeInputArtifacts(body.inputArtifactIds, req.user);
+    const inputArtifacts = [
+      ...readPlanningRealtimeInputArtifacts(body.inputArtifactIds, req.user),
+      ...readPlanningRealtimeInputResultRefs(body.inputResultRefs, req.user),
+    ];
+    assertUniqueRealtimeArtifactAlgorithms(inputArtifacts);
     const payload = buildRealtimeStepPayloadFromTask(task, body, inputArtifacts);
     const result = await evaluatePlanningRealtimeStep(payload, { db, events, signal: abortController.signal });
     const artifact = savePlanningRealtimeArtifact(req.user, task, result, result.inputArtifactIds || [], {

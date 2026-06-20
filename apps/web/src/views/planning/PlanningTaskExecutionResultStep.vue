@@ -5,6 +5,21 @@ import PlanningForceGroupingPanel from '../../components/PlanningForceGroupingPa
 import PlanningThreatMapPanel from '../../components/PlanningThreatMapPanel.vue';
 import { usePlanningWorkflow } from '../../modules/planningWorkflow';
 
+const props = defineProps({
+  stepOverride: {
+    type: Object,
+    default: null,
+  },
+  generatedAtOverride: {
+    type: String,
+    default: '',
+  },
+  embedded: {
+    type: Boolean,
+    default: false,
+  },
+});
+
 const route = useRoute();
 const router = useRouter();
 const {
@@ -202,13 +217,15 @@ const OBJECT_SPECS = {
   'support-planning': ['inputSummary', 'appliedOptions', 'preferredPlan.metrics', 'preferredPlan.damageForecast'],
 };
 
-const currentStepId = computed(() => String(route.params.stepId || ''));
+const hasResultContext = computed(() => Boolean(props.stepOverride || state.results));
+const displayGeneratedAt = computed(() => props.generatedAtOverride || resultsGeneratedAt.value);
+const currentStepId = computed(() => String(props.stepOverride?.stepId || route.params.stepId || ''));
 const currentStepIndex = computed(() => executionSteps.value.findIndex((item) => (
   String(item.stepId) === currentStepId.value
   || String(item.algorithm?.id) === currentStepId.value
 )));
 const currentStep = computed(() => (
-  currentStepIndex.value >= 0 ? executionSteps.value[currentStepIndex.value] : null
+  props.stepOverride || (currentStepIndex.value >= 0 ? executionSteps.value[currentStepIndex.value] : null)
 ));
 const currentOutput = computed(() => currentStep.value?.structuredOutput || {});
 const selectedTargetAllocationPlanId = ref('');
@@ -225,9 +242,9 @@ const forceGroupingPanelVisible = computed(() => (
     || Object.keys(safeObject(currentOutput.value?.preferredScheme)).length
   )
 ));
-const previousStep = computed(() => (currentStepIndex.value > 0 ? executionSteps.value[currentStepIndex.value - 1] : null));
+const previousStep = computed(() => (!props.stepOverride && currentStepIndex.value > 0 ? executionSteps.value[currentStepIndex.value - 1] : null));
 const nextStep = computed(() => (
-  currentStepIndex.value >= 0 && currentStepIndex.value < executionSteps.value.length - 1
+  !props.stepOverride && currentStepIndex.value >= 0 && currentStepIndex.value < executionSteps.value.length - 1
     ? executionSteps.value[currentStepIndex.value + 1]
     : null
 ));
@@ -264,20 +281,20 @@ const previewItems = computed(() => {
 const artifactItems = computed(() => Array.isArray(currentStep.value?.artifacts) ? currentStep.value.artifacts : []);
 const threatAnalysisFile = computed(() => (
   currentStep.value?.algorithm?.id === 'enemy-threat-analysis'
-    ? buildThreatAnalysisFile(currentStep.value, currentOutput.value, resultsGeneratedAt.value)
+    ? buildThreatAnalysisFile(currentStep.value, currentOutput.value, displayGeneratedAt.value)
     : null
 ));
 const generatedFileItems = computed(() => buildGeneratedFileItems(
   currentStep.value,
   currentOutput.value,
   artifactItems.value,
-  resultsGeneratedAt.value,
+  displayGeneratedAt.value,
 ));
 const structuredOutputFile = computed(() => buildJsonFile({
   key: 'structured-output',
   name: `${currentStep.value?.algorithm?.name || '算法'}结构化输出`,
   description: '当前单算法结果页展示的完整结构化输出。',
-  fileName: buildGeneratedFileName(currentStep.value, '结构化输出', 'json', resultsGeneratedAt.value),
+  fileName: buildGeneratedFileName(currentStep.value, '结构化输出', 'json', displayGeneratedAt.value),
   data: currentOutput.value,
 }));
 const mapData = computed(() => resolveVisualization(currentOutput.value));
@@ -1725,9 +1742,9 @@ function handleDownloadFile(file) {
 
 <template>
   <section class="capability-stage action-stage top-gap planning-result-detail-shell">
-    <div v-if="!state.results" class="detail-card compact-empty-state">
+    <div v-if="!hasResultContext" class="detail-card compact-empty-state">
       <p class="muted-text">尚未执行任务规划，无法查看单算法结果。</p>
-      <div class="planning-task-actions top-gap">
+      <div v-if="!embedded" class="planning-task-actions top-gap">
         <button class="button" :disabled="state.calculating || state.loading" @click="handleCalculate">
           {{ state.calculating ? '执行中...' : '执行任务模板' }}
         </button>
@@ -1737,7 +1754,7 @@ function handleDownloadFile(file) {
 
     <div v-else-if="!currentStep" class="detail-card compact-empty-state">
       <p class="muted-text">没有找到该算法步骤结果。</p>
-      <div class="planning-task-actions top-gap">
+      <div v-if="!embedded" class="planning-task-actions top-gap">
         <button class="button button-ghost" @click="goToOverview">返回执行总览</button>
       </div>
     </div>
@@ -1756,17 +1773,17 @@ function handleDownloadFile(file) {
           </div>
         </div>
 
-        <div class="planning-result-nav">
-          <button
-            v-if="threatAnalysisFile"
-            class="button"
-            @click="handleDownloadFile(threatAnalysisFile)"
-          >
-            导出分析文件
-          </button>
-          <button class="button button-ghost" @click="goToOverview">执行总览</button>
-          <button class="button button-ghost" :disabled="!previousStep" @click="goToStep(previousStep)">上一算法</button>
-          <button class="button button-secondary" :disabled="!nextStep" @click="goToStep(nextStep)">下一算法</button>
+      <div class="planning-result-nav">
+        <button
+          v-if="threatAnalysisFile"
+          class="button"
+          @click="handleDownloadFile(threatAnalysisFile)"
+        >
+          导出分析文件
+        </button>
+          <button v-if="!embedded" class="button button-ghost" @click="goToOverview">执行总览</button>
+          <button v-if="!embedded" class="button button-ghost" :disabled="!previousStep" @click="goToStep(previousStep)">上一算法</button>
+          <button v-if="!embedded" class="button button-secondary" :disabled="!nextStep" @click="goToStep(nextStep)">下一算法</button>
         </div>
       </article>
 
