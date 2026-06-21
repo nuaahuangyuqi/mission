@@ -5051,6 +5051,19 @@ tbody tr:hover, tbody tr.active { background: rgba(111, 143, 82, 0.12); }
   flex-wrap: wrap;
 }
 
+.planning-task-select {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.planning-task-select input {
+  width: 16px;
+  height: 16px;
+  accent-color: #38bdf8;
+}
+
 .planning-algorithm-list-card {
   cursor: pointer;
 }
@@ -5256,7 +5269,7 @@ tbody tr:hover, tbody tr.active { background: rgba(111, 143, 82, 0.12); }
   border: 1px solid rgba(176, 214, 179, 0.16);
   border-radius: 10px;
   background: rgba(7, 14, 9, 0.68);
-  cursor: pointer;
+  cursor: default;
 }
 
 .planning-step-history-card:hover,
@@ -5270,10 +5283,45 @@ tbody tr:hover, tbody tr.active { background: rgba(111, 143, 82, 0.12); }
   color: var(--muted);
 }
 
+.planning-step-history-card__head,
+.planning-step-history-card__actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.planning-step-history-card__body {
+  display: grid;
+  gap: 6px;
+  padding: 2px 0;
+  color: inherit;
+  text-align: left;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.planning-step-history-card__body strong {
+  overflow-wrap: anywhere;
+}
+
+.planning-step-history-card__body:hover strong {
+  color: var(--accent-strong);
+}
+
+.planning-step-history-card__actions {
+  justify-content: flex-start;
+  margin-top: auto;
+}
+
+.planning-step-history-select.disabled {
+  cursor: not-allowed;
+  opacity: 0.62;
+}
+
 .planning-step-history-card em {
-  position: absolute;
-  top: 10px;
-  right: 10px;
   padding: 3px 7px;
   border-radius: 999px;
   color: #fde68a;

@@ -199,12 +199,13 @@
 - `规划算法库` 默认先展示精简算法列表；点击某个算法后，会切换进入该算法的完整卡片视图，不再与其他算法列表同时展示
 - `作战任务库` 内部按 `任务模板 -> 流程编排 -> 任务执行` 的顺序组织和推进
 - `作战任务库` 的 `任务模板 / 流程编排 / 任务执行` 页面头部统一使用 `上一步 / 下一步` 按钮提示阶段推进，首尾阶段会自动禁用不可用方向
+- `作战任务库 / 我的任务实例` 支持任务实例重命名，并支持勾选部分任务实例删除，也支持一键全选后批量删除；删除前会二次确认，若包含当前已打开任务会额外提示“任务已打开，是否继续删除”，删除后当前任务、执行历史、结果展示和分步执行前置选择会同步刷新
 - `分步执行` 位于 `/planning/step-execution`，和前两个模块同级；页面内使用 `配置 / 运行与结果` 分段控件切换，不新增深层路由
 - `分步执行` 必须挂靠一个规划任务实例，用于任务上下文、权限校验和实时产物归档；没有任务实例时可直接在页面创建默认实例
 - `分步执行 / 配置` 复用算法库的算法选择、算法实现选择、内置方法、资源库、本地文件、算法私有参数、LLM 配置和连接测试控件，并在顶部提供前置算法结果选择器
 - 前置结果选择器会按当前算法的上游需求生成槽位；每个上游算法最多选择 1 个结果，候选来自当前账号可访问的跨任务全局结果，并标注来源任务、算法、时间和跨任务提示
 - `分步执行 / 运行与结果` 复用作战任务库的流式执行监控，执行时显示总进度、步骤状态、终端日志和大模型片段；运行完成后自动刷新全局前置结果候选
-- `分步执行` 的当前产物和历史产物会复用单算法结果页的指标、文件导出、三维态势、编组方案、目标分配、航路/保障表格展示
+- `分步执行` 的当前产物和历史产物会复用单算法结果页的指标、文件导出、三维态势、编组方案、目标分配、航路/保障表格展示；其中分步实时产物支持重命名、单选/多选/全选删除，删除当前已打开产物时会二次确认，删除后会从前置结果候选和已选输入中移除。完整任务执行历史中的单算法步骤结果属于任务运行归档，不支持单独重命名或删除，可通过删除所属任务实例清理
 - 当前提供 `6` 个内置规划算法：
   - `敌情威胁自动分析`
   - `作战力量智能编组`
@@ -233,6 +234,7 @@
 - `敌情威胁自动分析` 的大模型抽取结果会在 schema 校验前做安全归一化：例如模型把 `spatialContext.terrain / weather` 返回成字符串，或把 `equipment[].quantity` 返回成 `estimated / multiple / various` 等文本时，会自动转换为平台可校验的结构化字段；同时覆盖范围不再对所有目标兜底生成，指挥、机动、后勤、普通工事等点目标默认 `hasCoverage=false / radiusMeters=0`
 - `敌情威胁自动分析` 单算法结果页仍保留通用三维威胁场展示能力：当内置算法或未来新算法在结构化结果中提供 `heatmapBase64 / heatmapGeojson / bounds / targetEntities / pointThreatEvaluation` 等字段时，三维球会叠加热力图、目标卡片、覆盖圈、部署区和采样统计；其中热力图不做前端实时网格渲染，而是读取 Python 算法生成的透明 PNG 和 `visualization.imageOverlays` / `heatmap.bounds` 地理边界，以 Cesium 单幅影像层贴地加载到底图之上、单位实体之下，并受结果页“威胁场”开关联动；Python 热力图会按当前威胁场峰值做可视化归一化，再通过重采样、高斯柔化和软透明度衰减生成连续贴图，避免因全局分值偏低而出现“已加载但肉眼不可见”、放大后被地形遮挡、缩小时中间被硬阈值挖空或低分辨率网格块割裂；当目标空间上分为多个远距离群组时，算法会保留全局 `heatmapBase64 / heatmapGeojson`，并额外按目标群生成多条内联 `visualization.imageOverlays` 局部贴图，`heatmap.overlayMode` 标记为 `clustered`，`heatmap.groupSummaries` 记录每个目标群 bounds 与目标清单；历史结果若仍携带旧版或无 `displayVersion` 的 `heatmapBase64`，前端会基于已有 `heatmap.grid` 一次性生成增强静态贴图作为兼容兜底；若 Python 结果未单独提供 `targetEntities`，结果页会从 `targetAssessments`、`fireCoverage`、`airDefenseSystem`、`reconEarlyWarning` 和 `antiAirborneFacilities` 中提取坐标生成可定位目标，并按单位类型选择可视化形式：火力、防空、侦察/雷达、电子对抗默认可生成覆盖圈，指挥、机动、后勤、普通工事默认只生成点/符号，显式 `visualizationType / coverageTypes / hasCoverage` 可覆盖默认规则；页面不再依赖任何已移除的外部算法工程
 - `作战力量智能编组` 的本地 Python `智能编组算法` 已切换为 `battle_planner`：旧 `algorithms/force-grouping` Python 智能算法目录已删除，服务端会把上一步 `enemy-threat-analysis` 输出包装为临时 `planning-artifact-export-v1` 敌情 JSON，再把智能编组阶段上传/勾选的我方资料作为 `--friendly` 文档传入
+- `作战力量智能编组` 的 Battle Planner 适配层会兼容两类上游敌情输出：Python 敌情算法直接生成的 `targetAssessments`，以及内置敌情分析输出的 `fireCoverage / airDefenseSystem / reconEarlyWarning / antiAirborneFacilities / deploymentSectors` 等威胁节点。后者会在进入 Battle Planner 前自动归一化为目标评估清单，避免因缺少目标列表导致智能编组 Python 退出
 - `作战力量智能编组` 用户侧不再上传敌情 JSON；`TXT / MD / JSON / DOCX` 会直接传入 `battle_planner`，`PDF / Excel / CSV` 会先由服务端预览解析链路转换为文本临时文件，保持当前上传入口不变
 - `作战力量智能编组` 输出会被平台适配为既有 contract：`schemes / preferredScheme / groups / importedFiles / evidenceTrace / constraintSummary`，并额外保留原始 `battlePlannerResult`，供智能分配阶段复用；适配层会围绕 `均衡 / 战损最小化 / 资源最小化` 三种策略生成可比较编组方案，武器和人员装载会同时输出编组级 `weaponSummary / personnelSummary` 与单位级 `unit.weaponLoadout / unit.personnelLoadout`，确保结果页单位表能显示实际装载
 - `作战力量智能编组` 单算法结果页现在会展示算法输出的全部候选方案，并以 `preferredSchemeId` 标记的推荐解默认选中；点击不同方案卡片后，页面会切换对应评分、能力指标、约束状态、群组与单位构成，用于对比战损更低、资源更省或综合均衡的编组结果
@@ -262,8 +264,10 @@
 - `机降地域优化选择 Python 算法` 会默认读取 `apps/web/public/terrain` 的离线 Cesium terrain；若上游敌情 / 目标分配坐标不足，会生成演示目标边界兜底以保证流程可联调
 - 规划执行接口在保留 `POST /api/planning/evaluate` 的基础上，新增 `POST /api/planning/evaluate/stream`，以 `text/event-stream` 返回 `run-start / validation / step-start / progress / terminal / llm-chunk / step-complete / final / error / done` 事件
 - 规划执行页已增加执行监控面板：总进度条、当前步骤、步骤状态列表、终端日志区域和大模型片段区域会随流式接口实时更新；失败时保留已收到的终端日志和错误事件
-- 分步执行接口复用实时产物表 `planning_realtime_artifacts` 与 `POST /api/planning/realtime/steps/evaluate/stream`；新增 `GET /api/planning/realtime/upstream-results` 汇总实时产物和完整任务执行历史中的单算法步骤结果
+- 分步执行接口复用实时产物表 `planning_realtime_artifacts` 与 `POST /api/planning/realtime/steps/evaluate/stream`；`GET /api/planning/realtime/upstream-results` 汇总实时产物和完整任务执行历史中的单算法步骤结果；`PATCH /api/planning/realtime/artifacts/:id` 可重命名实时产物，`POST /api/planning/realtime/artifacts/bulk-delete` 可批量删除实时产物，已不存在的产物会被跳过并返回 `missingArtifactIds`
 - 单步执行请求兼容旧的 `inputArtifactIds`，并新增 `inputResultRefs` 支持跨任务引用：`{ sourceType: "realtime-artifact", id }` 或 `{ sourceType: "task-run-step", taskId, runId, stepId }`；服务端会校验权限、结果存在性和重复上游算法后再注入 `stageOutputs`
+- 作战任务删除使用 `POST /api/tasks/bulk-delete` 执行事务级硬删除：任务实例、任务附件、完整执行记录、执行结果、分步实时产物和相关算法调用日志会同步清理；资源库原始数据、抽取记录和导入批次不被物理删除，只解除指向被删任务的 `task_id` 关联；若任务的当前最新执行记录仍处于 `created / running`，服务端会跳过对应任务并继续删除其他可删除任务；历史残留的旧 `running` 记录不会阻塞删除
+- 被删除任务产生的完整任务运行步骤、被单独删除的分步实时产物都不会再出现在 `分步执行` 的前置结果选择器中；删除前保存的旧 `inputResultRefs` 再次用于单步执行时会返回缺失数据错误
 - 规划执行工作台现在提供 `终止任务` 控件；任务运行中可主动中断当前流式执行请求，前端会立即标记为已终止，后端会在 SSE 响应流关闭后尝试终止正在运行的本地 Python 子进程，并把已创建的执行记录归档为失败/终止状态；正常点击开始执行不会因为请求体读取完成而误触发终止
 - 任务执行结果现在按 `服务端归档 + 3 类导出 + 本地快照` 组织输出：
   - 主归档：每次执行都会写入服务端 `task_runs + task_results`，同一任务支持多次执行并保留独立历史记录
@@ -392,6 +396,7 @@
 - 外部算法网关基础契约仍可复用，未来重新集成 HTTP 算法服务时可继续走 `algorithm-gateway-v1`
 - `algorithms/enemy-threat-analysis`、`algorithms/battle-planner`、`algorithms/airlanding_zone` 已作为本地 Python 算法来源登记到规划模块；其中 `force-grouping-local / 智能编组算法` 指向 `battle_planner.cli`，`target-allocation-local / 智能分配算法` 复用编组阶段 `battlePlannerResult` 做平台适配
 - `enemy-threat-analysis` 与 `force-grouping` 的大模型调用已同时支持外部 OpenAI-compatible API 和本地 Ollama；敌情分析仍走专用抽取提示词，Battle Planner 编组阶段按其自身两段 LLM 逻辑生成目标处置规则和友方结构化资源；`POST /api/planning/llm/test` 测试调用仍会发送 `think:false`，关闭 Qwen 3、DeepSeek R1 等可关闭的 thinking 输出；若本地 Ollama 上下文不足，可设置 `OLLAMA_NUM_CTX` 或 `LLM_OLLAMA_NUM_CTX` 后重启后端重试
+- `作战力量智能编组 / 智能编组算法` 现在会按页面 `流式输出` 开关把 Battle Planner 的 OpenAI-compatible / Ollama 响应逐片写入 stdout，并由规划 SSE 转发为 `llm-chunk`；mock LLM 也会输出可测试的本地片段。流式模式下 CLI 完成摘要会走 stderr，继续显示在终端日志，不会混入大模型片段面板
 - `POST /api/planning/evaluate/stream` 会把本地 Python stdout/stderr 映射为 `terminal`，把 enemy/force 的 LLM stdout 片段映射为 `llm-chunk`
 - `POST /api/planning/llm/test` 用于在执行规划前测试当前 LLM 配置是否可用
 - `敌情威胁自动分析 三维结果` 面板仍能渲染通用威胁场字段，包括 `heatmapBase64`、`heatmapGeojson`、`bounds`、`targetEntities`、`pointThreatEvaluation`、`situationMap`、`heatmap.matrixSummary`、`heatmap.groupSummaries` 和多条 `visualization.imageOverlays`
@@ -735,6 +740,7 @@ TODO.md     后续优化建议
 - 仓库只提交源码、测试、设计文档、示例配置和必要示例文件；`.env.example` 中只能保留占位符，真实 API key、token 和本地 `.env.*` 配置不会提交
 - `node_modules`、前端构建目录、服务端运行数据库、运行时导入数据、临时文件、算法虚拟环境、算法输出结果、源码压缩包以及本地瓦片 / DEM / terrain 资产均已加入 `.gitignore`，不要把这些可再生成或大体量本地文件当作源码维护；`apps/web/public/dem/README.txt` 是例外，会随仓库保留为空目录说明
 - 2026-06-15 本地瘦身清理已移除前端生产构建产物、Vite 预构建缓存、生成输入材料、算法输出样例、旧算法压缩包副本、macOS `.DS_Store`、Python 字节码 / pytest 缓存和陈旧临时 pid/log；根目录 `node_modules`、`algorithms/.venv`、`apps/server/data/mission-demo.sqlite*` 和 `data-service-sources` 保留，以保证项目仍可直接运行并保留当前演示数据
+- 服务端数据库默认仍使用 `apps/server/data/mission-demo.sqlite`；测试或临时验证可通过 `MISSION_DB_FILE=/path/to/temp.sqlite` 指定隔离数据库。契约测试会自动创建临时 SQLite 并在结束后删除，避免 `delete-*` 等测试任务污染正式作战任务库
 
 ## Agent 协作约束
 
@@ -763,20 +769,22 @@ TODO.md     后续优化建议
 9. 规划主链路已补齐前置校验与统一错误收口：`/api/planning/validate` 与 `/api/planning/evaluate` 在错误场景统一返回结构化错误类型，前后端提示文案一致。
 10. 外部算法服务接入已统一为网关契约：能力/行动/消耗/规划执行共享同一套请求结构、超时规范、异常归一和版本字段，服务端新增 `algorithm_call_logs` 归档调用来源、版本和状态。
 11. 智能任务规划新增 `分步执行` 顶层模块：可在单个任务实例上下文中选择算法、选择跨任务前置结果、流式运行当前算法，并复用单算法结果页展示实时产物和历史产物。
-11. 登录、权限、导入、执行、归档、删除等核心路径提示已统一清理为可读中文，历史错码与乱码（含情报默认战备状态错码）已修复；前端兜底错误提示统一为 `请求失败：<status>`。
-12. 数据服务导入链路已完成批量稳定性整改：支持批量队列执行、逐项成功/失败状态、失败原因落库、单项重试与任务关联导入。
-13. 规划结果已完成首轮证据溯源：抽取数据结构补齐来源元信息，规划结果输出 `evidenceTrace`，前端提供证据回看入口。
-14. 规划任务本地上传文件已从 `tasks.planning_algorithm_inputs` 拆分到独立附件存储；任务列表接口只返回摘要，避免把 `base64` 文件正文跟随 `/api/tasks` 全量下发。
-15. 已登录状态下访问未知 `/api/*` 时，服务端现返回 JSON `404`，不再回落到前端 HTML Shell。
-16. 服务端测试基线已补齐 `API 404` 与 `任务列表不回传附件正文` 两条契约测试，`npm test --workspace @mission/server` 当前为绿色。
-17. 能力评估模块状态文件 `apps/web/src/modules/capabilityWorkflow.js` 的历史乱码与 `????` 占位提示已清理，任务/模板/确认框/导出告警等文案恢复为正常中文。
-18. 从任务中心详情跳转到规划执行、能力评估、行动计算、消耗计算时，前端现已显式同步所选 `taskId`；规划页会加载对应任务实例，能力计算三页会绑定同一任务上下文，不再沿用本地上一次打开的其他任务编号。
-19. 数据导入预览运行时文案已完成针对 `apps/server/src/import-preview.js` 的清理，Excel/CSV/Word/PDF 预览标题、摘要、抽取草稿和错误提示不再返回历史乱码；新增 `apps/server/src/import-preview.test.js` 做回归保护。
-20. 本地大体量验证产物已清理：`apps/web/dist-check-*`、`apps/web/dist-auth-check` 和历史 `apps/web/public/tiles` 已从工作区移除，并通过 `.gitignore` 防止再次混入源码维护范围。
-21. 本地瘦身清理已进一步移除可再生成产物：根目录 `node_modules`、`apps/web/dist`，以及 `apps/web/public/terrain` 下已展开后的 `terrain1.zip` 压缩包副本和 `.tmp` 临时地形目录；正式离线 DEM 运行目录仍保留。
-22. 已移除上一版 `tactical-visualizer2.0` 敌情威胁分析外部集成：规划 Python 适配服务、相关启动脚本、默认外部绑定、专属运行参数和 DOCX 二次研判导出均已删除；三维威胁场通用渲染能力继续保留。
-23. `作战力量智能编组` 与 `作战目标自动分配` 的智能算法已统一切换到 `algorithms/battle-planner`：编组阶段调用 `battle_planner`，分配阶段复用 `battlePlannerResult.task_groups` 适配为目标分配态势图层；旧 `algorithms/force-grouping` 和 `algorithms/target-allocation` Python 智能算法目录已删除，内置目标分配方法仍保留 `hungarian / ant-colony / multi-objective` 三种。智能编组和智能分配现在都支持 `均衡 / 战损最小化 / 资源最小化` 三类策略画像：战损最小化会倾向更多编组协同和更高生存性，资源最小化会在覆盖底线下压缩使用单位，均衡方案兼顾覆盖、风险和资源。智能分配火力值已改为实际武器装载口径：无武器装载时火力为 0，人员/运输能力只进入其他指标，火力打击类任务缺少武器会被合理性校核拦截。目标分配态势的红方目标坐标会优先沿用上游敌情真实经纬度，并额外输出 `allocation-original-target-*` 原始目标点，仅在缺坐标时使用兜底点；结果页会为旧结果兜底合成原始目标点，压制编组/箭头标签以避免卡顿，并支持点击方案卡片或表格行切换不同分配方案的三维态势、二维分配图、统计指标和分配清单。
-24. `敌情威胁自动分析` 热力图支持多目标群显示：远距离目标群会生成多条局部 `visualization.imageOverlays` 贴图，全局 `heatmapBase64 / heatmapGeojson` 继续保留用于兼容、导出和空间成果包。
+12. 登录、权限、导入、执行、归档、删除等核心路径提示已统一清理为可读中文，历史错码与乱码（含情报默认战备状态错码）已修复；前端兜底错误提示统一为 `请求失败：<status>`。
+13. 数据服务导入链路已完成批量稳定性整改：支持批量队列执行、逐项成功/失败状态、失败原因落库、单项重试与任务关联导入。
+14. 规划结果已完成首轮证据溯源：抽取数据结构补齐来源元信息，规划结果输出 `evidenceTrace`，前端提供证据回看入口。
+15. 规划任务本地上传文件已从 `tasks.planning_algorithm_inputs` 拆分到独立附件存储；任务列表接口只返回摘要，避免把 `base64` 文件正文跟随 `/api/tasks` 全量下发。
+16. 作战任务库支持任务实例重命名、多选、全选和批量删除；当前已打开任务也可删除，但确认框会额外提示任务已打开；删除会同步清理任务附件、执行结果和分步实时产物，使这些中间文件不再进入后续分步执行的前置结果候选。
+17. 分步执行的分步实时算法产物支持重命名、多选、全选和批量删除；删除当前已打开产物会先确认，删除后同步清理前置结果选择器、已选输入和当前产物展示。完整任务执行历史中的单算法步骤结果是任务运行归档，不支持单独重命名或删除。
+18. 已登录状态下访问未知 `/api/*` 时，服务端现返回 JSON `404`，不再回落到前端 HTML Shell。
+19. 服务端测试基线已补齐 `API 404` 与 `任务列表不回传附件正文` 两条契约测试，`npm test --workspace @mission/server` 当前为绿色。
+20. 能力评估模块状态文件 `apps/web/src/modules/capabilityWorkflow.js` 的历史乱码与 `????` 占位提示已清理，任务/模板/确认框/导出告警等文案恢复为正常中文。
+21. 从任务中心详情跳转到规划执行、能力评估、行动计算、消耗计算时，前端现已显式同步所选 `taskId`；规划页会加载对应任务实例，能力计算三页会绑定同一任务上下文，不再沿用本地上一次打开的其他任务编号。
+22. 数据导入预览运行时文案已完成针对 `apps/server/src/import-preview.js` 的清理，Excel/CSV/Word/PDF 预览标题、摘要、抽取草稿和错误提示不再返回历史乱码；新增 `apps/server/src/import-preview.test.js` 做回归保护。
+23. 本地大体量验证产物已清理：`apps/web/dist-check-*`、`apps/web/dist-auth-check` 和历史 `apps/web/public/tiles` 已从工作区移除，并通过 `.gitignore` 防止再次混入源码维护范围。
+24. 本地瘦身清理已进一步移除可再生成产物：根目录 `node_modules`、`apps/web/dist`，以及 `apps/web/public/terrain` 下已展开后的 `terrain1.zip` 压缩包副本和 `.tmp` 临时地形目录；正式离线 DEM 运行目录仍保留。
+25. 已移除上一版 `tactical-visualizer2.0` 敌情威胁分析外部集成：规划 Python 适配服务、相关启动脚本、默认外部绑定、专属运行参数和 DOCX 二次研判导出均已删除；三维威胁场通用渲染能力继续保留。
+26. `作战力量智能编组` 与 `作战目标自动分配` 的智能算法已统一切换到 `algorithms/battle-planner`：编组阶段调用 `battle_planner`，分配阶段复用 `battlePlannerResult.task_groups` 适配为目标分配态势图层；旧 `algorithms/force-grouping` 和 `algorithms/target-allocation` Python 智能算法目录已删除，内置目标分配方法仍保留 `hungarian / ant-colony / multi-objective` 三种。智能编组和智能分配现在都支持 `均衡 / 战损最小化 / 资源最小化` 三类策略画像：战损最小化会倾向更多编组协同和更高生存性，资源最小化会在覆盖底线下压缩使用单位，均衡方案兼顾覆盖、风险和资源。智能分配火力值已改为实际武器装载口径：无武器装载时火力为 0，人员/运输能力只进入其他指标，火力打击类任务缺少武器会被合理性校核拦截。目标分配态势的红方目标坐标会优先沿用上游敌情真实经纬度，并额外输出 `allocation-original-target-*` 原始目标点，仅在缺坐标时使用兜底点；结果页会为旧结果兜底合成原始目标点，压制编组/箭头标签以避免卡顿，并支持点击方案卡片或表格行切换不同分配方案的三维态势、二维分配图、统计指标和分配清单。
+27. `敌情威胁自动分析` 热力图支持多目标群显示：远距离目标群会生成多条局部 `visualization.imageOverlays` 贴图，全局 `heatmapBase64 / heatmapGeojson` 继续保留用于兼容、导出和空间成果包。
 
 ### 本次 review 的正向结论
 

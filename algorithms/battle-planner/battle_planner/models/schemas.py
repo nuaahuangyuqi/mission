@@ -240,6 +240,9 @@ class LLMProviderConfig(PlannerBaseModel):
 
 class LLMConfig(PlannerBaseModel):
     provider: Literal["openai", "ollama", "mock"] = "mock"
+    stream: bool = False
+    stream_to_stdout: bool = True
+    ollama_num_ctx: int = Field(default=262144, ge=2048, le=262144)
     openai: LLMProviderConfig = Field(default_factory=LLMProviderConfig)
     ollama: LLMProviderConfig = Field(default_factory=LLMProviderConfig)
     mock: LLMProviderConfig = Field(default_factory=lambda: LLMProviderConfig(model_name="mock-planner"))

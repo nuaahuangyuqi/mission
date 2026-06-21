@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import sys
 from pathlib import Path
 
 from battle_planner.pipeline import PlanningPipeline
@@ -27,7 +29,17 @@ def main() -> None:
         print(json.dumps(result.model_dump(mode="json"), ensure_ascii=False, indent=2))
     else:
         output = Path(args.output_dir)
-        print(f"已生成 {result.total_groups} 个编组，输出目录：{output.resolve()}")
+        print(f"已生成 {result.total_groups} 个编组，输出目录：{output.resolve()}", file=_summary_stream())
+
+
+def _summary_stream():
+    if _env_bool("FORCE_GROUPING_LLM_STREAM_STDOUT") or _env_bool("LLM_STREAM_STDOUT"):
+        return sys.stderr
+    return sys.stdout
+
+
+def _env_bool(name: str) -> bool:
+    return str(os.getenv(name, "")).strip().lower() in {"1", "true", "yes", "on"}
 
 
 if __name__ == "__main__":

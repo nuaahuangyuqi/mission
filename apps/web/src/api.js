@@ -214,6 +214,12 @@ export const api = {
       body: JSON.stringify(payload),
     });
   },
+  bulkDeletePlanningRealtimeArtifacts(artifactIds = []) {
+    return request('/api/planning/realtime/artifacts/bulk-delete', {
+      method: 'POST',
+      body: JSON.stringify({ artifactIds }),
+    });
+  },
   testPlanningLlm(payload) {
     return request('/api/planning/llm/test', {
       method: 'POST',
@@ -360,6 +366,12 @@ export const api = {
     return request('/api/tasks', {
       method: 'POST',
       body: JSON.stringify(payload),
+    });
+  },
+  bulkDeleteTasks(taskIds = []) {
+    return request('/api/tasks/bulk-delete', {
+      method: 'POST',
+      body: JSON.stringify({ taskIds }),
     });
   },
   getTask(id) {

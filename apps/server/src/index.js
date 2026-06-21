@@ -267,6 +267,7 @@ const TASK_MODULE_KEYS = ['planning', 'capability', 'action', 'consumption'];
 const TASK_STATUS_KEYS = ['draft', 'submitted', 'archived'];
 const TASK_PLANNING_TEMPLATE_IDS = ['fire-strike-task', 'air-assault-task'];
 const TASK_RUN_STATUS_KEYS = ['created', 'running', 'succeeded', 'failed'];
+const ACTIVE_TASK_RUN_STATUS_KEYS = ['created', 'running'];
 const PLANNING_STAGE_KEYS = ['library', 'flow', 'execute'];
 const PLANNING_ERROR_TYPES = ['missing_data', 'missing_upstream', 'algorithm_failed', 'permission_denied'];
 const PLANNING_REALTIME_ARTIFACT_STATUS_KEYS = ['succeeded', 'failed', 'draft'];
@@ -399,6 +400,31 @@ function getTaskRowById(taskId) {
 function readTaskById(taskId, options = {}) {
   const row = getTaskRowById(taskId);
   return row ? hydrateTaskPlanningState(mapTask(row), options) : null;
+}
+
+function buildInClause(values = []) {
+  return safeArray(values).map(() => '?').join(', ');
+}
+
+function normalizeTaskIdList(value = []) {
+  if (!Array.isArray(value)) {
+    return { ids: [], invalid: true };
+  }
+
+  const ids = [];
+  let invalid = false;
+  for (const item of value) {
+    const id = Number(item);
+    if (!Number.isInteger(id) || id <= 0) {
+      invalid = true;
+      continue;
+    }
+    if (!ids.includes(id)) {
+      ids.push(id);
+    }
+  }
+
+  return { ids, invalid };
 }
 
 function createPlanningError({
@@ -545,6 +571,129 @@ function saveTaskResult(taskId, runId, resultPayload = {}) {
 
   const row = db.prepare('SELECT * FROM task_results WHERE run_id = ?').get(runId);
   return row ? mapTaskResult(row) : null;
+}
+
+function deletePlanningTasks(taskIds = [], user) {
+  const ids = [...new Set(safeArray(taskIds).map((item) => Number(item)).filter((item) => Number.isInteger(item) && item > 0))];
+  if (!ids.length) {
+    const error = new Error('请选择要删除的规划任务实例');
+    error.status = 400;
+    error.code = 'TASK_DELETE_EMPTY';
+    throw error;
+  }
+
+  const idClause = buildInClause(ids);
+  const rows = db.prepare(`SELECT * FROM tasks WHERE id IN (${idClause})`).all(...ids);
+  const tasks = rows.map(mapTask);
+  const foundIds = new Set(tasks.map((task) => Number(task.id)));
+  const missingIds = ids.filter((id) => !foundIds.has(id));
+  if (missingIds.length) {
+    const error = new Error('部分任务不存在，删除已取消');
+    error.status = 404;
+    error.code = 'TASK_DELETE_MISSING';
+    error.details = { missingTaskIds: missingIds };
+    throw error;
+  }
+
+  const nonPlanning = tasks.filter((task) => task.moduleKey !== 'planning');
+  if (nonPlanning.length) {
+    const error = new Error('仅支持删除规划模块的作战任务实例');
+    error.status = 400;
+    error.code = 'TASK_DELETE_UNSUPPORTED_MODULE';
+    error.details = { taskIds: nonPlanning.map((task) => task.id) };
+    throw error;
+  }
+
+  const forbidden = tasks.filter((task) => !canAccessTask(task, user));
+  if (forbidden.length) {
+    const error = new Error('当前账号无权删除所选任务');
+    error.status = 403;
+    error.code = 'TASK_DELETE_FORBIDDEN';
+    error.details = { taskIds: forbidden.map((task) => task.id) };
+    throw error;
+  }
+
+  const activeStatusClause = buildInClause(ACTIVE_TASK_RUN_STATUS_KEYS);
+  const runningRows = db.prepare(`
+    SELECT task_runs.id, task_runs.task_id, task_runs.status
+    FROM task_runs
+    JOIN tasks ON tasks.latest_run_id = task_runs.id
+    WHERE task_runs.task_id IN (${idClause})
+      AND task_runs.status IN (${activeStatusClause})
+  `).all(...ids, ...ACTIVE_TASK_RUN_STATUS_KEYS);
+  const skippedRunningTaskIds = [...new Set(runningRows.map((row) => Number(row.task_id)))];
+  const skippedRunningRunIds = runningRows.map((row) => Number(row.id));
+  const deletableIds = ids.filter((id) => !skippedRunningTaskIds.includes(Number(id)));
+  if (!deletableIds.length) {
+    return {
+      deletedTaskIds: [],
+      deletedCount: 0,
+      skippedRunningTaskIds,
+      skippedRunningRunIds,
+      skippedCount: skippedRunningTaskIds.length,
+      counts: {
+        algorithmCallLogs: 0,
+        taskResults: 0,
+        taskRuns: 0,
+        realtimeArtifacts: 0,
+        taskAttachments: 0,
+        sourcesUnlinked: 0,
+        extractionsUnlinked: 0,
+        importBatchesUnlinked: 0,
+        importBatchItemsUnlinked: 0,
+        tasks: 0,
+      },
+    };
+  }
+
+  const deleteClause = buildInClause(deletableIds);
+  const runRows = db.prepare(`SELECT id FROM task_runs WHERE task_id IN (${deleteClause})`).all(...deletableIds);
+  const runIds = runRows.map((row) => Number(row.id)).filter((id) => Number.isInteger(id) && id > 0);
+  const counts = {
+    algorithmCallLogs: 0,
+    taskResults: 0,
+    taskRuns: 0,
+    realtimeArtifacts: 0,
+    taskAttachments: 0,
+    sourcesUnlinked: 0,
+    extractionsUnlinked: 0,
+    importBatchesUnlinked: 0,
+    importBatchItemsUnlinked: 0,
+    tasks: 0,
+  };
+
+  db.exec('BEGIN');
+  try {
+    const runClause = buildInClause(runIds);
+    const algorithmLogSql = runIds.length
+      ? `DELETE FROM algorithm_call_logs WHERE task_id IN (${deleteClause}) OR task_run_id IN (${runClause})`
+      : `DELETE FROM algorithm_call_logs WHERE task_id IN (${deleteClause})`;
+    counts.algorithmCallLogs = db.prepare(algorithmLogSql).run(...deletableIds, ...runIds).changes;
+
+    counts.sourcesUnlinked = db.prepare(`UPDATE sources SET task_id = NULL WHERE task_id IN (${deleteClause})`).run(...deletableIds).changes;
+    counts.extractionsUnlinked = db.prepare(`UPDATE extractions SET task_id = NULL WHERE task_id IN (${deleteClause})`).run(...deletableIds).changes;
+    counts.importBatchesUnlinked = db.prepare(`UPDATE import_batches SET task_id = NULL WHERE task_id IN (${deleteClause})`).run(...deletableIds).changes;
+    counts.importBatchItemsUnlinked = db.prepare(`UPDATE import_batch_items SET task_id = NULL WHERE task_id IN (${deleteClause})`).run(...deletableIds).changes;
+    counts.realtimeArtifacts = db.prepare(`DELETE FROM planning_realtime_artifacts WHERE task_id IN (${deleteClause})`).run(...deletableIds).changes;
+    counts.taskAttachments = db.prepare(`DELETE FROM task_attachments WHERE task_id IN (${deleteClause})`).run(...deletableIds).changes;
+    counts.taskResults = db.prepare(`DELETE FROM task_results WHERE task_id IN (${deleteClause})`).run(...deletableIds).changes;
+    counts.taskRuns = db.prepare(`DELETE FROM task_runs WHERE task_id IN (${deleteClause})`).run(...deletableIds).changes;
+    counts.tasks = db.prepare(`DELETE FROM tasks WHERE id IN (${deleteClause})`).run(...deletableIds).changes;
+
+    db.exec('COMMIT');
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+
+  return {
+    deletedTaskIds: deletableIds,
+    deletedCount: counts.tasks,
+    skippedRunningTaskIds,
+    skippedRunningRunIds,
+    skippedCount: skippedRunningTaskIds.length,
+    counts,
+  };
 }
 
 function getRecentTaskRuns(taskId, limit = 5, offset = 0) {
@@ -813,6 +962,64 @@ function listPlanningRealtimeArtifacts(user, filters = {}) {
     total: Number(totalRow?.total || 0),
     limit,
     offset,
+  };
+}
+
+function deletePlanningRealtimeArtifacts(artifactIds = [], user) {
+  const ids = [...new Set(safeArray(artifactIds)
+    .map((item) => Number(item))
+    .filter((item) => Number.isInteger(item) && item > 0))];
+  if (!ids.length) {
+    throw createPlanningError({
+      code: 'PLANNING_INVALID_ARTIFACT_IDS',
+      type: 'missing_data',
+      status: 400,
+      message: '请选择要删除的算法产物。',
+      details: { artifactIds },
+    });
+  }
+
+  const idClause = buildInClause(ids);
+  const rows = db.prepare(`SELECT * FROM planning_realtime_artifacts WHERE id IN (${idClause})`).all(...ids);
+  const artifacts = rows.map(mapPlanningRealtimeArtifact);
+  const foundIds = new Set(artifacts.map((artifact) => Number(artifact.id)));
+  const missingArtifactIds = ids.filter((id) => !foundIds.has(Number(id)));
+  const forbidden = artifacts.filter((artifact) => !canAccessRealtimeArtifact(artifact, user));
+  if (forbidden.length) {
+    throw createPlanningError({
+      code: 'PLANNING_PERMISSION_DENIED',
+      type: 'permission_denied',
+      status: 403,
+      message: '当前账号无权删除所选算法产物。',
+      details: { artifactIds: forbidden.map((artifact) => artifact.id) },
+    });
+  }
+
+  const deletedArtifactIds = artifacts.map((artifact) => Number(artifact.id));
+  const counts = {
+    realtimeArtifacts: 0,
+  };
+
+  if (deletedArtifactIds.length) {
+    const deleteClause = buildInClause(deletedArtifactIds);
+    db.exec('BEGIN');
+    try {
+      counts.realtimeArtifacts = db.prepare(
+        `DELETE FROM planning_realtime_artifacts WHERE id IN (${deleteClause})`,
+      ).run(...deletedArtifactIds).changes;
+      db.exec('COMMIT');
+    } catch (error) {
+      db.exec('ROLLBACK');
+      throw error;
+    }
+  }
+
+  return {
+    deletedArtifactIds,
+    deletedCount: counts.realtimeArtifacts,
+    missingArtifactIds,
+    missingCount: missingArtifactIds.length,
+    counts,
   };
 }
 
@@ -1957,6 +2164,38 @@ app.post('/api/tasks', (req, res) => {
   res.status(201).json({ task: buildTaskPayload(createdTask), recentRuns: [] });
 });
 
+app.post('/api/tasks/bulk-delete', (req, res) => {
+  try {
+    const normalized = normalizeTaskIdList(req.body?.taskIds);
+    if (normalized.invalid || !normalized.ids.length) {
+      res.status(400).json({
+        message: '请选择有效的任务实例后再删除',
+        error: {
+          code: 'TASK_DELETE_INVALID_IDS',
+          type: 'missing_data',
+          message: '请选择有效的任务实例后再删除',
+          details: { taskIds: req.body?.taskIds },
+        },
+      });
+      return;
+    }
+
+    const result = deletePlanningTasks(normalized.ids, req.user);
+    res.json(result);
+  } catch (error) {
+    const status = Number.isInteger(Number(error?.status)) ? Number(error.status) : 500;
+    res.status(status).json({
+      message: error?.message || '任务删除失败',
+      error: {
+        code: String(error?.code || 'TASK_DELETE_FAILED'),
+        type: status === 403 ? 'permission_denied' : 'missing_data',
+        message: error?.message || '任务删除失败',
+        details: error?.details || {},
+      },
+    });
+  }
+});
+
 app.get('/api/tasks/:id', (req, res) => {
   const taskId = Number(req.params.id);
   if (!Number.isInteger(taskId) || taskId <= 0) {
@@ -2308,6 +2547,25 @@ app.get('/api/planning/realtime/upstream-results', (req, res) => {
     res.json(result);
   } catch (error) {
     sendPlanningError(res, error, '前置算法结果列表读取失败');
+  }
+});
+
+app.post('/api/planning/realtime/artifacts/bulk-delete', (req, res) => {
+  try {
+    const normalized = normalizeTaskIdList(req.body?.artifactIds || req.body?.ids);
+    if (normalized.invalid || !normalized.ids.length) {
+      throw createPlanningError({
+        code: 'PLANNING_INVALID_ARTIFACT_IDS',
+        type: 'missing_data',
+        status: 400,
+        message: '请选择有效的算法产物后再删除。',
+        details: { artifactIds: req.body?.artifactIds || req.body?.ids },
+      });
+    }
+
+    res.json(deletePlanningRealtimeArtifacts(normalized.ids, req.user));
+  } catch (error) {
+    sendPlanningError(res, error, '算法产物删除失败');
   }
 });
 

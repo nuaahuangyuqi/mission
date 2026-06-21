@@ -2495,10 +2495,119 @@ async function materializePlanningContextFiles({
   };
 }
 
+function hasBattlePlannerThreatTargets(output = {}) {
+  return safeArray(safeObject(output).targetAssessments).length > 0;
+}
+
+function hasBattlePlannerThreatShape(output = {}) {
+  const source = safeObject(output);
+  return hasBattlePlannerThreatTargets(source)
+    || safeArray(source.targetEntities).length > 0
+    || safeArray(source.fireCoverage).length > 0
+    || safeArray(source.airDefenseSystem).length > 0
+    || safeArray(source.reconEarlyWarning).length > 0
+    || safeArray(source.antiAirborneFacilities).length > 0
+    || safeArray(source.deploymentSectors).length > 0
+    || safeArray(source.visualization?.entities).length > 0
+    || Object.prototype.hasOwnProperty.call(source, 'threatScore')
+    || Object.prototype.hasOwnProperty.call(source, 'threatLevel');
+}
+
+function extractBattlePlannerThreatOutput(threatOutput = {}) {
+  const source = safeObject(threatOutput);
+  if (!Object.keys(source).length) return {};
+
+  if (source.schemaVersion === 'planning-artifact-export-v1' && hasBattlePlannerThreatShape(source.output)) {
+    return safeObject(source.output);
+  }
+
+  const candidates = [
+    source,
+    source.structuredOutput,
+    source.output,
+    source.result,
+    source.resultPayload,
+    source.step,
+    safeObject(source.step).structuredOutput,
+    safeObject(source.result).structuredOutput,
+    safeObject(source.resultPayload).structuredOutput,
+    safeObject(safeObject(source.resultPayload).step).structuredOutput,
+    safeObject(safeObject(source.resultPayload).result).structuredOutput,
+  ];
+
+  return safeObject(candidates.find((item) => hasBattlePlannerThreatShape(item)) || source);
+}
+
+function mapCandidateTypeToBattlePlannerCategory(type = '') {
+  const normalized = String(type || '').trim().toLowerCase();
+  const map = {
+    'air-defense': { category: 'air_defense', subCategory: 'manportable_air_defense' },
+    'recon-warning': { category: 'recon_sensor', subCategory: 'ground_vibration_sensor' },
+    'anti-airborne': { category: 'fortification', subCategory: 'explosive_barrier' },
+    'fire-coverage': { category: 'fire_coverage', subCategory: 'indirect_fire' },
+    'deployment-sector': { category: 'mobility_unit', subCategory: 'mobile_reinforcement' },
+    default: { category: 'command_control', subCategory: 'communication_relay' },
+  };
+  return map[normalized] || map.default;
+}
+
+function buildBattlePlannerThreatAssessment(candidate = {}, index = 0) {
+  const mapping = mapCandidateTypeToBattlePlannerCategory(candidate.type);
+  const coordinates = normalizeTargetCandidateCoordinate(candidate.coordinates || candidate);
+  const location = coordinates && isUsableMapCoordinate(coordinates)
+    ? {
+      coordinates: [round(coordinates[0], 6), round(coordinates[1], 6)],
+      locationDescription: candidate.coordinateSource || candidate.rationale || '',
+    }
+    : undefined;
+  const id = String(candidate.sourceTargetId || candidate.id || `target-${index + 1}`);
+  const name = String(candidate.name || candidate.sourceTargetName || `敌情目标 ${index + 1}`);
+
+  return {
+    id,
+    name,
+    category: mapping.category,
+    threatScore: round(clamp(Number(candidate.difficulty ?? candidate.compositePriority ?? 60), 0, 100), 1),
+    valueScore: round(clamp(Number(candidate.importance ?? candidate.compositePriority ?? 60), 0, 100), 1),
+    priorityScore: round(clamp(Number(candidate.compositePriority ?? candidate.importance ?? 60), 0, 100), 1),
+    location,
+    coverage: {},
+    capabilities: cloneData(candidate.capabilityWeights || {}),
+    dominantFactors: [candidate.typeLabel, candidate.rationale].filter(Boolean),
+    sourceTarget: {
+      id,
+      name,
+      category: mapping.category,
+      subCategory: mapping.subCategory,
+      location,
+      notes: candidate.rationale || '',
+    },
+  };
+}
+
+function ensureBattlePlannerThreatTargets(output = {}) {
+  const normalized = cloneData(safeObject(output));
+  if (hasBattlePlannerThreatTargets(normalized)) {
+    return normalized;
+  }
+
+  const candidates = buildCandidateTargets(normalized);
+  if (candidates.length) {
+    normalized.targetAssessments = candidates.map((item, index) => (
+      buildBattlePlannerThreatAssessment(item, index)
+    ));
+  }
+  return normalized;
+}
+
 function buildBattlePlannerThreatArtifact(threatOutput = {}, step = {}, algorithm = {}) {
-  const output = safeObject(threatOutput);
-  if (output.schemaVersion === 'planning-artifact-export-v1' && safeObject(output.output).targetAssessments) {
-    return output;
+  const source = safeObject(threatOutput);
+  const output = ensureBattlePlannerThreatTargets(extractBattlePlannerThreatOutput(source));
+  if (source.schemaVersion === 'planning-artifact-export-v1' && hasBattlePlannerThreatTargets(output)) {
+    return {
+      ...source,
+      output,
+    };
   }
   return {
     schemaVersion: 'planning-artifact-export-v1',
@@ -2536,6 +2645,9 @@ function buildBattlePlannerConfig(runtimeOptions = {}) {
   return {
     llm: {
       provider,
+      stream: normalizeBooleanOption(source.llmStream, false),
+      stream_to_stdout: normalizeBooleanOption(source.llmStreamStdout ?? source.streamToStdout, true),
+      ollama_num_ctx: llmOptions.ollamaNumCtx,
       openai: {
         api_key: llmOptions.apiKey,
         base_url: llmOptions.baseUrl,
@@ -3463,10 +3575,11 @@ async function executeLocalForceGrouping(variant, task, step, algorithm, context
     outputDir,
   ];
 
-  const llmOptions = normalizeLlmRuntimeOptions(runtimeOptions);
-  const env = appendPythonPath({
-    OLLAMA_HOST: llmOptions.ollamaHost,
-  }, projectRoot);
+  const env = applyLlmRuntimeEnv(
+    appendPythonPath({}, projectRoot),
+    'FORCE_GROUPING_LLM',
+    runtimeOptions,
+  );
   await runPythonProcess({
     args,
     cwd: REPO_ROOT,
@@ -3476,7 +3589,7 @@ async function executeLocalForceGrouping(variant, task, step, algorithm, context
     step,
     algorithm,
     variant,
-    stdoutAsLlm: false,
+    stdoutAsLlm: normalizeBooleanOption(runtimeOptions.llmStream, true),
     terminalPrefix: 'Battle Planner 智能编组算法',
   });
 
@@ -5140,6 +5253,14 @@ async function runBuiltinForceGrouping(context, step, algorithm, input, dataset,
       useLlmExplanation: false,
       llmBackend: appliedOptions.llmBackend || 'mock',
       llmStream: false,
+      runtimeOptions: {
+        ...safeObject(appliedOptions.runtimeOptions),
+        'force-grouping-local': {
+          ...safeObject(safeObject(appliedOptions.runtimeOptions)['force-grouping-local']),
+          llmBackend: appliedOptions.llmBackend || 'mock',
+          llmStream: false,
+        },
+      },
     },
   };
   const bridgeTask = {

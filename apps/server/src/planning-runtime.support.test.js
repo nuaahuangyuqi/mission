@@ -97,6 +97,18 @@ function createBattlePlannerCsvFriendlyUpload() {
   };
 }
 
+function createBuiltinThreatTextUpload() {
+  return {
+    fileName: 'enemy-brief.txt',
+    fileExtension: '.txt',
+    fileContentBase64: Buffer.from([
+      '东侧高地部署单兵防空阵地，覆盖我方主要突防航线。',
+      '北侧山脊存在通信中继站和侦察预警节点，可支撑敌方快速协同。',
+      '南侧道路发现迫击炮阵地和工程障碍，可能阻滞机动突击。',
+    ].join('\n'), 'utf8').toString('base64'),
+  };
+}
+
 function createBattlePlannerNoWeaponsFriendlyUpload() {
   return {
     fileName: 'friendly-no-weapons.json',
@@ -281,6 +293,76 @@ test('target allocation separates builtin methods from intelligent local impleme
   assert.equal(intelligentVariant.projectPath, 'algorithms/battle-planner');
 });
 
+test('builtin threat analysis output can feed the intelligent grouping bridge', async () => {
+  const result = await evaluatePlanning({
+    assessmentName: '内置敌情到智能编组桥接测试',
+    taskDefinition: {
+      id: 'builtin-threat-to-force-grouping',
+      name: '内置敌情桥接智能编组',
+      category: '火力打击任务',
+      steps: [
+        {
+          id: 'step-threat-analysis',
+          order: 1,
+          name: '敌情威胁自动分析',
+          algorithmId: 'enemy-threat-analysis',
+          objective: '生成内置敌情威胁节点',
+          consumes: ['敌情资料'],
+          produces: ['威胁模型'],
+        },
+        {
+          id: 'step-force-grouping',
+          order: 2,
+          name: '作战力量智能编组',
+          algorithmId: 'force-grouping',
+          objective: '基于内置敌情节点生成智能编组',
+          consumes: ['威胁模型', '我方兵力'],
+          produces: ['编组方案'],
+        },
+      ],
+      defaultBindings: {
+        'step-threat-analysis': 'enemy-threat-analysis:builtin',
+        'step-force-grouping': 'force-grouping:builtin',
+      },
+    },
+    bindings: {
+      'step-threat-analysis': 'enemy-threat-analysis:builtin',
+      'step-force-grouping': 'force-grouping:builtin',
+    },
+    algorithmInputs: {
+      'enemy-threat-analysis': {
+        builtinMethodKey: 'knowledge-fusion',
+        selectedSourceIds: [],
+        uploadedFiles: [createBuiltinThreatTextUpload()],
+        options: {
+          analysisFocus: 'comprehensive',
+          heatmapDensity: 'low',
+          impactBias: 'balanced',
+        },
+      },
+      'force-grouping': {
+        builtinMethodKey: 'hybrid-balanced',
+        selectedSourceIds: [],
+        uploadedFiles: [createBattlePlannerFriendlyUpload()],
+        options: {
+          expectedGroupCount: 4,
+          comparisonFocus: 'balanced',
+          llmBackend: 'mock',
+        },
+      },
+    },
+  });
+
+  assert.equal(result.execution.summary.completedSteps, 2);
+  const threatOutput = result.result.consolidatedOutputs.threatAnalysis;
+  assert.equal(Array.isArray(threatOutput.targetAssessments), false);
+  assert.ok((threatOutput.fireCoverage || []).length + (threatOutput.airDefenseSystem || []).length > 0);
+  const forceGrouping = result.result.consolidatedOutputs.forceGrouping;
+  assert.equal(forceGrouping.implementationStatus, 'implemented');
+  assert.ok(forceGrouping.inputSummary.upstreamThreatTargetCount > 0);
+  assert.ok(forceGrouping.schemes.length > 0);
+});
+
 test('battle planner force grouping local implementation returns platform grouping contract', async () => {
   const { result } = await runBattlePlannerForceGroupingForTest();
   const output = result.structuredOutput;
@@ -382,6 +464,38 @@ test('battle planner force grouping converts csv friendly uploads to text', asyn
   assert.ok(csvImport);
   assert.equal(csvImport.convertedToText, true);
   assert.ok(output.preferredScheme.groups.length > 0);
+});
+
+test('battle planner force grouping emits LLM stream chunks when enabled', async () => {
+  const template = getPlanningTemplate();
+  const algorithm = template.algorithms.find((item) => item.id === 'force-grouping');
+  const variant = algorithm?.variants.find((item) => item.id === 'force-grouping:force-grouping-local');
+  const events = [];
+  const result = await executeLocalPythonStep(
+    variant,
+    { id: 'test-force-grouping-stream', name: '编组流式输出测试' },
+    { id: 'step-force-grouping', name: '作战力量智能编组' },
+    algorithm,
+    {
+      stageOutputs: {
+        'enemy-threat-analysis': createBattlePlannerThreatOutput(),
+      },
+    },
+    { dataset: {} },
+    {
+      uploadedFiles: [createBattlePlannerFriendlyUpload()],
+      options: {
+        llmBackend: 'mock',
+        llmStream: true,
+      },
+    },
+    (type, payload) => events.push({ type, payload }),
+  );
+
+  const chunks = events.filter((event) => event.type === 'llm-chunk');
+  assert.ok(chunks.length > 0);
+  assert.match(chunks.map((event) => event.payload.content || '').join(''), /battle-planner-mock|friendly_forces|rules/);
+  assert.ok(result.structuredOutput.preferredScheme.groups.length > 0);
 });
 
 test('battle planner force grouping rejects missing upstream threat output', async () => {

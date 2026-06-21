@@ -154,6 +154,7 @@ function createStepExecutionState() {
     upstreamQuery: '',
     currentArtifact: null,
     selectedArtifact: null,
+    selectedResultRef: null,
     latestResult: null,
     calculating: false,
     executionStream: createExecutionStreamState(),
@@ -708,6 +709,9 @@ function handleStepExecutionStreamEvent(eventType, payload = {}) {
     state.stepExecution.latestResult = payload.result || null;
     state.stepExecution.currentArtifact = payload.artifact || null;
     state.stepExecution.selectedArtifact = payload.artifact || null;
+    state.stepExecution.selectedResultRef = payload.artifact
+      ? { sourceType: 'realtime-artifact', id: payload.artifact.id, taskId: payload.artifact.taskId }
+      : null;
     streamState.progress = 100;
     appendTerminalLineToStream(streamState, { ...payload, stream: 'system', message: '分步执行结果已生成并归档。' });
     return;
@@ -796,6 +800,123 @@ async function ensureTaskInstanceDetail(task) {
 
 function removeTaskInstance(taskId) {
   state.taskInstances = safeArray(state.taskInstances).filter((item) => Number(item.id) !== Number(taskId));
+}
+
+function resultRefBelongsToDeletedTasks(ref = {}, deletedTaskIds = new Set(), realtimeResultMap = new Map()) {
+  const sourceType = String(ref?.sourceType || '');
+  if (sourceType === 'task-run-step') {
+    return deletedTaskIds.has(Number(ref.taskId));
+  }
+  if (sourceType === 'realtime-artifact') {
+    if (deletedTaskIds.has(Number(ref.taskId))) return true;
+    const artifactId = Number(ref.id || ref.artifactId);
+    const result = realtimeResultMap.get(artifactId);
+    return Boolean(result && deletedTaskIds.has(Number(result.taskId)));
+  }
+  return false;
+}
+
+function cleanupDeletedTaskReferences(taskIds = []) {
+  const deletedTaskIds = new Set(uniqueNumberList(taskIds));
+  if (!deletedTaskIds.size) return;
+
+  const realtimeResultMap = new Map(safeArray(state.stepExecution.upstreamResults)
+    .filter((item) => item.sourceType === 'realtime-artifact')
+    .map((item) => [Number(item.artifactId), item]));
+
+  state.stepExecution.upstreamResults = safeArray(state.stepExecution.upstreamResults)
+    .filter((item) => !deletedTaskIds.has(Number(item.taskId)));
+
+  const nextInputRefs = {};
+  for (const [algorithmId, ref] of Object.entries(safeObject(state.stepExecution.inputResultRefsByAlgorithm))) {
+    if (!resultRefBelongsToDeletedTasks(ref, deletedTaskIds, realtimeResultMap)) {
+      nextInputRefs[algorithmId] = ref;
+    }
+  }
+  state.stepExecution.inputResultRefsByAlgorithm = nextInputRefs;
+
+  const currentArtifactDeleted = deletedTaskIds.has(Number(state.stepExecution.currentArtifact?.taskId))
+    || deletedTaskIds.has(Number(state.stepExecution.selectedArtifact?.taskId));
+  const selectedResultDeleted = resultRefBelongsToDeletedTasks(
+    state.stepExecution.selectedResultRef,
+    deletedTaskIds,
+    realtimeResultMap,
+  );
+
+  if (currentArtifactDeleted || selectedResultDeleted) {
+    state.stepExecution.currentArtifact = null;
+    state.stepExecution.selectedArtifact = null;
+    state.stepExecution.selectedResultRef = null;
+    state.stepExecution.latestResult = null;
+  }
+}
+
+function resultRefBelongsToDeletedArtifacts(ref = {}, deletedArtifactIds = new Set()) {
+  return String(ref?.sourceType || '') === 'realtime-artifact'
+    && deletedArtifactIds.has(Number(ref.id || ref.artifactId));
+}
+
+function cleanupDeletedRealtimeArtifacts(artifactIds = []) {
+  const deletedArtifactIds = new Set(uniqueNumberList(artifactIds));
+  if (!deletedArtifactIds.size) return;
+
+  state.stepExecution.upstreamResults = safeArray(state.stepExecution.upstreamResults)
+    .filter((item) => (
+      item.sourceType !== 'realtime-artifact'
+      || !deletedArtifactIds.has(Number(item.artifactId))
+    ));
+
+  const nextInputRefs = {};
+  for (const [algorithmId, ref] of Object.entries(safeObject(state.stepExecution.inputResultRefsByAlgorithm))) {
+    if (!resultRefBelongsToDeletedArtifacts(ref, deletedArtifactIds)) {
+      nextInputRefs[algorithmId] = ref;
+    }
+  }
+  state.stepExecution.inputResultRefsByAlgorithm = nextInputRefs;
+
+  const currentArtifactDeleted = deletedArtifactIds.has(Number(state.stepExecution.currentArtifact?.id))
+    || deletedArtifactIds.has(Number(state.stepExecution.selectedArtifact?.id));
+  const selectedResultDeleted = resultRefBelongsToDeletedArtifacts(
+    state.stepExecution.selectedResultRef,
+    deletedArtifactIds,
+  );
+
+  if (currentArtifactDeleted || selectedResultDeleted) {
+    state.stepExecution.currentArtifact = null;
+    state.stepExecution.selectedArtifact = null;
+    state.stepExecution.selectedResultRef = null;
+    state.stepExecution.latestResult = null;
+  }
+}
+
+function patchRealtimeArtifactInState(artifact = {}) {
+  const artifactId = Number(artifact?.id);
+  if (!Number.isInteger(artifactId) || artifactId <= 0) return;
+
+  state.stepExecution.upstreamResults = safeArray(state.stepExecution.upstreamResults)
+    .map((item) => (
+      item.sourceType === 'realtime-artifact' && Number(item.artifactId) === artifactId
+        ? {
+          ...item,
+          displayName: artifact.displayName || item.displayName,
+          description: artifact.description ?? item.description,
+          updatedAt: artifact.updatedAt || item.updatedAt,
+        }
+        : item
+    ));
+
+  if (Number(state.stepExecution.currentArtifact?.id) === artifactId) {
+    state.stepExecution.currentArtifact = {
+      ...state.stepExecution.currentArtifact,
+      ...artifact,
+    };
+  }
+  if (Number(state.stepExecution.selectedArtifact?.id) === artifactId) {
+    state.stepExecution.selectedArtifact = {
+      ...state.stepExecution.selectedArtifact,
+      ...artifact,
+    };
+  }
 }
 
 async function loadPlanningTemplate() {
@@ -996,6 +1117,55 @@ async function archiveTaskInstance(taskId = state.selectedTaskInstanceId) {
   clearError();
 }
 
+async function renameTaskInstance(taskId = state.selectedTaskInstanceId, name = '') {
+  const id = Number(taskId);
+  const nextName = String(name || '').trim();
+  if (!Number.isInteger(id) || id <= 0) {
+    throw new Error('请选择要重命名的任务实例。');
+  }
+  if (!nextName) {
+    throw new Error('任务实例名称不能为空。');
+  }
+
+  const response = await api.updateTask(id, {
+    name: nextName.slice(0, 120),
+    sharedContext: { name: nextName.slice(0, 120) },
+  });
+  if (response?.task) {
+    upsertTaskInstance(response.task);
+  }
+  clearError();
+  return response?.task || null;
+}
+
+async function deleteTaskInstances(taskIds = [state.selectedTaskInstanceId]) {
+  const ids = uniqueNumberList(taskIds);
+  if (!ids.length) return null;
+
+  const response = await api.bulkDeleteTasks(ids);
+  const hasDeletedTaskIds = Object.prototype.hasOwnProperty.call(safeObject(response), 'deletedTaskIds');
+  const deletedIds = uniqueNumberList(hasDeletedTaskIds ? response.deletedTaskIds : ids);
+  const deletingSelectedTask = deletedIds.some((id) => Number(id) === Number(state.selectedTaskInstanceId));
+
+  cleanupDeletedTaskReferences(deletedIds);
+  state.taskInstances = safeArray(state.taskInstances)
+    .filter((item) => !deletedIds.includes(Number(item.id)));
+
+  await loadPlanningTaskInstances({ preserveSelection: !deletingSelectedTask });
+  if (state.selectedTaskInstanceId) {
+    await loadTaskRuns(state.selectedTaskInstanceId);
+  } else {
+    state.runHistory = [];
+    state.selectedRunDetail = null;
+    state.results = null;
+    state.activeResultRunId = null;
+  }
+
+  await loadStepExecutionUpstreamResults({ limit: 160 }).catch(() => {});
+  clearError();
+  return response;
+}
+
 async function calculatePlanningAssessment() {
   if (!state.selectedTaskInstanceId) {
     const error = new Error('请先从模板创建任务实例，再执行规划。');
@@ -1074,6 +1244,7 @@ function setStepExecutionAlgorithm(algorithmId) {
   state.stepExecution.latestResult = null;
   state.stepExecution.currentArtifact = null;
   state.stepExecution.selectedArtifact = null;
+  state.stepExecution.selectedResultRef = null;
   state.stepExecution.errorMessage = '';
   resetStepExecutionStream();
 }
@@ -1099,6 +1270,9 @@ function selectStepExecutionInputResult(upstreamAlgorithmId, resultRef = null) {
 
 function selectStepExecutionArtifact(artifact = null) {
   state.stepExecution.selectedArtifact = artifact || null;
+  state.stepExecution.selectedResultRef = artifact
+    ? { sourceType: 'realtime-artifact', id: artifact.id, taskId: artifact.taskId }
+    : null;
   const resultPayload = safeObject(artifact?.resultPayload);
   state.stepExecution.latestResult = resultPayload?.step ? resultPayload : state.stepExecution.latestResult;
 }
@@ -1127,6 +1301,39 @@ async function loadStepExecutionArtifact(artifactId) {
   const artifact = response?.artifact || null;
   if (artifact) selectStepExecutionArtifact(artifact);
   return artifact;
+}
+
+async function renamePlanningRealtimeArtifact(artifactId, displayName = '') {
+  const id = Number(artifactId);
+  const nextName = String(displayName || '').trim();
+  if (!Number.isInteger(id) || id <= 0) {
+    throw new Error('请选择要重命名的算法产物。');
+  }
+  if (!nextName) {
+    throw new Error('算法产物名称不能为空。');
+  }
+
+  const response = await api.updatePlanningRealtimeArtifact(id, {
+    displayName: nextName.slice(0, 120),
+  });
+  if (response?.artifact) {
+    patchRealtimeArtifactInState(response.artifact);
+  }
+  state.stepExecution.errorMessage = '';
+  return response?.artifact || null;
+}
+
+async function deletePlanningRealtimeArtifacts(artifactIds = []) {
+  const ids = uniqueNumberList(artifactIds);
+  if (!ids.length) return null;
+
+  const response = await api.bulkDeletePlanningRealtimeArtifacts(ids);
+  const hasDeletedArtifactIds = Object.prototype.hasOwnProperty.call(safeObject(response), 'deletedArtifactIds');
+  const deletedIds = uniqueNumberList(hasDeletedArtifactIds ? response.deletedArtifactIds : ids);
+  cleanupDeletedRealtimeArtifacts(deletedIds);
+  await loadStepExecutionUpstreamResults({ limit: 160 }).catch(() => {});
+  state.stepExecution.errorMessage = '';
+  return response;
 }
 
 function buildStepExecutionPayload() {
@@ -1209,6 +1416,9 @@ async function executePlanningRealtimeStep() {
     state.stepExecution.latestResult = response.result;
     state.stepExecution.currentArtifact = response.artifact || null;
     state.stepExecution.selectedArtifact = response.artifact || null;
+    state.stepExecution.selectedResultRef = response.artifact
+      ? { sourceType: 'realtime-artifact', id: response.artifact.id, taskId: response.artifact.taskId }
+      : null;
     state.stepExecution.activeView = 'run';
     await loadStepExecutionUpstreamResults({ limit: 160 });
     return response;
@@ -1480,7 +1690,7 @@ async function updateTaskTemplate(taskId, payload = {}) {
 }
 
 async function deleteTaskTemplate(taskId) {
-  await archiveTaskInstance(taskId);
+  await deleteTaskInstances([taskId]);
 }
 
 export function usePlanningWorkflow() {
@@ -1517,12 +1727,16 @@ export function usePlanningWorkflow() {
     createPlanningTaskInstance,
     selectTaskInstance,
     archiveTaskInstance,
+    renameTaskInstance,
+    deleteTaskInstances,
     loadTaskRuns,
     replayTaskRun,
     calculatePlanningAssessment,
     terminatePlanningExecution,
     loadStepExecutionUpstreamResults,
     loadStepExecutionArtifact,
+    renamePlanningRealtimeArtifact,
+    deletePlanningRealtimeArtifacts,
     executePlanningRealtimeStep,
     terminatePlanningRealtimeStep,
     setStepExecutionView,

@@ -103,3 +103,7 @@ Desktop.ini
 
 # Local agent/plugin caches
 .codex/
+
+# documents
+./docs/intelligent-task-planning
+./data-service-sources

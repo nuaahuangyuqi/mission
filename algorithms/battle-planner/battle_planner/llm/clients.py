@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
 
@@ -35,7 +36,16 @@ class LLMClient(ABC):
 
 
 class OpenAIClient(LLMClient):
-    def __init__(self, api_key: str, base_url: Optional[str], model_name: str, temperature: float, timeout: int):
+    def __init__(
+        self,
+        api_key: str,
+        base_url: Optional[str],
+        model_name: str,
+        temperature: float,
+        timeout: int,
+        stream: bool = False,
+        stream_to_stdout: bool = True,
+    ):
         if not api_key:
             raise LLMError("OpenAI provider 缺少 api_key")
         if not model_name:
@@ -50,6 +60,8 @@ class OpenAIClient(LLMClient):
         self._client = OpenAI(**kwargs)
         self._model_name = model_name
         self._temperature = temperature
+        self._stream = stream
+        self._stream_to_stdout = stream_to_stdout
 
     def complete_json(self, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
         try:
@@ -61,15 +73,26 @@ class OpenAIClient(LLMClient):
                 ],
                 temperature=self._temperature,
                 response_format={"type": "json_object"},
+                stream=self._stream,
             )
-            content = response.choices[0].message.content or ""
+            if self._stream:
+                content = _read_openai_stream(response, label="battle-planner", echo=self._stream_to_stdout)
+            else:
+                content = response.choices[0].message.content or ""
             return extract_json_object(content)
         except Exception as exc:  # noqa: BLE001 - LLM errors should stop the pipeline with context.
             raise LLMError(f"OpenAI 大模型调用失败: {exc}") from exc
 
 
 class OllamaClient(LLMClient):
-    def __init__(self, model_name: str, temperature: float = 0.1):
+    def __init__(
+        self,
+        model_name: str,
+        temperature: float = 0.1,
+        stream: bool = False,
+        stream_to_stdout: bool = True,
+        num_ctx: int = 262144,
+    ):
         if not model_name:
             raise LLMError("Ollama provider 缺少 model_name")
         try:
@@ -79,6 +102,9 @@ class OllamaClient(LLMClient):
         self._ollama = ollama
         self._model_name = model_name
         self._temperature = temperature
+        self._stream = stream
+        self._stream_to_stdout = stream_to_stdout
+        self._num_ctx = num_ctx
 
     def complete_json(self, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
         try:
@@ -89,9 +115,13 @@ class OllamaClient(LLMClient):
                     {"role": "user", "content": user_prompt},
                 ],
                 format="json",
-                options={"temperature": self._temperature},
+                stream=self._stream,
+                options={"temperature": self._temperature, "num_ctx": self._num_ctx},
             )
-            content = response["message"]["content"]
+            if self._stream:
+                content = _read_ollama_stream(response, label="battle-planner", echo=self._stream_to_stdout)
+            else:
+                content = response["message"]["content"]
             return extract_json_object(content)
         except Exception as exc:  # noqa: BLE001
             raise LLMError(f"Ollama 大模型调用失败: {exc}") from exc
@@ -100,10 +130,18 @@ class OllamaClient(LLMClient):
 class MockLLMClient(LLMClient):
     """Deterministic offline client used by examples and tests."""
 
+    def __init__(self, stream: bool = False, stream_to_stdout: bool = True):
+        self._stream = stream
+        self._stream_to_stdout = stream_to_stdout
+
     def complete_json(self, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
         if "处置规则" in user_prompt and "敌方目标" in user_prompt and "己方文档" not in user_prompt:
-            return self._mock_rules(user_prompt)
-        return self._mock_friendly_structure(user_prompt)
+            result = self._mock_rules(user_prompt)
+        else:
+            result = self._mock_friendly_structure(user_prompt)
+        if self._stream:
+            _echo_stream(json.dumps(result, ensure_ascii=False), label="battle-planner-mock", echo=self._stream_to_stdout)
+        return result
 
     def _mock_rules(self, user_prompt: str) -> Dict[str, Any]:
         payload = _json_after_label(user_prompt, "敌方目标：")
@@ -248,8 +286,76 @@ def build_llm_client(config: AppConfig) -> LLMClient:
             model_name=settings.model_name or "",
             temperature=settings.temperature,
             timeout=settings.timeout_seconds,
+            stream=config.llm.stream,
+            stream_to_stdout=config.llm.stream_to_stdout,
         )
     if provider == "ollama":
         settings = config.llm.ollama
-        return OllamaClient(model_name=settings.model_name or "", temperature=settings.temperature)
-    return MockLLMClient()
+        return OllamaClient(
+            model_name=settings.model_name or "",
+            temperature=settings.temperature,
+            stream=config.llm.stream,
+            stream_to_stdout=config.llm.stream_to_stdout,
+            num_ctx=config.llm.ollama_num_ctx,
+        )
+    return MockLLMClient(stream=config.llm.stream, stream_to_stdout=config.llm.stream_to_stdout)
+
+
+def _echo_stream(text: str, *, label: str, echo: bool) -> None:
+    if not echo:
+        return
+    print(f"\n[{label} stream] begin", flush=True)
+    sys.stdout.write(text)
+    sys.stdout.flush()
+    print(f"\n[{label} stream] end, chars={len(text)}", flush=True)
+
+
+def _read_openai_stream(response: Any, *, label: str, echo: bool) -> str:
+    chunks: List[str] = []
+    if echo:
+        print(f"\n[{label} stream] begin", flush=True)
+    for event in response:
+        choices = getattr(event, "choices", None) or []
+        if not choices:
+            continue
+        choice = choices[0]
+        delta = getattr(choice, "delta", None)
+        content = getattr(delta, "content", None) if delta is not None else None
+        if content is None:
+            message = getattr(choice, "message", None)
+            content = getattr(message, "content", None) if message is not None else None
+        if not content:
+            continue
+        text = str(content)
+        chunks.append(text)
+        if echo:
+            sys.stdout.write(text)
+            sys.stdout.flush()
+    if echo:
+        print(f"\n[{label} stream] end, chars={sum(len(item) for item in chunks)}", flush=True)
+    return "".join(chunks)
+
+
+def _read_ollama_stream(response: Any, *, label: str, echo: bool) -> str:
+    chunks: List[str] = []
+    if echo:
+        print(f"\n[{label} stream] begin", flush=True)
+    for event in response:
+        message = event.get("message") if isinstance(event, dict) else getattr(event, "message", None)
+        content = ""
+        if isinstance(message, dict):
+            content = message.get("content") or ""
+        elif message is not None:
+            content = getattr(message, "content", "") or ""
+        if content:
+            text = str(content)
+            chunks.append(text)
+            if echo:
+                sys.stdout.write(text)
+                sys.stdout.flush()
+        done = event.get("done") if isinstance(event, dict) else getattr(event, "done", False)
+        if done:
+            break
+    if echo:
+        print(f"\n[{label} stream] end, chars={sum(len(item) for item in chunks)}", flush=True)
+    return "".join(chunks)

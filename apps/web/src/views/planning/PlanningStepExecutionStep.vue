@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { api } from '../../api';
 import PlanningAlgorithmConfigPanel from '../../components/PlanningAlgorithmConfigPanel.vue';
 import PlanningExecutionStreamMonitor from '../../components/PlanningExecutionStreamMonitor.vue';
@@ -21,6 +21,8 @@ const {
   selectTaskInstance,
   loadStepExecutionUpstreamResults,
   loadStepExecutionArtifact,
+  renamePlanningRealtimeArtifact,
+  deletePlanningRealtimeArtifacts,
   executePlanningRealtimeStep,
   terminatePlanningRealtimeStep,
   setStepExecutionView,
@@ -59,6 +61,21 @@ const currentResultGeneratedAt = computed(() => (
 const currentAlgorithmHistory = computed(() => stepExecution.value.upstreamResults
   .filter((item) => item.algorithmId === selectedAlgorithmId.value));
 const canTerminateStepExecution = computed(() => Boolean(stepExecution.value.calculating || streamState.value.active));
+const selectedArtifactIds = ref([]);
+const realtimeAlgorithmHistory = computed(() => currentAlgorithmHistory.value
+  .filter((item) => item.sourceType === 'realtime-artifact' && Number.isInteger(Number(item.artifactId))));
+const realtimeAlgorithmArtifactIds = computed(() => realtimeAlgorithmHistory.value
+  .map((item) => Number(item.artifactId))
+  .filter((id) => Number.isInteger(id) && id > 0));
+const realtimeAlgorithmArtifactIdSet = computed(() => new Set(realtimeAlgorithmArtifactIds.value));
+const selectedArtifactIdSet = computed(() => new Set(selectedArtifactIds.value
+  .map((id) => Number(id))
+  .filter((id) => realtimeAlgorithmArtifactIdSet.value.has(id))));
+const selectedArtifactCount = computed(() => selectedArtifactIdSet.value.size);
+const allRealtimeArtifactsSelected = computed(() => Boolean(
+  realtimeAlgorithmArtifactIds.value.length
+  && realtimeAlgorithmArtifactIds.value.every((id) => selectedArtifactIdSet.value.has(id)),
+));
 
 function algorithmName(algorithmId) {
   return algorithmLibrary.value.find((item) => item.id === algorithmId)?.name || algorithmId || '--';
@@ -106,6 +123,68 @@ function formatResultTime(value) {
 
 function formatResultSource(result = {}) {
   return result.sourceType === 'task-run-step' ? `任务历史 #${result.runId || '--'}` : `分步产物 #${result.artifactId || '--'}`;
+}
+
+function isRealtimeArtifactResult(result = {}) {
+  const artifactId = Number(result.artifactId);
+  return result.sourceType === 'realtime-artifact' && Number.isInteger(artifactId) && artifactId > 0;
+}
+
+function selectedHistoryKey() {
+  const ref = stepExecution.value.selectedResultRef || {};
+  if (ref.sourceType === 'realtime-artifact') {
+    return `realtime-artifact:${ref.id || ref.artifactId}`;
+  }
+  if (ref.sourceType === 'task-run-step') {
+    return `task-run-step:${ref.taskId}:${ref.runId}:${ref.stepId || ref.algorithmId}`;
+  }
+  return '';
+}
+
+function isActiveHistoryResult(result = {}) {
+  return resultOptionKey(result) === selectedHistoryKey()
+    || (
+      result.sourceType === 'realtime-artifact'
+      && stepExecution.value.currentArtifact?.id
+      && Number(stepExecution.value.currentArtifact.id) === Number(result.artifactId)
+    );
+}
+
+function toggleArtifactSelection(result = {}) {
+  if (!isRealtimeArtifactResult(result)) return;
+  const id = Number(result.artifactId);
+  const selected = new Set([...selectedArtifactIdSet.value]);
+  if (selected.has(id)) selected.delete(id);
+  else selected.add(id);
+  selectedArtifactIds.value = [...selected];
+}
+
+function toggleAllArtifacts() {
+  selectedArtifactIds.value = allRealtimeArtifactsSelected.value ? [] : [...realtimeAlgorithmArtifactIds.value];
+}
+
+function selectedArtifactResults() {
+  return realtimeAlgorithmHistory.value.filter((result) => selectedArtifactIdSet.value.has(Number(result.artifactId)));
+}
+
+function openedArtifactIds() {
+  const ids = [
+    Number(stepExecution.value.currentArtifact?.id),
+    Number(stepExecution.value.selectedArtifact?.id),
+  ];
+  const ref = stepExecution.value.selectedResultRef || {};
+  if (ref.sourceType === 'realtime-artifact') {
+    ids.push(Number(ref.id || ref.artifactId));
+  }
+  return new Set(ids.filter((id) => Number.isInteger(id) && id > 0));
+}
+
+function buildArtifactDeleteConfirmMessage(ids = []) {
+  const includesOpenedArtifact = ids.some((id) => openedArtifactIds().has(Number(id)));
+  const openedArtifactText = includesOpenedArtifact
+    ? '当前算法产物已打开，是否继续删除？\n\n'
+    : '';
+  return `${openedArtifactText}确定删除 ${ids.length} 个算法产物吗？删除后这些产物会从前置结果选择器中移除，旧引用不能再用于后续分步执行。`;
 }
 
 async function refreshUpstreamResults() {
@@ -166,12 +245,64 @@ async function handleOpenHistoryResult(result = {}) {
           step,
         };
         state.stepExecution.selectedArtifact = null;
+        state.stepExecution.selectedResultRef = resultRefWithAlgorithm(result);
         setStepExecutionView('run');
       }
     }
   } catch (error) {
     state.stepExecution.errorMessage = error.message || '读取历史算法结果失败。';
   }
+}
+
+async function handleRenameHistoryResult(result = {}) {
+  if (!isRealtimeArtifactResult(result)) {
+    state.stepExecution.errorMessage = '任务历史结果随完整任务归档保存，不能单独重命名；如需移除请删除所属任务实例。';
+    return;
+  }
+
+  const nextName = window.prompt('请输入新的算法产物名称', result.displayName || '');
+  if (nextName === null) return;
+  const trimmed = nextName.trim();
+  if (!trimmed) {
+    state.stepExecution.errorMessage = '算法产物名称不能为空。';
+    return;
+  }
+
+  try {
+    await renamePlanningRealtimeArtifact(result.artifactId, trimmed);
+  } catch (error) {
+    state.stepExecution.errorMessage = error.message || '重命名算法产物失败。';
+  }
+}
+
+async function handleDeleteArtifactResults(results = []) {
+  const ids = [...new Set(results
+    .filter(isRealtimeArtifactResult)
+    .map((result) => Number(result.artifactId))
+    .filter((id) => Number.isInteger(id) && id > 0))];
+  if (!ids.length) {
+    state.stepExecution.errorMessage = '任务历史结果随完整任务归档保存，不能单独删除；如需移除请删除所属任务实例。';
+    return;
+  }
+
+  const confirmed = window.confirm(buildArtifactDeleteConfirmMessage(ids));
+  if (!confirmed) return;
+
+  try {
+    const response = await deletePlanningRealtimeArtifacts(ids);
+    const deletedIds = Array.isArray(response?.deletedArtifactIds) ? response.deletedArtifactIds.map((id) => Number(id)) : ids;
+    selectedArtifactIds.value = selectedArtifactIds.value.filter((id) => !deletedIds.includes(Number(id)));
+    const missingIds = Array.isArray(response?.missingArtifactIds) ? response.missingArtifactIds : [];
+    if (missingIds.length) {
+      state.stepExecution.errorMessage = `已删除 ${response?.deletedCount || 0} 个算法产物；产物 #${missingIds.join('、#')} 已不存在，已自动跳过。`;
+    }
+  } catch (error) {
+    state.stepExecution.errorMessage = error.message || '删除算法产物失败。';
+  }
+}
+
+function handleDeleteSelectedArtifacts() {
+  return handleDeleteArtifactResults(selectedArtifactResults());
 }
 
 onMounted(async () => {
@@ -347,23 +478,69 @@ onMounted(async () => {
           <div>
             <h3>当前算法产物</h3>
           </div>
-          <span class="pill pill-muted">{{ currentAlgorithmHistory.length }} 条历史</span>
+          <div class="planning-task-actions">
+            <span class="pill pill-muted">{{ currentAlgorithmHistory.length }} 条历史</span>
+            <button class="button button-ghost" :disabled="!realtimeAlgorithmArtifactIds.length" @click="toggleAllArtifacts">
+              {{ allRealtimeArtifactsSelected ? '取消全选' : '全选产物' }}
+            </button>
+            <button class="button button-danger" :disabled="!selectedArtifactCount" @click="handleDeleteSelectedArtifacts">
+              {{ selectedArtifactCount ? `删除所选 (${selectedArtifactCount})` : '删除所选' }}
+            </button>
+          </div>
         </div>
 
         <div v-if="currentAlgorithmHistory.length" class="planning-step-history-grid top-gap">
-          <button
-            v-for="result in currentAlgorithmHistory.slice(0, 8)"
+          <article
+            v-for="result in currentAlgorithmHistory"
             :key="resultOptionKey(result)"
-            type="button"
             class="planning-step-history-card"
-            :class="{ active: stepExecution.currentArtifact?.id && Number(stepExecution.currentArtifact.id) === Number(result.artifactId) }"
-            @click="handleOpenHistoryResult(result)"
+            :class="{ active: isActiveHistoryResult(result) }"
           >
-            <strong>{{ result.displayName }}</strong>
-            <span>{{ result.taskName || '未命名任务' }}</span>
-            <small>{{ formatResultSource(result) }} / {{ formatResultTime(result.updatedAt) }}</small>
-            <em v-if="isCrossTaskResult(result)">跨任务</em>
-          </button>
+            <div class="planning-step-history-card__head">
+              <label
+                class="planning-task-select planning-step-history-select"
+                :class="{ disabled: !isRealtimeArtifactResult(result) }"
+              >
+                <input
+                  type="checkbox"
+                  :checked="selectedArtifactIdSet.has(Number(result.artifactId))"
+                  :disabled="!isRealtimeArtifactResult(result)"
+                  @change="toggleArtifactSelection(result)"
+                />
+                <span class="pill" :class="isRealtimeArtifactResult(result) ? 'pill-active' : 'pill-muted'">
+                  {{ isRealtimeArtifactResult(result) ? '可管理' : '归档' }}
+                </span>
+              </label>
+              <em v-if="isCrossTaskResult(result)">跨任务</em>
+            </div>
+            <button
+              type="button"
+              class="planning-step-history-card__body"
+              @click="handleOpenHistoryResult(result)"
+            >
+              <strong>{{ result.displayName }}</strong>
+              <span>{{ result.taskName || '未命名任务' }}</span>
+              <small>{{ formatResultSource(result) }} / {{ formatResultTime(result.updatedAt) }}</small>
+            </button>
+            <div class="planning-step-history-card__actions">
+              <button
+                class="button button-secondary"
+                :disabled="!isRealtimeArtifactResult(result)"
+                :title="isRealtimeArtifactResult(result) ? '重命名算法产物' : '任务历史结果不能单独重命名'"
+                @click="handleRenameHistoryResult(result)"
+              >
+                重命名
+              </button>
+              <button
+                class="button button-danger"
+                :disabled="!isRealtimeArtifactResult(result)"
+                :title="isRealtimeArtifactResult(result) ? '删除算法产物' : '任务历史结果不能单独删除'"
+                @click="handleDeleteArtifactResults([result])"
+              >
+                删除
+              </button>
+            </div>
+          </article>
         </div>
         <p v-else class="muted-text top-gap">当前算法暂无历史产物。</p>
       </article>

@@ -6,8 +6,9 @@ import { normalizeImportedPreview } from './import-preview.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-const dataDir = path.resolve(__dirname, '../data');
-const dbFile = path.join(dataDir, 'mission-demo.sqlite');
+const configuredDbFile = String(process.env.MISSION_DB_FILE || '').trim();
+const dbFile = configuredDbFile || path.join(path.resolve(__dirname, '../data'), 'mission-demo.sqlite');
+const dataDir = path.dirname(dbFile);
 
 function nowText() {
   const date = new Date();
