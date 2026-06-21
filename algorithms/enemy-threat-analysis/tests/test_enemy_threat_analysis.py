@@ -16,6 +16,7 @@ from enemy_threat_analysis.errors import AnalysisInputError
 from enemy_threat_analysis.file_loader import LoadedFile
 from enemy_threat_analysis.image_exporter import IMAGE_SIZE, build_heatmap_base64
 from enemy_threat_analysis.llm_extractor import USER_PROMPT_TEMPLATE, parse_llm_extraction
+from enemy_threat_analysis.progress import count_completed_objects_in_array
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -179,8 +180,9 @@ def test_ollama_threat_extraction_falls_back_to_smaller_context(monkeypatch: pyt
         },
     )
     assert result.schemaVersion == "threat-extraction-v1"
-    assert attempts[:2] == [262144, 262144]
-    assert attempts[2] == 131072
+    assert attempts.count(262144) >= 2
+    assert 131072 in attempts
+    assert attempts[-1] == 131072
 
 
 def test_ollama_client_ignores_environment_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -512,3 +514,11 @@ def test_visualization_omits_coverage_for_point_only_categories() -> None:
     entity_ids = {item["id"] for item in result["visualization"]["entities"]}
     assert "threat-target-target-001" in entity_ids
     assert "threat-coverage-target-001" not in entity_ids
+
+
+def test_stream_progress_counts_only_completed_target_objects() -> None:
+    partial = '{"targets":[{"id":"target-001","name":"防空节点"},{"id":"target-002","name":"火力'
+    complete = partial + '点"}],"warnings":[]}'
+
+    assert count_completed_objects_in_array(partial, "targets") == 1
+    assert count_completed_objects_in_array(complete, "targets") == 2

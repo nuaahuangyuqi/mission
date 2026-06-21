@@ -12,13 +12,14 @@ import sys
 import urllib.error
 import urllib.request
 from dataclasses import replace
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import ollama
 
 from .config import LLMConfig, resolve_llm_config
 from .errors import LLMConfigurationError, LLMExtractionError
 from .file_loader import LoadedFile
+from .progress import count_completed_objects_in_array, emit_progress
 from .schemas import ThreatExtractionJson
 
 
@@ -126,6 +127,25 @@ capabilities, coverage, equipment, importance, evidence, confidence, notes。
 __FILE_BLOCKS__
 """
 
+UNIT_COUNT_SYSTEM_PROMPT = """你是敌情材料预解析助手。
+只估计材料中应抽取为 targets[] 的敌方单位/目标对象条目数量，不要展开装备数量。
+必须只输出 JSON，不要输出 Markdown、解释文字或代码块。
+"""
+
+UNIT_COUNT_USER_PROMPT_TEMPLATE = """请预解析以下敌情材料，估计后续 threat-extraction-v1.targets 应包含多少个敌方单位/目标对象条目。
+
+计数口径：
+- 一个敌方火力点、防空节点、侦察预警节点、指挥节点、机动兵力、后勤节点或反机降设施条目算 1 个。
+- 装备数量、弹药数量、人员数量不要展开计数。
+- 不确定时给出保守估计，并在 confidence 中体现不确定性。
+
+只输出 JSON：
+{"unitCount": 0, "confidence": 0.0}
+
+待分析文件:
+__FILE_BLOCKS__
+"""
+
 
 def extract_threat_json_with_llm(
     files: Sequence[LoadedFile],
@@ -148,6 +168,17 @@ def extract_threat_json_with_llm(
         if not config.base_url:
             raise LLMConfigurationError("未配置大模型 Base URL，请通过页面参数或 ENEMY_THREAT_LLM_BASE_URL 提供。")
 
+    estimated_unit_count = estimate_enemy_unit_count(files, config)
+    emit_progress(
+        10,
+        "unit-count",
+        "已完成敌方单位总数预解析",
+        unit_progress={"kind": "enemy", "total": estimated_unit_count, "completed": 0, "currentName": ""},
+        message=f"敌方单位总数预估为 {estimated_unit_count} 个。",
+    )
+
+    stream_progress = _EnemyStreamProgress(estimated_unit_count)
+
     if _is_ollama_backend(config):
         content = _extract_with_ollama_context_fallback(
             files,
@@ -155,6 +186,7 @@ def extract_threat_json_with_llm(
             analysis_focus=analysis_focus,
             heatmap_density=heatmap_density,
             impact_bias=impact_bias,
+            progress_callback=stream_progress.update,
         )
     else:
         user_prompt = _build_user_prompt(
@@ -164,8 +196,67 @@ def extract_threat_json_with_llm(
             heatmap_density=heatmap_density,
             impact_bias=impact_bias,
         )
-        content = _chat_completion(config, SYSTEM_PROMPT, user_prompt)
-    return parse_llm_extraction(content)
+        content = _chat_completion_with_optional_progress(
+            config,
+            SYSTEM_PROMPT,
+            user_prompt,
+            progress_callback=stream_progress.update,
+        )
+    parsed = parse_llm_extraction(content)
+    stream_progress.finish(len(parsed.targets))
+    return parsed
+
+
+class _EnemyStreamProgress:
+    def __init__(self, estimated_total: int):
+        self.total = max(0, int(estimated_total or 0))
+        self.completed = 0
+
+    def update(self, content: str) -> None:
+        completed = count_completed_objects_in_array(content, "targets")
+        if completed <= self.completed:
+            return
+        self.completed = completed
+        self.total = max(self.total, self.completed)
+        step_progress = 10 + (80 * self.completed / max(1, self.total))
+        emit_progress(
+            min(step_progress, 90),
+            "structured-generation",
+            "正在生成敌情威胁结构化信息",
+            unit_progress={
+                "kind": "enemy",
+                "total": self.total,
+                "completed": self.completed,
+                "currentName": "",
+            },
+        )
+
+    def finish(self, actual_total: int) -> None:
+        self.total = max(self.total, int(actual_total or 0), self.completed)
+        self.completed = max(self.completed, int(actual_total or 0))
+        emit_progress(
+            90,
+            "structured-generation",
+            "敌情威胁结构化信息生成完成",
+            unit_progress={
+                "kind": "enemy",
+                "total": self.total,
+                "completed": self.completed,
+                "currentName": "",
+            },
+        )
+
+
+def estimate_enemy_unit_count(files: Sequence[LoadedFile], config: LLMConfig) -> int:
+    user_prompt = UNIT_COUNT_USER_PROMPT_TEMPLATE.replace("__FILE_BLOCKS__", _build_file_blocks(files, config))
+    count_config = replace(config, stream=False, stream_to_stdout=False)
+    try:
+        content = _chat_completion(count_config, UNIT_COUNT_SYSTEM_PROMPT, user_prompt)
+        payload = json.loads(_extract_json_text(content))
+        return max(0, int(float(payload.get("unitCount") or payload.get("unit_count") or 0)))
+    except Exception as exc:  # noqa: BLE001 - count pre-parse should not make extraction more brittle.
+        print(f"[enemy-threat-analysis] unit count pre-parse failed: {exc}", file=sys.stderr, flush=True)
+        return 0
 
 
 def _extract_with_ollama_context_fallback(
@@ -175,6 +266,7 @@ def _extract_with_ollama_context_fallback(
     analysis_focus: str,
     heatmap_density: str,
     impact_bias: str,
+    progress_callback: Callable[[str], None] | None = None,
 ) -> str:
     attempts = _ollama_context_attempts(config)
     last_error: Exception | None = None
@@ -188,7 +280,12 @@ def _extract_with_ollama_context_fallback(
             impact_bias=impact_bias,
         )
         try:
-            return _chat_completion(attempt_config, SYSTEM_PROMPT, user_prompt)
+            return _chat_completion_with_optional_progress(
+                attempt_config,
+                SYSTEM_PROMPT,
+                user_prompt,
+                progress_callback=progress_callback,
+            )
         except LLMExtractionError as exc:
             last_error = exc
             if not _is_retryable_ollama_context_error(exc) or index >= len(attempts) - 1:
@@ -239,9 +336,27 @@ def parse_llm_extraction(content: str) -> ThreatExtractionJson:
             raise LLMExtractionError(f"大模型 JSON 不符合 threat-extraction-v1: {repaired_exc}") from exc
 
 
-def _chat_completion(config: LLMConfig, system_prompt: str, user_prompt: str) -> str:
+def _chat_completion_with_optional_progress(
+    config: LLMConfig,
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    progress_callback: Callable[[str], None] | None = None,
+) -> str:
+    if config.stream and progress_callback:
+        return _chat_completion(config, system_prompt, user_prompt, progress_callback=progress_callback)
+    return _chat_completion(config, system_prompt, user_prompt)
+
+
+def _chat_completion(
+    config: LLMConfig,
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    progress_callback: Callable[[str], None] | None = None,
+) -> str:
     if _is_ollama_backend(config):
-        return _ollama_chat_completion(config, system_prompt, user_prompt)
+        return _ollama_chat_completion(config, system_prompt, user_prompt, progress_callback=progress_callback)
 
     url = _chat_completion_url(config.base_url)
     payload = {
@@ -264,7 +379,12 @@ def _chat_completion(config: LLMConfig, system_prompt: str, user_prompt: str) ->
     try:
         with urllib.request.urlopen(request, timeout=config.timeout_seconds) as response:
             if config.stream:
-                return _read_streaming_chat_response(response, label="enemy-threat-analysis", echo=config.stream_to_stdout)
+                return _read_streaming_chat_response(
+                    response,
+                    label="enemy-threat-analysis",
+                    echo=config.stream_to_stdout,
+                    progress_callback=progress_callback,
+                )
             body = response.read().decode("utf-8")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="ignore")
@@ -279,7 +399,13 @@ def _chat_completion(config: LLMConfig, system_prompt: str, user_prompt: str) ->
         raise LLMExtractionError(f"大模型 API 响应格式异常: {body[:500]}") from exc
 
 
-def _ollama_chat_completion(config: LLMConfig, system_prompt: str, user_prompt: str) -> str:
+def _ollama_chat_completion(
+    config: LLMConfig,
+    system_prompt: str,
+    user_prompt: str,
+    *,
+    progress_callback: Callable[[str], None] | None = None,
+) -> str:
     if not config.ollama_host:
         raise LLMExtractionError("未配置 Ollama 地址。")
     request = {
@@ -294,13 +420,23 @@ def _ollama_chat_completion(config: LLMConfig, system_prompt: str, user_prompt: 
         "options": {"temperature": 0.1, "num_ctx": config.ollama_num_ctx},
     }
     try:
-        return _post_ollama_chat(config.ollama_host, request, config)
+        return _post_ollama_chat_with_optional_progress(
+            config.ollama_host,
+            request,
+            config,
+            progress_callback=progress_callback,
+        )
     except ollama.ResponseError as exc:
         if _ollama_response_status(exc) in {500, 502, 503, 504}:
             retry_request = dict(request)
             retry_request.pop("format", None)
             try:
-                return _post_ollama_chat(config.ollama_host, retry_request, config)
+                return _post_ollama_chat_with_optional_progress(
+                    config.ollama_host,
+                    retry_request,
+                    config,
+                    progress_callback=progress_callback,
+                )
             except ollama.ResponseError as retry_exc:
                 raise LLMExtractionError(_ollama_response_error_message(retry_exc, retried_without_json=True)) from retry_exc
             except Exception as retry_exc:
@@ -310,7 +446,25 @@ def _ollama_chat_completion(config: LLMConfig, system_prompt: str, user_prompt: 
         raise LLMExtractionError(f"Ollama API 请求失败: {exc}") from exc
 
 
-def _post_ollama_chat(host: str, request: dict[str, Any], config: LLMConfig) -> str:
+def _post_ollama_chat_with_optional_progress(
+    host: str,
+    request: dict[str, Any],
+    config: LLMConfig,
+    *,
+    progress_callback: Callable[[str], None] | None = None,
+) -> str:
+    if request.get("stream") and progress_callback:
+        return _post_ollama_chat(host, request, config, progress_callback=progress_callback)
+    return _post_ollama_chat(host, request, config)
+
+
+def _post_ollama_chat(
+    host: str,
+    request: dict[str, Any],
+    config: LLMConfig,
+    *,
+    progress_callback: Callable[[str], None] | None = None,
+) -> str:
     client = ollama.Client(
         host=_ollama_client_host(host),
         timeout=config.timeout_seconds,
@@ -318,7 +472,12 @@ def _post_ollama_chat(host: str, request: dict[str, Any], config: LLMConfig) -> 
     )
     response = client.chat(**request)
     if config.stream:
-        return _read_streaming_ollama_chat_response(response, label="enemy-threat-analysis", echo=config.stream_to_stdout)
+        return _read_streaming_ollama_chat_response(
+            response,
+            label="enemy-threat-analysis",
+            echo=config.stream_to_stdout,
+            progress_callback=progress_callback,
+        )
     return _extract_ollama_message_content(response)
 
     try:
@@ -328,7 +487,13 @@ def _post_ollama_chat(host: str, request: dict[str, Any], config: LLMConfig) -> 
         raise LLMExtractionError(f"Ollama API 响应格式异常: {body[:500]}") from exc
 
 
-def _read_streaming_chat_response(response: Any, *, label: str, echo: bool) -> str:
+def _read_streaming_chat_response(
+    response: Any,
+    *,
+    label: str,
+    echo: bool,
+    progress_callback: Callable[[str], None] | None = None,
+) -> str:
     chunks: list[str] = []
     if echo:
         print(f"\n[{label} stream] begin", flush=True)
@@ -355,12 +520,20 @@ def _read_streaming_chat_response(response: Any, *, label: str, echo: bool) -> s
         if echo:
             sys.stdout.write(text)
             sys.stdout.flush()
+        if progress_callback:
+            progress_callback("".join(chunks))
     if echo:
         print(f"\n[{label} stream] end, chars={sum(len(item) for item in chunks)}", flush=True)
     return "".join(chunks)
 
 
-def _read_streaming_ollama_chat_response(response: Any, *, label: str, echo: bool) -> str:
+def _read_streaming_ollama_chat_response(
+    response: Any,
+    *,
+    label: str,
+    echo: bool,
+    progress_callback: Callable[[str], None] | None = None,
+) -> str:
     chunks: list[str] = []
     if echo:
         print(f"\n[{label} stream] begin", flush=True)
@@ -373,6 +546,8 @@ def _read_streaming_ollama_chat_response(response: Any, *, label: str, echo: boo
         if echo:
             sys.stdout.write(text)
             sys.stdout.flush()
+        if progress_callback:
+            progress_callback("".join(chunks))
         if _ollama_response_done(event):
             break
     if echo:

@@ -495,7 +495,86 @@ test('battle planner force grouping emits LLM stream chunks when enabled', async
   const chunks = events.filter((event) => event.type === 'llm-chunk');
   assert.ok(chunks.length > 0);
   assert.match(chunks.map((event) => event.payload.content || '').join(''), /battle-planner-mock|friendly_forces|rules/);
+  const progressEvents = events.filter((event) => event.type === 'progress').map((event) => event.payload);
+  const phaseKeys = progressEvents.map((event) => event.phaseKey).filter(Boolean);
+  assert.ok(phaseKeys.includes('unit-count'));
+  assert.ok(phaseKeys.includes('structured-generation'));
+  assert.ok(phaseKeys.includes('artifact-generation'));
+  assert.ok(progressEvents.some((event) => event.unitProgress?.kind === 'friendly' && event.unitProgress.total >= 1));
+  for (let index = 1; index < progressEvents.length; index += 1) {
+    assert.ok(Number(progressEvents[index].progress || 0) >= Number(progressEvents[index - 1].progress || 0));
+  }
   assert.ok(result.structuredOutput.preferredScheme.groups.length > 0);
+});
+
+test('full planning stream scales local algorithm step progress without regression', async () => {
+  const events = [];
+  await evaluatePlanning({
+    assessmentName: '完整流程进度折算测试',
+    taskDefinition: {
+      id: 'scaled-local-progress-flow',
+      name: '完整流程进度折算测试',
+      category: '火力打击任务',
+      steps: [
+        {
+          id: 'step-threat-analysis',
+          order: 1,
+          name: '敌情威胁自动分析',
+          algorithmId: 'enemy-threat-analysis',
+          objective: '生成内置敌情威胁节点',
+          consumes: ['敌情资料'],
+          produces: ['威胁模型'],
+        },
+        {
+          id: 'step-force-grouping',
+          order: 2,
+          name: '作战力量智能编组',
+          algorithmId: 'force-grouping',
+          objective: '验证本地编组进度折算',
+          consumes: ['威胁模型', '我方兵力'],
+          produces: ['编组方案'],
+        },
+      ],
+    },
+    bindings: {
+      'step-threat-analysis': 'enemy-threat-analysis:builtin',
+      'step-force-grouping': 'force-grouping:force-grouping-local',
+    },
+    algorithmInputs: {
+      'enemy-threat-analysis': {
+        builtinMethodKey: 'knowledge-fusion',
+        selectedSourceIds: [],
+        uploadedFiles: [createBuiltinThreatTextUpload()],
+        options: { heatmapDensity: 'low' },
+      },
+      'force-grouping': {
+        selectedSourceIds: [],
+        uploadedFiles: [createBattlePlannerFriendlyUpload()],
+        options: {
+          llmBackend: 'mock',
+          llmStream: true,
+          runtimeOptions: {
+            'force-grouping-local': {
+              llmBackend: 'mock',
+              llmStream: true,
+            },
+          },
+        },
+      },
+    },
+  }, {
+    events: (type, payload) => events.push({ type, payload }),
+  });
+
+  const progressEvents = events.filter((event) => event.type === 'progress').map((event) => event.payload);
+  assert.ok(progressEvents.some((event) => event.stepProgress !== undefined && event.phaseKey === 'unit-count'));
+  assert.ok(progressEvents.some((event) => event.phaseKey === 'artifact-generation' && event.progress <= 100));
+  for (let index = 1; index < progressEvents.length; index += 1) {
+    assert.ok(
+      Number(progressEvents[index].progress || 0) >= Number(progressEvents[index - 1].progress || 0),
+      `progress regressed at ${index}: ${progressEvents[index - 1].progress} -> ${progressEvents[index].progress}`,
+    );
+  }
 });
 
 test('battle planner force grouping rejects missing upstream threat output', async () => {

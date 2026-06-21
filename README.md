@@ -263,7 +263,8 @@
 - `机降地域优化选择` 会基于地形、威胁分布、目标锚点和直升机模型对候选机降点进行评分、排序、标注与流程联动分析
 - `机降地域优化选择 Python 算法` 会默认读取 `apps/web/public/terrain` 的离线 Cesium terrain；若上游敌情 / 目标分配坐标不足，会生成演示目标边界兜底以保证流程可联调
 - 规划执行接口在保留 `POST /api/planning/evaluate` 的基础上，新增 `POST /api/planning/evaluate/stream`，以 `text/event-stream` 返回 `run-start / validation / step-start / progress / terminal / llm-chunk / step-complete / final / error / done` 事件
-- 规划执行页已增加执行监控面板：总进度条、当前步骤、步骤状态列表、终端日志区域和大模型片段区域会随流式接口实时更新；失败时保留已收到的终端日志和错误事件
+- `progress` 事件在保留总进度 `progress` 的同时，已扩展 `stepProgress / phaseKey / phaseLabel / unitProgress` 字段；主任务执行会把单算法 `0%-100%` 折算到全流程总进度，分步执行会直接显示当前算法进度。`unitProgress` 当前用于 `敌情威胁自动分析 / 基于大模型分析算法` 和 `作战力量智能编组 / 智能编组算法` 的逐单位解析进度，单位按对象条目计数，不展开装备数量或平台数量字段
+- 规划执行页已增加执行监控面板：总进度条、当前步骤、当前阶段、步骤状态列表、终端日志区域和大模型片段区域会随流式接口实时更新；失败时保留已收到的终端日志和错误事件
 - 分步执行接口复用实时产物表 `planning_realtime_artifacts` 与 `POST /api/planning/realtime/steps/evaluate/stream`；`GET /api/planning/realtime/upstream-results` 汇总实时产物和完整任务执行历史中的单算法步骤结果；`PATCH /api/planning/realtime/artifacts/:id` 可重命名实时产物，`POST /api/planning/realtime/artifacts/bulk-delete` 可批量删除实时产物，已不存在的产物会被跳过并返回 `missingArtifactIds`
 - 单步执行请求兼容旧的 `inputArtifactIds`，并新增 `inputResultRefs` 支持跨任务引用：`{ sourceType: "realtime-artifact", id }` 或 `{ sourceType: "task-run-step", taskId, runId, stepId }`；服务端会校验权限、结果存在性和重复上游算法后再注入 `stageOutputs`
 - 作战任务删除使用 `POST /api/tasks/bulk-delete` 执行事务级硬删除：任务实例、任务附件、完整执行记录、执行结果、分步实时产物和相关算法调用日志会同步清理；资源库原始数据、抽取记录和导入批次不被物理删除，只解除指向被删任务的 `task_id` 关联；若任务的当前最新执行记录仍处于 `created / running`，服务端会跳过对应任务并继续删除其他可删除任务；历史残留的旧 `running` 记录不会阻塞删除
@@ -397,7 +398,8 @@
 - `algorithms/enemy-threat-analysis`、`algorithms/battle-planner`、`algorithms/airlanding_zone` 已作为本地 Python 算法来源登记到规划模块；其中 `force-grouping-local / 智能编组算法` 指向 `battle_planner.cli`，`target-allocation-local / 智能分配算法` 复用编组阶段 `battlePlannerResult` 做平台适配
 - `enemy-threat-analysis` 与 `force-grouping` 的大模型调用已同时支持外部 OpenAI-compatible API 和本地 Ollama；敌情分析仍走专用抽取提示词，Battle Planner 编组阶段按其自身两段 LLM 逻辑生成目标处置规则和友方结构化资源；`POST /api/planning/llm/test` 测试调用仍会发送 `think:false`，关闭 Qwen 3、DeepSeek R1 等可关闭的 thinking 输出；若本地 Ollama 上下文不足，可设置 `OLLAMA_NUM_CTX` 或 `LLM_OLLAMA_NUM_CTX` 后重启后端重试
 - `作战力量智能编组 / 智能编组算法` 现在会按页面 `流式输出` 开关把 Battle Planner 的 OpenAI-compatible / Ollama 响应逐片写入 stdout，并由规划 SSE 转发为 `llm-chunk`；mock LLM 也会输出可测试的本地片段。流式模式下 CLI 完成摘要会走 stderr，继续显示在终端日志，不会混入大模型片段面板
-- `POST /api/planning/evaluate/stream` 会把本地 Python stdout/stderr 映射为 `terminal`，把 enemy/force 的 LLM stdout 片段映射为 `llm-chunk`
+- `POST /api/planning/evaluate/stream` 会把本地 Python stdout/stderr 映射为 `terminal`，把 enemy/force 的 LLM stdout 片段映射为 `llm-chunk`；Python stderr 中以 `@@MISSION_PROGRESS@@` 开头的内部控制行会被服务端解析为 `progress` 事件，不会显示在终端日志
+- 两个大模型智能模块现在使用分阶段进度：`0%-10%` 为预解析和单位总数识别，`10%-90%` 为大模型结构化解析并按已完成单位对象推进，`90%-100%` 中敌情分析显示研判报告生成，智能编组显示方案产物、比选与归档生成
 - `POST /api/planning/llm/test` 用于在执行规划前测试当前 LLM 配置是否可用
 - `敌情威胁自动分析 三维结果` 面板仍能渲染通用威胁场字段，包括 `heatmapBase64`、`heatmapGeojson`、`bounds`、`targetEntities`、`pointThreatEvaluation`、`situationMap`、`heatmap.matrixSummary`、`heatmap.groupSummaries` 和多条 `visualization.imageOverlays`
 - `作战目标自动分配` 的 `structuredOutput.visualization`、`preferredPlan.visualization` 或 `comparedPlans[].visualization` 会被单算法结果页和最终 GeoJSON 汇总读取，用于显示蓝方编组点、红方目标点、原始目标点、分配箭头和部署区上下文；红方目标点和 `allocation-original-target-*` 原始目标点优先沿用上游敌情解析出的真实经纬度，避免目标分配态势落到演示兜底坐标；结果页会隐藏非关键实体标签，并允许用户在不同分配方案间切换独立态势图层，避免目标密集时进入结果页卡死

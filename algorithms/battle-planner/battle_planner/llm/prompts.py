@@ -71,6 +71,12 @@ FRIENDLY_SCHEMA: Dict[str, Any] = {
 }
 
 
+FRIENDLY_UNIT_COUNT_SCHEMA: Dict[str, Any] = {
+    "unitCount": 0,
+    "confidence": 0.0,
+}
+
+
 def build_enemy_rule_messages(targets: List[EnemyTarget]) -> tuple[str, str]:
     system_prompt = (
         "你是作战规则结构化抽取助手。必须只输出一个合法 JSON 对象，不要输出解释文字。"
@@ -109,3 +115,18 @@ def build_friendly_structure_messages(
     )
     return system_prompt, user_prompt
 
+
+def build_friendly_unit_count_messages(document: FriendlyDocument) -> tuple[str, str]:
+    system_prompt = (
+        "你是己方作战力量预解析助手。必须只输出一个合法 JSON 对象，不要输出解释文字。"
+        "只估计后续编组算法需要结构化的己方单位对象条目数量，不要展开数量字段。"
+    )
+    user_prompt = (
+        "请基于己方信息文档估计后续 friendly_forces 中可编组单位对象条目总数。\n"
+        "计数口径：直升机/平台型号条目、可编组人员/分队条目、显式作战单位条目各算 1 个；"
+        "武器、弹药、载荷、库存数量和单项装备数量不计入单位总数，也不要按 available 数量展开。\n"
+        f"输出 JSON schema 示例：{json.dumps(FRIENDLY_UNIT_COUNT_SCHEMA, ensure_ascii=False)}\n"
+        f"己方文档类型：{document.source_type}\n"
+        f"己方文档内容：\n{document.content}"
+    )
+    return system_prompt, user_prompt

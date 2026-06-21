@@ -1870,6 +1870,97 @@ function emitPlanningEvent(events, type, payload = {}) {
   }
 }
 
+const PYTHON_PROGRESS_PREFIX = '@@MISSION_PROGRESS@@';
+
+function parsePythonProgressLine(line = '') {
+  const text = String(line || '').trim();
+  if (!text.startsWith(PYTHON_PROGRESS_PREFIX)) return null;
+  const jsonText = text.slice(PYTHON_PROGRESS_PREFIX.length).trim();
+  if (!jsonText) return null;
+  try {
+    const payload = JSON.parse(jsonText);
+    return safeObject(payload);
+  } catch {
+    return null;
+  }
+}
+
+function normalizeUnitProgress(value = {}) {
+  const source = safeObject(value);
+  const total = Number(source.total);
+  const completed = Number(source.completed);
+  return {
+    kind: String(source.kind || ''),
+    total: Number.isFinite(total) ? Math.max(0, Math.round(total)) : 0,
+    completed: Number.isFinite(completed) ? Math.max(0, Math.round(completed)) : 0,
+    currentName: String(source.currentName || ''),
+  };
+}
+
+function buildPythonProgressPayload(rawProgress = {}, { step = {}, algorithm = {}, variant = {} } = {}) {
+  const stepProgress = clamp(Number(rawProgress.stepProgress ?? rawProgress.progress ?? 0), 0, 100);
+  const unitProgress = rawProgress.unitProgress ? normalizeUnitProgress(rawProgress.unitProgress) : null;
+  return {
+    stepId: step.id,
+    stepName: step.name,
+    algorithmId: algorithm.id,
+    bindingId: variant.id,
+    currentStepId: step.id,
+    currentStepName: step.name,
+    progress: stepProgress,
+    stepProgress,
+    phase: 'running-step',
+    phaseKey: String(rawProgress.phaseKey || ''),
+    phaseLabel: String(rawProgress.phaseLabel || ''),
+    message: String(rawProgress.message || ''),
+    ...(unitProgress ? { unitProgress } : {}),
+  };
+}
+
+function createStepProgressEvents(events, {
+  step = {},
+  algorithm = {},
+  variant = {},
+  stepIndex = 0,
+  totalSteps = 1,
+  realtime = false,
+} = {}) {
+  if (!events) return events;
+  const safeTotalSteps = Math.max(1, Number(totalSteps || 1));
+  const baseProgress = realtime ? 0 : (Number(stepIndex || 0) / safeTotalSteps) * 100;
+  const stepSpan = realtime ? 100 : 100 / safeTotalSteps;
+  let lastStepProgress = 0;
+  let lastOverallProgress = baseProgress;
+
+  return (type, payload = {}) => {
+    if (type !== 'progress' || (payload.stepProgress === undefined && !payload.phaseKey && !payload.unitProgress)) {
+      emitPlanningEvent(events, type, payload);
+      return;
+    }
+
+    const nextStepProgress = clamp(Number(payload.stepProgress ?? payload.progress ?? lastStepProgress), 0, 100);
+    lastStepProgress = Math.max(lastStepProgress, nextStepProgress);
+    const overallProgress = clamp(baseProgress + (lastStepProgress / 100) * stepSpan, 0, 100);
+    lastOverallProgress = Math.max(lastOverallProgress, overallProgress);
+
+    emitPlanningEvent(events, 'progress', {
+      ...safeObject(payload),
+      stepId: payload.stepId || step.id,
+      stepName: payload.stepName || step.name,
+      algorithmId: payload.algorithmId || algorithm.id,
+      bindingId: payload.bindingId || variant.id,
+      currentStepId: payload.currentStepId || step.id,
+      currentStepName: payload.currentStepName || step.name,
+      progress: Number(lastOverallProgress.toFixed(2)),
+      stepProgress: Number(lastStepProgress.toFixed(2)),
+      completedSteps: realtime ? 0 : Number(stepIndex || 0),
+      totalSteps: safeTotalSteps,
+      phase: payload.phase || 'running-step',
+      realtime,
+    });
+  };
+}
+
 function normalizeBooleanOption(value, fallback = false) {
   if (value === undefined || value === null || value === '') return fallback;
   if (typeof value === 'boolean') return value;
@@ -2247,6 +2338,7 @@ function runPythonProcess({
     const startedAt = Date.now();
     let stdout = '';
     let stderr = '';
+    let stderrLineBuffer = '';
     let abortRequested = false;
     let childClosed = false;
     let forceKillTimer = null;
@@ -2324,7 +2416,19 @@ function runPythonProcess({
     child.stderr.on('data', (chunk) => {
       const text = chunk.toString('utf-8');
       stderr += text;
-      for (const line of splitLines(text)) {
+      const combined = `${stderrLineBuffer}${text}`;
+      const rawLines = combined.split(/\r?\n/);
+      stderrLineBuffer = combined.endsWith('\n') || combined.endsWith('\r') ? '' : (rawLines.pop() || '');
+      for (const line of rawLines.map((item) => item.trimEnd()).filter(Boolean)) {
+        const progressPayload = parsePythonProgressLine(line);
+        if (progressPayload) {
+          emitPlanningEvent(events, 'progress', buildPythonProgressPayload(progressPayload, {
+            step,
+            algorithm,
+            variant,
+          }));
+          continue;
+        }
         emitPlanningEvent(events, 'terminal', {
           stepId: step.id,
           stepName: step.name,
@@ -2366,6 +2470,26 @@ function runPythonProcess({
     child.on('close', (code) => {
       childClosed = true;
       clearAbortResources();
+      for (const line of splitLines(stderrLineBuffer)) {
+        const progressPayload = parsePythonProgressLine(line);
+        if (progressPayload) {
+          emitPlanningEvent(events, 'progress', buildPythonProgressPayload(progressPayload, {
+            step,
+            algorithm,
+            variant,
+          }));
+        } else {
+          emitPlanningEvent(events, 'terminal', {
+            stepId: step.id,
+            stepName: step.name,
+            algorithmId: algorithm.id,
+            bindingId: variant.id,
+            stream: 'stderr',
+            message: line,
+          });
+        }
+      }
+      stderrLineBuffer = '';
       const durationMs = Date.now() - startedAt;
       if (abortRequested || signal?.aborted) {
         reject(createPlanningAbortError({
@@ -11012,10 +11136,17 @@ async function executeTaskPlanning(task, template, payload = {}, dataset = {}, {
       totalSteps,
       phase: 'running-step',
     });
+    const stepEvents = createStepProgressEvents(events, {
+      step,
+      algorithm,
+      variant,
+      stepIndex,
+      totalSteps,
+    });
     try {
       stageResult = variant.type === 'builtin'
-        ? await executeBuiltinStep(step, algorithm, context, algorithmInput, dataset, events, signal)
-        : await executeExternalStep(variant, task, step, algorithm, context, { ...payload, dataset }, algorithmInput, events, signal);
+        ? await executeBuiltinStep(step, algorithm, context, algorithmInput, dataset, stepEvents, signal)
+        : await executeExternalStep(variant, task, step, algorithm, context, { ...payload, dataset }, algorithmInput, stepEvents, signal);
     } catch (error) {
       const normalizedError = normalizePlanningRuntimeError(error, `${step.name} 执行失败。`);
       normalizedError.details = {
@@ -11440,12 +11571,20 @@ export async function evaluatePlanningRealtimeStep(payload = {}, { db, events, s
     phase: 'running-step',
     realtime: true,
   });
+  const stepEvents = createStepProgressEvents(events, {
+    step,
+    algorithm,
+    variant,
+    stepIndex: 0,
+    totalSteps: 1,
+    realtime: true,
+  });
 
   let stageResult = null;
   try {
     stageResult = variant.type === 'builtin'
-      ? await executeBuiltinStep(step, algorithm, context, algorithmInput, dataset, events, signal)
-      : await executeExternalStep(variant, task, step, algorithm, context, { ...payload, dataset }, algorithmInput, events, signal);
+      ? await executeBuiltinStep(step, algorithm, context, algorithmInput, dataset, stepEvents, signal)
+      : await executeExternalStep(variant, task, step, algorithm, context, { ...payload, dataset }, algorithmInput, stepEvents, signal);
   } catch (error) {
     const normalizedError = normalizePlanningRuntimeError(error, `${step.name} 实时生成失败。`);
     normalizedError.details = {

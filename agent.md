@@ -16,7 +16,52 @@ Purpose: keep only the latest handoff-ready status for future agents.
 
 ## Current Status
 
-Latest completed work on 2026-06-21: fixed `作战力量智能编组 / 智能编组算法` large-model stream output not appearing in the planning execution monitor. The root cause was twofold: the platform invoked Battle Planner with `stdoutAsLlm: false`, so Python stdout was always sent to the terminal log instead of `llm-chunk`; and the Battle Planner OpenAI/Ollama clients only made non-streaming chat requests, so there were no incremental model fragments to echo.
+Latest completed work on 2026-06-21: implemented staged progress reporting for the two LLM-backed intelligent planning modules. `敌情威胁自动分析 / 基于大模型分析算法` and `作战力量智能编组 / 智能编组算法` now report algorithm-internal progress as `0%-10%` pre-parse and unit-count estimation, `10%-90%` LLM structured parsing with unit-object progress, and `90%-100%` report/artifact generation. Full task execution scales algorithm progress into the overall task progress; realtime single-step execution shows the algorithm's direct `0%-100%`.
+
+Files and areas changed in the latest work:
+
+- Updated `apps/server/src/planning-runtime.js`:
+  - Added parsing for Python stderr control lines prefixed by `@@MISSION_PROGRESS@@`.
+  - Extended `progress` events with `stepProgress`, `phaseKey`, `phaseLabel`, and `unitProgress`.
+  - Added per-step event wrappers so full task execution scales current algorithm progress into the total flow while realtime step execution keeps direct single-algorithm progress.
+  - Buffered stderr line parsing so split control lines are not accidentally shown as terminal output.
+- Updated `algorithms/enemy-threat-analysis`:
+  - Added progress helpers and stderr progress emission.
+  - Added an initial LLM unit-count estimation call for enemy target/unit object count.
+  - Added streaming JSON target-object completion detection for `targets[]`, with final reconciliation against parsed target count.
+  - Report generation or skipped-report artifact finalization now drives the `90%-100%` phase.
+- Updated `algorithms/battle-planner`:
+  - Added progress helpers and stderr progress emission.
+  - Added a friendly unit-count prompt and LLM client method; mock LLM now returns deterministic count output.
+  - Added stream progress callbacks for OpenAI-compatible, Ollama, and mock clients.
+  - Battle Planner pipeline now reports preparse, unit-count, structured-generation, and artifact-generation phases; friendly unit count treats platform/personnel/unit object entries as units and does not expand `available` quantities or weapons.
+- Updated frontend:
+  - `apps/web/src/modules/planningWorkflow.js` now stores progress phase, algorithm-internal progress, and unit progress for both full execution and step execution streams.
+  - `apps/web/src/components/PlanningExecutionStreamMonitor.vue` now displays current stage and `已解析 X / Y 个敌方/我方单位` alongside total progress.
+- Updated tests:
+  - `apps/server/src/planning-runtime.support.test.js` covers Python progress control-line forwarding, phase keys, unit progress, and non-regressing full-flow scaled progress.
+  - `algorithms/enemy-threat-analysis/tests/test_enemy_threat_analysis.py` covers streaming target-object completion counting.
+  - `algorithms/battle-planner/tests/test_battle_planner_pipeline.py` covers friendly unit object counting without quantity expansion.
+- Updated docs:
+  - `README.md`
+  - `agent.md`
+
+Verification completed for the latest work:
+
+- `node --check apps/server/src/planning-runtime.js` passed.
+- `node --check apps/web/src/modules/planningWorkflow.js` passed.
+- `python3 -m py_compile algorithms/enemy-threat-analysis/enemy_threat_analysis/analyze.py algorithms/enemy-threat-analysis/enemy_threat_analysis/llm_extractor.py algorithms/enemy-threat-analysis/enemy_threat_analysis/progress.py algorithms/battle-planner/battle_planner/pipeline/pipeline.py algorithms/battle-planner/battle_planner/llm/clients.py algorithms/battle-planner/battle_planner/llm/prompts.py algorithms/battle-planner/battle_planner/progress.py` passed.
+- `node --test apps/server/src/planning-runtime.support.test.js` passed: 23 tests.
+- `node algorithms/run-with-venv.mjs -m pytest algorithms/enemy-threat-analysis/tests algorithms/battle-planner/tests -q` passed: 36 tests.
+- `npm run build --workspace @mission/web` passed; Vite still reports the existing large chunk warning.
+- `git diff --check` passed.
+
+Remaining risk:
+
+- Real external OpenAI-compatible and Ollama streaming were still not exercised with live credentials/models in this handoff. Automated coverage verifies the event path with deterministic mock LLM and patched local clients.
+- The unit progress detector counts completed JSON objects in model output streams; highly unusual provider chunking is tolerated by cumulative scanning, but live provider acceptance should still verify that unit progress advances during long real outputs.
+
+Previous completed work on 2026-06-21: fixed `作战力量智能编组 / 智能编组算法` large-model stream output not appearing in the planning execution monitor. The root cause was twofold: the platform invoked Battle Planner with `stdoutAsLlm: false`, so Python stdout was always sent to the terminal log instead of `llm-chunk`; and the Battle Planner OpenAI/Ollama clients only made non-streaming chat requests, so there were no incremental model fragments to echo.
 
 Files and areas changed in the latest work:
 

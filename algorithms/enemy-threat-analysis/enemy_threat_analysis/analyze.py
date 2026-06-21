@@ -13,6 +13,7 @@ from .llm_extractor import extract_threat_json_with_llm
 from .normalize import normalize_extraction
 from .output_adapter import build_structured_output
 from .profiles import normalize_options
+from .progress import emit_progress
 from .schemas import TargetAssessment, ThreatExtractionJson
 from .target_threat_score import compute_target_threat
 from .target_value_score import compute_priority_score, compute_target_value
@@ -37,7 +38,14 @@ def analyze(
     caller has already executed the LLM extraction step.
     """
     options = normalize_options(analysis_focus, heatmap_density, impact_bias)
+    emit_progress(2, "preparse", "正在预解析敌情输入材料")
     loaded_files: list[LoadedFile] = load_files(files or []) if extraction_json is None else []
+    emit_progress(
+        6,
+        "preparse",
+        "敌情输入材料预解析完成",
+        message=f"已载入 {len(loaded_files)} 份敌情材料。",
+    )
     raw_extraction = extraction_json
     if raw_extraction is None:
         raw_extraction = extract_threat_json_with_llm(
@@ -100,6 +108,7 @@ def analyze(
         visualization=visualization,
     )
     if generate_assessment:
+        emit_progress(92, "report-generation", "正在生成敌情威胁研判报告")
         structured_output.update(
             generate_assessment_report(
                 structured_output=structured_output,
@@ -109,7 +118,9 @@ def analyze(
                 output_dir=assessment_output_dir,
             )
         )
+        emit_progress(100, "report-generation", "敌情威胁研判报告生成完成")
     else:
+        emit_progress(96, "report-generation", "正在收束敌情威胁结构化产物")
         structured_output.update(
             {
                 "assessmentReport": {"status": "skipped"},
@@ -117,6 +128,7 @@ def analyze(
                 "assessmentDocxFileName": "",
             }
         )
+        emit_progress(100, "report-generation", "敌情威胁结构化产物生成完成")
     return structured_output
 
 

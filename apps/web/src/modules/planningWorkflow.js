@@ -130,6 +130,10 @@ function createExecutionStreamState() {
     cancelRequested: false,
     terminated: false,
     progress: 0,
+    stepProgress: 0,
+    phaseKey: '',
+    phaseLabel: '',
+    unitProgress: null,
     currentStepId: '',
     currentStepName: '',
     currentEvent: '',
@@ -572,6 +576,10 @@ function handlePlanningStreamEvent(eventType, payload = {}) {
     state.executionStream.active = true;
     state.executionStream.currentStepId = payload.stepId || '';
     state.executionStream.currentStepName = payload.stepName || '';
+    state.executionStream.stepProgress = 0;
+    state.executionStream.phaseKey = '';
+    state.executionStream.phaseLabel = '';
+    state.executionStream.unitProgress = null;
     updateStreamStep(payload.stepId, { ...payload, status: 'running' });
     appendTerminalLine({ ...payload, stream: 'system', message: `开始执行：${payload.stepName || payload.algorithmName || '规划步骤'}` });
     return;
@@ -579,8 +587,15 @@ function handlePlanningStreamEvent(eventType, payload = {}) {
 
   if (eventType === 'progress') {
     state.executionStream.progress = Math.max(0, Math.min(100, Number(payload.progress || state.executionStream.progress)));
+    if (payload.stepProgress !== undefined) {
+      state.executionStream.stepProgress = Math.max(0, Math.min(100, Number(payload.stepProgress || 0)));
+    }
+    state.executionStream.phaseKey = payload.phaseKey || state.executionStream.phaseKey;
+    state.executionStream.phaseLabel = payload.phaseLabel || state.executionStream.phaseLabel;
+    if (payload.unitProgress) state.executionStream.unitProgress = cloneData(payload.unitProgress);
     state.executionStream.currentStepId = payload.currentStepId || state.executionStream.currentStepId;
     state.executionStream.currentStepName = payload.currentStepName || state.executionStream.currentStepName;
+    state.executionStream.currentEvent = payload.phaseLabel || payload.phaseKey || state.executionStream.currentEvent;
     return;
   }
 
@@ -596,6 +611,7 @@ function handlePlanningStreamEvent(eventType, payload = {}) {
 
   if (eventType === 'step-complete') {
     state.executionStream.progress = Math.max(state.executionStream.progress, Number(payload.progress || 0));
+    state.executionStream.stepProgress = 100;
     updateStreamStep(payload.stepId, { ...payload, status: 'completed' });
     appendTerminalLine({ ...payload, stream: 'system', message: `完成步骤：${payload.stepName || '规划步骤'}。${payload.summary || ''}` });
     return;
@@ -606,6 +622,7 @@ function handlePlanningStreamEvent(eventType, payload = {}) {
     state.resultsDirty = false;
     state.activeResultRunId = Number(payload?.runId || 0) || null;
     state.executionStream.progress = 100;
+    state.executionStream.stepProgress = 100;
     appendTerminalLine({ ...payload, stream: 'system', message: '规划结果已生成并归档。' });
     return;
   }
@@ -676,6 +693,10 @@ function handleStepExecutionStreamEvent(eventType, payload = {}) {
     streamState.active = true;
     streamState.currentStepId = payload.stepId || '';
     streamState.currentStepName = payload.stepName || '';
+    streamState.stepProgress = 0;
+    streamState.phaseKey = '';
+    streamState.phaseLabel = '';
+    streamState.unitProgress = null;
     updateStepExecutionStreamStep(payload.stepId, { ...payload, status: 'running' });
     appendTerminalLineToStream(streamState, { ...payload, stream: 'system', message: `开始执行：${payload.stepName || payload.algorithmName || '规划步骤'}` });
     return;
@@ -683,8 +704,15 @@ function handleStepExecutionStreamEvent(eventType, payload = {}) {
 
   if (eventType === 'progress') {
     streamState.progress = Math.max(0, Math.min(100, Number(payload.progress || streamState.progress)));
+    if (payload.stepProgress !== undefined) {
+      streamState.stepProgress = Math.max(0, Math.min(100, Number(payload.stepProgress || 0)));
+    }
+    streamState.phaseKey = payload.phaseKey || streamState.phaseKey;
+    streamState.phaseLabel = payload.phaseLabel || streamState.phaseLabel;
+    if (payload.unitProgress) streamState.unitProgress = cloneData(payload.unitProgress);
     streamState.currentStepId = payload.currentStepId || streamState.currentStepId;
     streamState.currentStepName = payload.currentStepName || streamState.currentStepName;
+    streamState.currentEvent = payload.phaseLabel || payload.phaseKey || streamState.currentEvent;
     return;
   }
 
@@ -700,6 +728,7 @@ function handleStepExecutionStreamEvent(eventType, payload = {}) {
 
   if (eventType === 'step-complete') {
     streamState.progress = Math.max(streamState.progress, Number(payload.progress || 0));
+    streamState.stepProgress = 100;
     updateStepExecutionStreamStep(payload.stepId, { ...payload, status: 'completed' });
     appendTerminalLineToStream(streamState, { ...payload, stream: 'system', message: `完成步骤：${payload.stepName || '规划步骤'}。${payload.summary || ''}` });
     return;
@@ -713,6 +742,7 @@ function handleStepExecutionStreamEvent(eventType, payload = {}) {
       ? { sourceType: 'realtime-artifact', id: payload.artifact.id, taskId: payload.artifact.taskId }
       : null;
     streamState.progress = 100;
+    streamState.stepProgress = 100;
     appendTerminalLineToStream(streamState, { ...payload, stream: 'system', message: '分步执行结果已生成并归档。' });
     return;
   }

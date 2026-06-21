@@ -7,6 +7,7 @@ from docx import Document
 
 from battle_planner.io.enemy_reader import read_enemy_situation
 from battle_planner.pipeline import PlanningPipeline
+from battle_planner.progress import count_friendly_unit_objects, count_friendly_unit_objects_in_text
 
 
 def _write_json(path: Path, payload: dict) -> Path:
@@ -183,3 +184,22 @@ def test_fire_strike_without_loaded_weapons_has_zero_firepower(tmp_path: Path) -
     assert fire_group.strike_weapon_requirement_met is False
     assert fire_group.assignment_eligible_for_strike is False
     assert any(issue.severity == "error" and "未形成实际武器装载" in issue.message for issue in fire_group.issues)
+
+
+def test_friendly_unit_progress_counts_object_entries_without_expanding_quantities() -> None:
+    payload = {
+        "friendly_forces": {
+            "helicopters": [
+                {"model": "二型武装直升机", "available": 8},
+                {"model": "运输直升机", "available": 4},
+            ],
+            "weapons": [{"name": "空地导弹", "available": 32}],
+            "personnel": [{"role": "机降突击人员", "available": 60}],
+        }
+    }
+    streamed = json.dumps(payload, ensure_ascii=False)
+    partial = streamed.split('"personnel"')[0]
+
+    assert count_friendly_unit_objects(payload) == 3
+    assert count_friendly_unit_objects_in_text(partial) == 2
+    assert count_friendly_unit_objects_in_text(streamed) == 3

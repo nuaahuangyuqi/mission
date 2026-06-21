@@ -5,11 +5,16 @@ from __future__ import annotations
 import json
 import sys
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from battle_planner.llm.parsing import extract_json_object
-from battle_planner.llm.prompts import build_enemy_rule_messages, build_friendly_structure_messages
+from battle_planner.llm.prompts import (
+    build_enemy_rule_messages,
+    build_friendly_structure_messages,
+    build_friendly_unit_count_messages,
+)
 from battle_planner.models import AppConfig, DispositionRule, EnemyTarget
+from battle_planner.progress import count_friendly_unit_objects
 
 
 class LLMError(RuntimeError):
@@ -18,8 +23,19 @@ class LLMError(RuntimeError):
 
 class LLMClient(ABC):
     @abstractmethod
-    def complete_json(self, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
+    def complete_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> Dict[str, Any]:
         """Run a completion request and return a parsed JSON object."""
+
+    def count_friendly_units(self, document: Any) -> int:
+        system_prompt, user_prompt = build_friendly_unit_count_messages(document)
+        payload = self.complete_json(system_prompt, user_prompt)
+        return _extract_unit_count(payload)
 
     def extract_disposition_rules(self, targets: List[EnemyTarget]) -> Dict[str, Any]:
         system_prompt, user_prompt = build_enemy_rule_messages(targets)
@@ -30,9 +46,10 @@ class LLMClient(ABC):
         document: Any,
         targets: List[EnemyTarget],
         rules: List[DispositionRule],
+        progress_callback: Callable[[str], None] | None = None,
     ) -> Dict[str, Any]:
         system_prompt, user_prompt = build_friendly_structure_messages(document, targets, rules)
-        return self.complete_json(system_prompt, user_prompt)
+        return self.complete_json(system_prompt, user_prompt, progress_callback=progress_callback)
 
 
 class OpenAIClient(LLMClient):
@@ -63,7 +80,13 @@ class OpenAIClient(LLMClient):
         self._stream = stream
         self._stream_to_stdout = stream_to_stdout
 
-    def complete_json(self, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
+    def complete_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> Dict[str, Any]:
         try:
             response = self._client.chat.completions.create(
                 model=self._model_name,
@@ -76,7 +99,12 @@ class OpenAIClient(LLMClient):
                 stream=self._stream,
             )
             if self._stream:
-                content = _read_openai_stream(response, label="battle-planner", echo=self._stream_to_stdout)
+                content = _read_openai_stream(
+                    response,
+                    label="battle-planner",
+                    echo=self._stream_to_stdout,
+                    progress_callback=progress_callback,
+                )
             else:
                 content = response.choices[0].message.content or ""
             return extract_json_object(content)
@@ -106,7 +134,13 @@ class OllamaClient(LLMClient):
         self._stream_to_stdout = stream_to_stdout
         self._num_ctx = num_ctx
 
-    def complete_json(self, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
+    def complete_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> Dict[str, Any]:
         try:
             response = self._ollama.chat(
                 model=self._model_name,
@@ -119,7 +153,12 @@ class OllamaClient(LLMClient):
                 options={"temperature": self._temperature, "num_ctx": self._num_ctx},
             )
             if self._stream:
-                content = _read_ollama_stream(response, label="battle-planner", echo=self._stream_to_stdout)
+                content = _read_ollama_stream(
+                    response,
+                    label="battle-planner",
+                    echo=self._stream_to_stdout,
+                    progress_callback=progress_callback,
+                )
             else:
                 content = response["message"]["content"]
             return extract_json_object(content)
@@ -134,14 +173,33 @@ class MockLLMClient(LLMClient):
         self._stream = stream
         self._stream_to_stdout = stream_to_stdout
 
-    def complete_json(self, system_prompt: str, user_prompt: str) -> Dict[str, Any]:
-        if "处置规则" in user_prompt and "敌方目标" in user_prompt and "己方文档" not in user_prompt:
+    def complete_json(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        *,
+        progress_callback: Callable[[str], None] | None = None,
+    ) -> Dict[str, Any]:
+        if "unitCount" in user_prompt and "己方文档" in user_prompt:
+            result = self._mock_friendly_unit_count(user_prompt)
+        elif "处置规则" in user_prompt and "敌方目标" in user_prompt and "己方文档" not in user_prompt:
             result = self._mock_rules(user_prompt)
         else:
             result = self._mock_friendly_structure(user_prompt)
         if self._stream:
-            _echo_stream(json.dumps(result, ensure_ascii=False), label="battle-planner-mock", echo=self._stream_to_stdout)
+            _echo_stream(
+                json.dumps(result, ensure_ascii=False),
+                label="battle-planner-mock",
+                echo=self._stream_to_stdout,
+                progress_callback=progress_callback,
+            )
         return result
+
+    def _mock_friendly_unit_count(self, user_prompt: str) -> Dict[str, Any]:
+        json_hint = _try_extract_document_json(user_prompt)
+        if json_hint:
+            return {"unitCount": count_friendly_unit_objects({"friendly_forces": json_hint}), "confidence": 0.95}
+        return {"unitCount": 4, "confidence": 0.9}
 
     def _mock_rules(self, user_prompt: str) -> Dict[str, Any]:
         payload = _json_after_label(user_prompt, "敌方目标：")
@@ -262,8 +320,10 @@ def _try_extract_document_json(user_prompt: str) -> Dict[str, Any]:
     marker = "己方文档内容："
     start = user_prompt.find(marker)
     end = user_prompt.find("\n敌方目标：", start)
-    if start < 0 or end < 0:
+    if start < 0:
         return {}
+    if end < 0:
+        end = len(user_prompt)
     content = user_prompt[start + len(marker) : end].strip()
     if not content.startswith("{"):
         return {}
@@ -301,16 +361,44 @@ def build_llm_client(config: AppConfig) -> LLMClient:
     return MockLLMClient(stream=config.llm.stream, stream_to_stdout=config.llm.stream_to_stdout)
 
 
-def _echo_stream(text: str, *, label: str, echo: bool) -> None:
+def _extract_unit_count(payload: Dict[str, Any]) -> int:
+    for key in ("unitCount", "unit_count", "totalUnits", "total_units"):
+        value = payload.get(key)
+        if value is None:
+            continue
+        try:
+            return max(0, int(float(value)))
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def _echo_stream(
+    text: str,
+    *,
+    label: str,
+    echo: bool,
+    progress_callback: Callable[[str], None] | None = None,
+) -> None:
     if not echo:
+        if progress_callback:
+            progress_callback(text)
         return
     print(f"\n[{label} stream] begin", flush=True)
     sys.stdout.write(text)
     sys.stdout.flush()
+    if progress_callback:
+        progress_callback(text)
     print(f"\n[{label} stream] end, chars={len(text)}", flush=True)
 
 
-def _read_openai_stream(response: Any, *, label: str, echo: bool) -> str:
+def _read_openai_stream(
+    response: Any,
+    *,
+    label: str,
+    echo: bool,
+    progress_callback: Callable[[str], None] | None = None,
+) -> str:
     chunks: List[str] = []
     if echo:
         print(f"\n[{label} stream] begin", flush=True)
@@ -331,12 +419,20 @@ def _read_openai_stream(response: Any, *, label: str, echo: bool) -> str:
         if echo:
             sys.stdout.write(text)
             sys.stdout.flush()
+        if progress_callback:
+            progress_callback("".join(chunks))
     if echo:
         print(f"\n[{label} stream] end, chars={sum(len(item) for item in chunks)}", flush=True)
     return "".join(chunks)
 
 
-def _read_ollama_stream(response: Any, *, label: str, echo: bool) -> str:
+def _read_ollama_stream(
+    response: Any,
+    *,
+    label: str,
+    echo: bool,
+    progress_callback: Callable[[str], None] | None = None,
+) -> str:
     chunks: List[str] = []
     if echo:
         print(f"\n[{label} stream] begin", flush=True)
@@ -353,6 +449,8 @@ def _read_ollama_stream(response: Any, *, label: str, echo: bool) -> str:
             if echo:
                 sys.stdout.write(text)
                 sys.stdout.flush()
+            if progress_callback:
+                progress_callback("".join(chunks))
         done = event.get("done") if isinstance(event, dict) else getattr(event, "done", False)
         if done:
             break

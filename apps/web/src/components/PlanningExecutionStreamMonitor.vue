@@ -20,6 +20,27 @@ const llmStreamText = computed(() => (props.streamState.llmChunks || [])
   .map((item) => item.content)
   .join(''));
 
+const stepProgressPercent = computed(() => Math.max(0, Math.min(100, Number(props.streamState.stepProgress || 0))));
+
+const phaseLabel = computed(() => {
+  const label = String(props.streamState.phaseLabel || '').trim();
+  if (label) return label;
+  const key = String(props.streamState.phaseKey || '').trim();
+  if (key === 'preparse') return '预解析';
+  if (key === 'unit-count') return '单位总数预解析';
+  if (key === 'structured-generation') return '生成结构化信息';
+  if (key === 'report-generation') return '生成报告';
+  if (key === 'artifact-generation') return '生成产物';
+  return '';
+});
+
+const unitProgressText = computed(() => {
+  const unit = props.streamState.unitProgress || null;
+  if (!unit || !Number(unit.total)) return '';
+  const kind = unit.kind === 'friendly' ? '我方单位' : unit.kind === 'enemy' ? '敌方单位' : '单位';
+  return `已解析 ${Number(unit.completed || 0)} / ${Number(unit.total || 0)} 个${kind}`;
+});
+
 function formatStreamStepStatus(status) {
   if (status === 'completed') return '完成';
   if (status === 'running') return '运行中';
@@ -58,6 +79,15 @@ function formatStreamTime(value) {
       <span>当前步骤</span>
       <strong>{{ streamState.currentStepName || '等待任务启动' }}</strong>
       <small>{{ streamState.currentEvent || '--' }}</small>
+    </div>
+
+    <div v-if="phaseLabel || unitProgressText || streamState.stepProgress" class="planning-stream-current top-gap">
+      <span>当前阶段</span>
+      <strong>{{ phaseLabel || '算法执行中' }}</strong>
+      <small>
+        {{ unitProgressText || `算法进度 ${Math.round(stepProgressPercent)}%` }}
+        <template v-if="unitProgressText"> / 算法进度 {{ Math.round(stepProgressPercent) }}%</template>
+      </small>
     </div>
 
     <div v-if="streamState.stepStates?.length" class="planning-stream-steps top-gap">
